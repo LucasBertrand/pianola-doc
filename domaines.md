@@ -655,7 +655,7 @@ Port de consultation permettant notamment :
 - d'obtenir un `Instrument` a partir de son `InstrumentId` ;
 - de verifier qu'un `InstrumentId` peut etre resolu.
 
-Le port retourne directement les objets `Instrument` du domaine. L'ancien modele de sortie `InstrumentSummary` devient donc inutile et est supprime. Aucun patch, parametre audio ou detail d'allocation des voix ne traverse ce port. L'implementation concrete appartient a l'infrastructure audio.
+Le port retourne directement les objets `Instrument` du domaine. Aucun modele de sortie intermediaire n'est necessaire. Aucun patch, parametre audio ou detail d'allocation des voix ne traverse ce port. L'implementation concrete appartient a l'infrastructure audio.
 
 ## Infrastructure audio
 
