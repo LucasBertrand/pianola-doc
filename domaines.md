@@ -55,7 +55,7 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Le temps musical canonique utilise des ticks entiers, avec une resolution fixe de 960 ticks par noire. Les positions sont locales au clip, libres et independantes de la grille visible.
 - Chaque `Clip` contient trois chronologies structurelles : `tempoChanges`, `meterChanges` et `pitchContextChanges`. Les chronologies de tempo et de metrique commencent obligatoirement au tick `0`.
 - Un changement de tempo ou de contexte de hauteurs peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; un changement deja place peut fermer une mesure devenue incomplete apres la modification de la metrique precedente.
-- Les `TempoSection`, `MeterSection` et `PitchSection` sont des vues derivees des intervalles entre les changements. Elles ne sont pas sauvegardees directement.
+- Les `TempoSection`, `MeterSection` et `PitchContextSection` sont des vues derivees des intervalles entre les changements. Elles ne sont pas sauvegardees directement.
 - Modifier une metrique exprime explicitement l'une de deux intentions : conserver la duree en ticks ou conserver le nombre de mesures. Un clip vide conserve par defaut son nombre de mesures ; une section contenant des notes ou suivie d'autres sections conserve par defaut sa duree.
 
 ### Notes et edition
@@ -422,7 +422,7 @@ Responsabilites :
 
 Le contexte ne valide ni ne refuse les notes. Une note exterieure reste une `Note` parfaitement valide.
 
-#### PitchSection
+#### PitchContextSection
 
 Represente une vue derivee de l'intervalle compris entre un `PitchContextChange` et le changement suivant, ou la fin du clip.
 
@@ -703,7 +703,7 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Note.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
-| `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchSection` utilisees pour analyser visuellement les notes. |
+| `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
@@ -735,7 +735,7 @@ src/
 │   │   ├── Pitch.ts
 │   │   ├── PitchContext.ts
 │   │   ├── PitchContextChange.ts
-│   │   └── PitchSection.ts
+│   │   └── PitchContextSection.ts
 │   └── InstrumentId.ts
 ├── application/
 │   ├── editor/
