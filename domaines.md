@@ -52,6 +52,10 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Le `Project` possede un unique `rootGroup`. La composition forme un arbre dont les noeuds sont des `Group` et les feuilles des `Clip`.
 - Un `Group` contient une collection ordonnee de `GroupItem`, union de `Clip` et de `Group`. Les groupes peuvent donc etre imbriques.
 - Le `playbackMode` d'un groupe vaut `SEQUENTIAL` ou `SIMULTANEOUS`. En mode sequentiel, chaque enfant commence a la fin du precedent. En mode simultane, tous les enfants commencent au meme instant.
+- Le `playbackMode` gouverne la lecture structurelle du groupe, mais ne limite jamais la preecoute individuelle de ses descendants.
+- `play(fromItemId?)` lance une lecture structurelle du projet. Sans identifiant, la lecture commence au debut du `rootGroup`. Avec un identifiant, elle commence au point d'entree indique puis poursuit le parcours du projet jusqu'a la fin.
+- Dans un groupe `SEQUENTIAL`, chacun de ses enfants constitue un point d'entree structurel possible. Dans un groupe `SIMULTANEOUS`, seul le groupe complet constitue un point d'entree structurel : lancer un seul de ses enfants romprait la relation de simultaneite.
+- `preview(itemId)` reste disponible pour tout `Clip` ou `Group`. Cette operation est bornee au sous-arbre choisi et ne passe jamais au noeud suivant situe hors de cette racine de preecoute.
 - Les clips ne possedent pas de position dans une timeline globale. Leur instant de depart est derive de leur place dans l'arbre et des modes de lecture de leurs groupes ancetres.
 - `isBypassed` permet de contourner un clip sans le retirer de son groupe. Cet etat est sauvegarde et reste independant de `repeatCount`.
 - `repeatCount` indique le nombre total de lectures du clip. Il accepte un entier strictement positif ou `infinite` ; chaque repetition recommence au tick `0` avec les chronologies locales du clip.
@@ -81,7 +85,9 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Le domaine definit la representation publique minimale `Instrument` ainsi que son `InstrumentId`. Les notes ne sauvegardent que cet identifiant.
 - Le catalogue et le moteur audio appartiennent a l'infrastructure. Les patchs, les politiques d'allocation des voix et les autres details techniques restent dans `InstrumentDefinition`.
 - Chaque lecture d'une note produit une occurrence sonore distincte. Son identite d'execution permet de relacher cette voix sans interrompre les autres notes utilisant le meme instrument et la meme hauteur.
-- Une operation globale de lecture est identifiee par un `PlaybackSessionId` et qualifiee par un `PlaybackSessionKind` : `PROJECT`, `CLIP_PREVIEW`, `NOTE_PREVIEW` ou `OFFLINE_RENDER`.
+- Une operation globale de lecture est identifiee par un `PlaybackSessionId` et qualifiee par un `PlaybackSessionKind` : `PROJECT`, `GROUP_PREVIEW`, `CLIP_PREVIEW`, `NOTE_PREVIEW` ou `OFFLINE_RENDER`.
+- Une session `PROJECT` provient de `play(fromItemId?)` : l'identifiant optionnel modifie son point de depart, mais pas sa racine structurelle, qui reste le projet.
+- Une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` provient de `preview(itemId)` et reste bornee au groupe ou au clip cible.
 - Chaque unite de lecture audio isolee possede un descripteur strict `PlaybackContextDescriptor`. Une source `CLIP` porte obligatoirement un `ClipPlaybackId` et un `ClipId` ; une source `NOTE_PREVIEW` porte obligatoirement un `NotePreviewPlaybackId` et un `InstrumentId`.
 - Un `ClipPlaybackId` identifie une activation transitoire d'un clip et reste distinct du `ClipId` persistant. Deux activations du meme clip ne partagent donc jamais leurs instances audio.
 - Pour chaque `InstrumentId` effectivement utilise dans un contexte de clip, l'infrastructure cree une `InstrumentInstance` exclusive a partir de l'`InstrumentDefinition` partagee.
@@ -620,6 +626,11 @@ Le service de lecture fait le lien entre la composition et l'infrastructure audi
 
 Responsabilites :
 
+- exposer `play(fromItemId?)` pour la lecture structurelle du projet et `preview(itemId)` pour l'audition bornee d'un element ;
+- faire de `play()` et de `play(rootGroup.id)` deux expressions equivalentes d'une lecture depuis le debut du projet ;
+- valider qu'un `fromItemId` est un point d'entree structurel : un enfant d'un groupe sequentiel peut l'etre, tandis qu'un enfant isole d'un groupe simultane ne le peut pas ;
+- poursuivre, apres la fin du point de depart, vers les freres suivants et les groupes sequentiels englobants jusqu'a la fin du projet ;
+- arreter une preecoute a la fin structurelle du `Clip` ou du `Group` cible sans remonter vers son parent ;
 - parcourir recursivement l'arbre a partir du `rootGroup` ;
 - planifier successivement les enfants d'un groupe `SEQUENTIAL` ;
 - donner le meme instant de depart aux enfants d'un groupe `SIMULTANEOUS` ;
@@ -639,6 +650,15 @@ Responsabilites :
 - distinguer la fin structurelle d'un clip de la fin audible de ses releases et de ses effets ;
 - annuler les commandes futures d'un contexte lors d'un bypass dynamique ou d'un arret ;
 - planifier les repetitions infinies dans une fenetre d'anticipation bornee.
+
+L'interface applicative peut etre conceptualisee ainsi :
+
+```ts
+play(fromItemId?: GroupId | ClipId): PlaybackSessionId;
+preview(itemId: GroupId | ClipId): PlaybackSessionId;
+```
+
+`play` ouvre toujours une session `PROJECT`. Le `fromItemId` est un curseur initial conserve par le `PlaybackService` ; il ne transforme pas l'element en racine de preecoute et n'a pas a traverser le port `AudioEngine`. `preview` ouvre une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` selon le type de l'element cible. La racine de cette preecoute constitue une frontiere : le planificateur peut parcourir tout son sous-arbre, mais ne peut pas atteindre ses freres ni ses ancetres.
 
 Le parcours peut etre conceptualise par une operation recursive de calcul `calculateDuration(item): duration`, puis par une planification glissante des evenements. Une operation qui tenterait de programmer immediatement tout l'arbre ne pourrait pas traiter un `repeatCount` infini.
 
@@ -670,6 +690,7 @@ Modeles d'echange possibles, declares avec le port :
 ```ts
 type PlaybackSessionKind =
   | "PROJECT"
+  | "GROUP_PREVIEW"
   | "CLIP_PREVIEW"
   | "NOTE_PREVIEW"
   | "OFFLINE_RENDER";
@@ -734,6 +755,10 @@ Ce registre n'implemente pas un besoin de la couche applicative et ne constitue 
 
 Represente l'etat transitoire d'une operation globale de lecture. Une session regroupe les contextes crees pour une lecture du projet, une preecoute ou un rendu hors ligne et permet leur arret collectif.
 
+Une session `PROJECT` est ouverte par `play(fromItemId?)`. Sans point de depart, le `PlaybackService` commence au debut du `rootGroup`. Avec un point de depart valide, il rejoint cet element dans l'arbre puis poursuit la lecture vers les noeuds suivants jusqu'a la fin du projet. Le curseur initial appartient a l'orchestration applicative et n'ajoute aucun etat persistant au domaine.
+
+Une session `CLIP_PREVIEW` est bornee au clip cible. Une session `GROUP_PREVIEW` est bornee au groupe cible et peut contenir plusieurs contextes de clips, ordonnes ou superposes selon les modes du sous-arbre. Lorsque cette racine atteint sa fin structurelle, aucune des deux preecoutes ne poursuit vers un frere ou un ancetre. Les contextes audio peuvent toutefois rester en `DRAINING` jusqu'a l'extinction de leurs releases et de leurs tails.
+
 ### PlaybackContext
 
 Represente une unite de lecture audio isolee dans une session. Il est construit a partir d'un `PlaybackContextDescriptor` strict et possede notamment :
@@ -746,7 +771,7 @@ Represente une unite de lecture audio isolee dans une session. Il est construit 
 
 Un contexte de type `CLIP` correspond a une seule activation du clip. Un contexte de type `NOTE_PREVIEW` ne pretend pas provenir d'un clip et ne contient donc aucun `ClipId` optionnel.
 
-Les groupes ne possedent pas de contexte audio dans le premier perimetre : ils organisent la lecture sans gain, bus ni effet propre. Un tel contexte ne deviendrait pertinent que si les groupes acqueraient plus tard un comportement audio.
+Les groupes ne possedent pas de contexte audio dans le premier perimetre : ils organisent la lecture sans gain, bus ni effet propre. Une session `GROUP_PREVIEW` contient donc les `PlaybackContext` des clips effectivement actives dans son sous-arbre, et non un `PlaybackContext` du groupe. Un tel contexte de groupe ne deviendrait pertinent que si les groupes acqueraient plus tard un comportement audio.
 
 ### InstrumentInstance
 
@@ -881,6 +906,8 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
+| `PlaybackService.play(fromItemId?)` | `Project.rootGroup` et `GroupItem` | Le service commence au debut du projet ou a un point d'entree valide, puis poursuit le parcours structurel. |
+| `PlaybackService.preview(itemId)` | `GroupItem` | Le service borne la lecture au clip ou au groupe cible sans atteindre les noeuds exterieurs. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes et des identites d'execution a travers un port abstrait. |
 | `PlaybackSession` | `PlaybackContext` | Une operation globale de lecture possede plusieurs unites audio isolees. |
 | `PlaybackContextDescriptor.CLIP.clipId` | `ClipId` | Le descripteur relie une activation transitoire a sa source persistante sans confondre leurs identites. |
