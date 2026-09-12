@@ -24,6 +24,12 @@ flowchart TD
     ModularInstrument --> ModularPatch
 ```
 
+## Decisions actees
+
+- Une `Track` est une ligne d'arrangement. Elle contient des clips et peut referencer un instrument, mais elle ne se confond ni avec une voix musicale ni avec un instrument audio.
+- Le temps du domaine est pense comme un espace continu. L'utilisateur pourra toutefois placer, deplacer et redimensionner des evenements a l'aide d'une grille quantifiee.
+- La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans obliger le modele musical a devenir une grille rigide.
+
 ## Domaine d'arrangement
 
 Le domaine d'arrangement decrit la structure musicale du projet dans le temps. Il repond a des questions comme :
@@ -79,7 +85,7 @@ Responsabilites :
 
 ### Track
 
-Represente une ligne musicale dans l'arrangement.
+Represente une ligne d'arrangement dans laquelle l'utilisateur organise des clips.
 
 Une piste peut etre associee a un instrument, mais elle ne contient pas l'instrument lui-meme. Elle reference l'instrument qui interpretera ses evenements.
 
@@ -96,8 +102,8 @@ Attributs possibles :
 Responsabilites :
 
 - contenir des clips ;
-- porter les reglages d'arrangement propres a une ligne musicale ;
-- faire le lien entre des intentions musicales et un instrument audio.
+- porter les reglages d'arrangement propres a une ligne temporelle ;
+- faire le lien entre des intentions musicales et un instrument audio sans fusionner avec lui.
 
 ### Clip
 
@@ -322,18 +328,19 @@ Regles possibles :
 
 ### TimePosition
 
-Represente une position dans le temps musical.
+Represente une position dans le temps musical continu.
 
 Attributs possibles :
 
-- `tick`
-- `beat`
-- `measure`
+- `ticks`
+- `beats`
+- `seconds`
 
 Responsabilites :
 
-- positionner un evenement sur la grille ;
-- permettre les conversions entre ticks, temps et mesures.
+- positionner un evenement dans le temps musical ;
+- permettre les conversions entre temps musical et temps reel ;
+- accepter des valeurs non quantifiees lorsque l'edition ou l'import le necessite.
 
 ### Duration
 
@@ -343,11 +350,13 @@ Attributs possibles :
 
 - `ticks`
 - `beats`
+- `seconds`
 
 Regles possibles :
 
 - une duree doit etre strictement positive ;
-- une duree peut etre quantifiee selon la resolution de la grille.
+- une duree peut etre libre dans le domaine ;
+- une duree peut etre quantifiee lors d'une operation d'edition.
 
 ### TimeRange
 
@@ -407,12 +416,12 @@ Exemples :
 
 Responsabilites :
 
-- organiser la grille en mesures ;
+- organiser les reperes en mesures ;
 - influencer l'affichage et les reperes visuels.
 
 ### GridResolution
 
-Represente la precision d'edition de la grille.
+Represente la precision de la grille utilisee pendant l'edition.
 
 Attributs possibles :
 
@@ -421,8 +430,9 @@ Attributs possibles :
 
 Responsabilites :
 
-- definir les pas de quantification ;
-- controler la finesse du placement et du redimensionnement.
+- definir les pas de quantification proposes a l'utilisateur ;
+- controler la finesse du placement et du redimensionnement pendant l'edition ;
+- convertir un geste utilisateur vers une position ou une duree quantifiee.
 
 ### Loop
 
@@ -500,7 +510,7 @@ Le couplage entre arrangement et audio doit rester minimal.
 | --- | --- | --- |
 | `Track.instrumentId` | `ModularInstrument.id` | Une piste choisit l'instrument qui interprete ses clips. |
 | `NoteEvent` | `ModularInstrument` | Une note declenche l'instrument pendant la lecture. |
-| `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre exposé par un instrument. |
+| `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre expose par un instrument. |
 | `Project` | `Arrangement` et `AudioSystem` | Le projet coordonne les deux sous-domaines. |
 
 ## Premiers agregats possibles
@@ -523,6 +533,7 @@ Il contient :
 Regles possibles :
 
 - une piste appartient a un seul arrangement ;
+- une piste est une ligne d'arrangement, pas un instrument ;
 - un clip appartient a une seule piste ;
 - les clips peuvent se chevaucher ou non selon le choix d'edition ;
 - les positions des clips sont exprimees dans le temps global du projet.
@@ -536,6 +547,8 @@ Regles possibles :
 - un evenement appartient a un seul clip ;
 - les evenements sont positionnes relativement au debut du clip ;
 - les notes peuvent etre triees par position ;
+- les positions et durees peuvent rester continues dans le modele ;
+- la quantification est appliquee par les operations d'edition quand l'utilisateur active ou utilise la grille ;
 - selon le choix musical, on peut autoriser ou interdire les chevauchements sur une meme hauteur.
 
 ### ModularInstrument comme aggregate
@@ -549,15 +562,14 @@ Regles possibles :
 - un patch doit posseder une sortie audio valide ;
 - les parametres exposes doivent avoir des identifiants stables.
 
-## Questions a trancher
+## Questions ouvertes
 
 - Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
 - Une `NoteEvent` doit-elle etre une entity, ou un value object contenu dans un clip ?
-- Les pistes representent-elles des voix musicales, des instruments, ou seulement des lignes d'arrangement ?
-- Les clips doivent-ils etre uniquement MIDI, ou peuvent-ils contenir d'autres types d'evenements ?
-- Faut-il penser le piano roll comme une grille fixe, ou comme un espace temporel continu avec quantification optionnelle ?
+- Les clips doivent-ils etre uniquement des conteneurs de notes, ou peuvent-ils contenir d'autres types d'evenements comme des automations et des controles ?
 - La selection appartient-elle vraiment au domaine, ou plutot a l'etat applicatif de l'editeur ?
 - Le domaine audio doit-il modeliser seulement la definition des instruments, ou aussi leur etat d'execution pendant la lecture ?
+- Comment representer proprement les parametres exposes par un instrument modulaire pour que l'arrangement puisse les automatiser sans connaitre le patch en detail ?
 
 ## Intuition de depart
 
