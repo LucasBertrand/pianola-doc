@@ -307,16 +307,14 @@ Responsabilites :
 
 #### Velocity
 
-Represente l'intensite d'une note.
-
-Attributs possibles :
-
-- `value`
+Represente l'intensite d'une note sous la forme d'une valeur numerique.
 
 Regles possibles :
 
-- valeur comprise entre 0 et 127 si l'on suit le modele MIDI ;
+- valeur entiere comprise entre 0 et 127 si l'on suit le modele MIDI ;
 - valeur par defaut possible : 100.
+
+`Velocity` ne possede actuellement ni cycle de vie ni usage independant de `Note`. Le type et ses regles sont donc declares directement dans `composition/Note.ts`, qui garantit leur validite. Un fichier autonome ne sera introduit que si ce concept acquiert plus tard des comportements ou des usages propres.
 
 #### Tempo
 
@@ -730,8 +728,7 @@ src/
 │   │   ├── PitchContext.ts
 │   │   ├── PitchContextChange.ts
 │   │   └── PitchSection.ts
-│   ├── InstrumentId.ts
-│   └── Velocity.ts
+│   └── InstrumentId.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
@@ -767,7 +764,7 @@ Le domaine est maintenant organise par concepts metier coherents plutot que par 
 
 Les dependances doivent principalement partir de `composition/` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants de `composition/` : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
-`InstrumentId` et `Velocity` restent provisoirement a la racine de `domain/`. Des sous-dossiers ne seront crees pour eux que lorsqu'un ensemble de concepts suffisamment coherent apparaitra.
+`InstrumentId` reste provisoirement a la racine de `domain/`, car il est partage par la composition, les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `composition/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
