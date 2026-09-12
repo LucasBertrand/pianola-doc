@@ -45,16 +45,17 @@ flowchart LR
 - Le `Project` organise directement une sequence ordonnee de clips.
 - Les clips sont necessairement consecutifs : ils ne possedent pas de position dans une timeline globale et leur ordre determine l'ordre de lecture.
 - Un clip peut etre contourne pendant la lecture. Cet etat est conserve dans le clip afin que la sauvegarde preserve la structure courante de la sequence.
+- Chaque clip possede un `repeatCount`, independant du bypass, qui indique son nombre total de lectures. Sa valeur est un entier strictement positif ou `infinite`.
 - Chaque `Clip` porte ses propres chronologies locales de tempo, de metrique et de contexte de hauteurs, positionnees en ticks.
 - Les chronologies de tempo et de metrique possedent obligatoirement un changement initial au tick `0` ; ils remplacent les anciennes proprietes scalaires `tempo` et `meter` du clip.
 - Un changement de tempo peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; il peut ensuite fermer une mesure devenue incomplete si la metrique precedente est modifiee sans deplacer le marqueur.
 - Les `TempoSection`, `MeterSection` et `PitchSection` ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de leur chronologie respective, ou entre le dernier changement et la fin du clip.
 - Modifier une metrique propose deux intentions explicites : conserver la duree en ticks ou conserver le nombre de mesures.
 - Par defaut, un clip vide conserve son nombre de mesures ; une section contenant deja des notes ou suivie d'autres sections conserve sa duree.
-- Un `Clip` contient uniquement des `NoteEvent` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo, de metrique et de contexte de hauteurs sont des donnees structurelles, et non des automations ou des evenements de controle.
+- Un `Clip` contient uniquement des `Note` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo, de metrique et de contexte de hauteurs sont des donnees structurelles, et non des automations ou des evenements de controle.
 - Le contexte de hauteurs est descriptif : il permet de mettre en evidence les notes qui appartiennent a un ensemble de hauteurs, sans interdire les notes exterieures.
-- Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
-- Chaque `NoteEvent` reference l'instrument qui doit l'interpreter au moyen d'un `InstrumentId`. Un meme clip peut donc contenir plusieurs instruments.
+- Une `Note` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
+- Chaque `Note` reference l'instrument qui doit l'interpreter au moyen d'un `InstrumentId`. Un meme clip peut donc contenir plusieurs instruments.
 - Le temps musical canonique est represente par des ticks entiers, avec une resolution fixe de 960 ticks par noire.
 - Les positions des notes sont locales au clip et restent libres a l'echelle de ces ticks : une position n'a pas besoin d'etre alignee sur la grille visible.
 - La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans transformer le modele musical en grille rigide.
@@ -111,7 +112,7 @@ Le projet ne porte ni tempo ni metrique globaux : ces proprietes appartiennent a
 
 #### Clip
 
-Represente une section musicale editable, copiable, reordonnable et potentiellement bouclable.
+Represente une section musicale editable, copiable, reordonnable et repetable.
 
 Un clip ne possede pas de position globale. Il commence lorsque le clip precedent se termine, sauf s'il est contourne pendant la lecture.
 
@@ -121,7 +122,7 @@ Attributs possibles :
 - `name`
 - `duration`
 - `isBypassed`
-- `loop`
+- `repeatCount`
 - `notes`
 - `tempoChanges`
 - `meterChanges`
@@ -133,15 +134,15 @@ Responsabilites :
 - definir sa duree canonique en ticks ;
 - contenir et ordonner les changements locaux de tempo, de metrique et de contexte de hauteurs ;
 - fournir le contexte musical actif a n'importe quelle position ;
-- conserver son etat de bypass dans la sauvegarde ;
+- conserver son etat de bypass et son nombre de lectures dans la sauvegarde ;
 - permettre l'edition locale d'un motif, d'une phrase ou d'une section musicale ;
 - permettre a plusieurs instruments de coexister dans une meme section par l'intermediaire des notes.
 
-#### NoteEvent
+#### Note
 
 Represente une note placee dans un clip et associee a un instrument. Elle possede une identite propre afin de conserver sa continuite lorsqu'elle est deplacee, redimensionnee, transposee ou modifiee.
 
-Une `NoteEvent` n'est pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression.
+Une `Note` n'est pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression. Le nom `Note` est retenu parce que cet objet occupe un intervalle musical ; les evenements instantanes `NoteOn` et `NoteOff` seront produits plus tard par le service de lecture.
 
 Attributs possibles :
 
@@ -159,6 +160,18 @@ Responsabilites :
 - porter des parametres d'interpretation simples ;
 - identifier l'instrument charge de l'interpreter ;
 - conserver son identite au fil de ses modifications.
+
+Regles possibles :
+
+- la position de debut est positive ou nulle ;
+- la duree est strictement positive ;
+- la note doit se terminer au plus tard a la fin du clip ;
+- la hauteur et la velocite doivent rester dans leurs plages valides ;
+- un `InstrumentId` est toujours present ;
+- modifier une note conserve son identite, tandis que la copier ou la dupliquer en cree une nouvelle ;
+- modifier le tempo ou la metrique ne deplace pas la note : sa position et sa duree restent exprimees dans les ticks canoniques du clip ;
+- l'appartenance au `PitchContext` actif est calculee a partir de la position de debut et n'est pas stockee dans la note ;
+- une note exterieure au contexte de hauteurs actif reste valide.
 
 #### TempoChange
 
@@ -267,7 +280,7 @@ Comme pour `TimePosition`, les battements et les secondes sont derives de la val
 
 #### InstrumentId
 
-Represente l'identifiant stable et opaque de l'instrument associe a une `NoteEvent`.
+Represente l'identifiant stable et opaque de l'instrument associe a une `Note`.
 
 Responsabilites :
 
@@ -400,7 +413,7 @@ Responsabilites :
 - permettre a l'editeur de mettre visuellement en evidence les hauteurs interieures et exterieures ;
 - representer indifferemment une gamme, un mode, un accord ou un ensemble arbitraire de classes de hauteurs.
 
-Le contexte ne valide ni ne refuse les notes. Une note exterieure reste une `NoteEvent` parfaitement valide.
+Le contexte ne valide ni ne refuse les notes. Une note exterieure reste une `Note` parfaitement valide.
 
 #### PitchSection
 
@@ -413,20 +426,6 @@ Attributs derives possibles :
 - `context`
 
 La section n'est pas sauvegardee comme un objet autonome. Elle sert a retrouver le contexte de hauteurs actif pour une note ou une position donnee.
-
-#### Loop
-
-Represente le comportement de repetition d'un clip.
-
-Attributs possibles :
-
-- `enabled`
-- `length`
-
-Responsabilites :
-
-- definir si un clip boucle ;
-- distinguer la duree visible du clip et la duree du motif repete.
 
 ### Agregats
 
@@ -446,8 +445,10 @@ Regles possibles :
 - les clips sont consecutifs et ne possedent pas de position temporelle globale ;
 - reordonner un clip modifie la structure de la sequence ;
 - un clip contourne reste present a sa place dans la sequence et son etat est sauvegarde ;
-- pendant la lecture, un clip contourne est ignore et le clip suivant commence immediatement ;
-- chaque clip recommence avec ses changements initiaux de tempo et de metrique au tick `0`.
+- pendant la lecture, un clip contourne est ignore et le clip suivant commence immediatement, quel que soit son `repeatCount` ;
+- un `repeatCount` fini indique le nombre total de lectures du clip avant de passer au suivant ;
+- un `repeatCount` egal a `infinite` repete le clip jusqu'a l'arret ou au deplacement manuel de la lecture et rend les clips suivants inaccessibles par progression automatique ;
+- chaque repetition recommence au tick `0` avec les changements initiaux de tempo, de metrique et de contexte de hauteurs du clip.
 
 #### Clip comme aggregate secondaire
 
@@ -461,6 +462,8 @@ Regles possibles :
 - les notes sont positionnees relativement au debut du clip ;
 - une note reference exactement un instrument ;
 - plusieurs notes d'un meme clip peuvent referencer des instruments differents ;
+- `repeatCount` vaut par defaut `1` ; une valeur finie est un entier strictement positif et `infinite` represente une repetition sans fin ;
+- `isBypassed` reste independant de `repeatCount`, afin de pouvoir contourner puis reactiver un clip sans perdre son nombre de lectures ;
 - les positions et durees peuvent rester continues dans le modele ;
 - les changements de tempo, de metrique et de contexte de hauteurs sont ordonnes par position ;
 - les chronologies de tempo et de metrique contiennent exactement un changement initial au tick `0` ;
@@ -531,7 +534,7 @@ Exemples :
 - ajouter, deplacer ou supprimer un changement de tempo, de metrique ou de contexte de hauteurs ;
 - modifier une metrique en indiquant explicitement s'il faut conserver la duree ou le nombre de mesures ;
 - associer un contexte de hauteurs a une partie du clip sans contraindre les notes ;
-- reordonner ou bypasser un clip ;
+- reordonner un clip, modifier son `repeatCount` ou son etat de bypass ;
 - transposer plusieurs notes ;
 - associer un instrument disponible a une ou plusieurs notes.
 
@@ -551,7 +554,9 @@ Le service de lecture fait le lien entre la composition et l'infrastructure audi
 Responsabilites :
 
 - parcourir la sequence de clips dans son ordre ;
-- ignorer les clips contournes ;
+- ignorer les clips contournes sans modifier leur `repeatCount` ;
+- repeter chaque clip selon son `repeatCount` avant de poursuivre la sequence ;
+- recommencer les chronologies locales au tick `0` a chaque repetition ;
 - construire les `TempoSection` de chaque clip ;
 - convertir chaque section de temps musical en temps reel selon son tempo ;
 - transformer les notes en commandes audio ;
@@ -688,7 +693,7 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
 | `Project.clips` | `Clip` | Le projet conserve l'ordre persistant des sections musicales. |
-| `NoteEvent.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
+| `Note.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchSection` utilisees pour analyser visuellement les notes. |
@@ -709,8 +714,7 @@ src/
 │   ├── composition/
 │   │   ├── Project.ts
 │   │   ├── Clip.ts
-│   │   ├── NoteEvent.ts
-│   │   └── Loop.ts
+│   │   └── Note.ts
 │   ├── time/
 │   │   ├── TimePosition.ts
 │   │   ├── Duration.ts
@@ -775,7 +779,7 @@ Aucune pour le moment.
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets du domaine de composition comme `Project`, `Clip`, `NoteEvent`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Project`, `Clip`, `Note`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
