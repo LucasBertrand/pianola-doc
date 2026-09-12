@@ -1,38 +1,59 @@
 # Domaines
 
-Ce document recense les premiers objets fondamentaux du domaine pour une application de piano roll avec instruments modulaires.
+Ce document recense les premiers objets fondamentaux de Pianola, une application de piano roll avec instruments modulaires.
 
-L'objectif est de poser un vocabulaire metier stable avant de penser interface, stockage, Web Audio API ou implementation React.
+L'objectif est de poser un vocabulaire metier stable et de rendre visibles les frontieres architecturales avant de penser stockage, Web Audio API ou implementation React.
+
+## Navigation
+
+- [Vision generale](#vision-generale)
+- [Decisions actees](#decisions-actees)
+- [Domaine d'arrangement](#domaine-darrangement)
+  - [Entities](#entities)
+  - [Value Objects de l'arrangement](#value-objects-de-larrangement)
+  - [Agregats](#agregats)
+- [Etat applicatif de l'editeur](#etat-applicatif-de-lediteur)
+- [Couche applicative et lecture](#couche-applicative-et-lecture)
+- [Infrastructure audio](#infrastructure-audio)
+- [Contrats entre les couches](#contrats-entre-les-couches)
+- [Relations architecturales](#relations-architecturales)
+- [Arborescence cible](#arborescence-cible)
+- [Questions ouvertes](#questions-ouvertes)
+- [Principes directeurs](#principes-directeurs)
 
 ## Vision generale
 
-L'application est centree sur un domaine de composition qui decrit l'organisation musicale dans le temps.
+L'application est centree sur un domaine d'arrangement qui decrit l'organisation musicale dans le temps.
 
-Les moyens necessaires a l'ecoute sont places autour de ce domaine :
+Le projet exprime des intentions musicales sous forme de pistes, clips et evenements. Il ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
 
-- un catalogue d'instruments en lecture seule, defini dans le code avant la compilation ;
-- un service de lecture qui interprete l'arrangement ;
-- un moteur audio qui instancie les instruments et produit le son.
+Les moyens necessaires a l'ecoute sont places autour du domaine :
 
-Le projet exprime des intentions musicales sous forme de pistes, clips et evenements. Il ne contient ni les patchs des instruments ni l'etat d'execution du moteur audio.
+- une couche applicative qui interprete l'arrangement ;
+- des ports qui definissent ce dont l'application a besoin pour produire du son ;
+- une infrastructure audio qui contient le catalogue d'instruments integre, leurs patchs et le moteur audio.
 
 ```mermaid
 flowchart LR
-    Composition["Domaine de composition"] --> Playback["Service de lecture"]
-    Catalog["Catalogue d'instruments"] --> Playback
-    Playback --> Engine["Moteur audio"]
+    Domain["Domaine d'arrangement"] --> App["Application et lecture"]
+    Editor["Etat de l'editeur"] --> App
+    App --> Ports["Ports audio"]
+    Ports --> Infra["Infrastructure audio"]
 ```
 
 ## Decisions actees
 
 - Un `Arrangement` est l'ensemble ordonne des pistes du projet.
 - Une `Track` est un conteneur de clips ordonnes dans le temps, lie a un instrument arbitraire par son identifiant.
-- Le temps du domaine est pense comme un espace continu. L'utilisateur pourra toutefois placer, deplacer et redimensionner des evenements a l'aide d'une grille quantifiee (la quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans obliger le modele musical a devenir une grille rigide).
-
+- Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
+- Le temps du domaine est pense comme un espace continu.
+- La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans transformer le modele musical en grille rigide.
+- La selection appartient a l'etat applicatif de l'editeur. Elle reference temporairement des objets du domaine sans faire partie de la composition.
 - L'application est destinee a l'ecriture et au processus initial de composition, pas a la production audio.
 - Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour une piste, mais ne peut ni creer ni modifier son patch.
+- Le catalogue d'instruments fait partie de l'infrastructure audio.
 - Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
-- La selection appartient a l'etat applicatif de l'editeur. Elle reference temporairement des objets du domaine par leurs identifiants, sans faire partie de la composition.
+- Le domaine ne connait l'audio qu'a travers des identifiants stables et des contrats minimaux.
 
 ## Domaine d'arrangement
 
@@ -43,13 +64,13 @@ Le domaine d'arrangement decrit la structure musicale du projet dans le temps. I
 - quels evenements musicaux existent dans un clip ?
 - a quel moment ces evenements doivent-ils etre joues ?
 
-Il reste independant de la maniere dont le son est produit.
+Il reste independant de la maniere dont le son est produit et de la maniere dont l'utilisateur manipule visuellement les objets.
 
 ### Entities
 
 Une entity possede une identite propre. Elle peut changer au cours du temps tout en restant le meme objet du point de vue du domaine.
 
-### Project
+#### Project
 
 Represente le document musical complet ouvert dans l'application.
 
@@ -69,7 +90,7 @@ Responsabilites :
 - contenir l'arrangement et les donnees propres a la composition ;
 - porter les reglages globaux du morceau.
 
-### Arrangement
+#### Arrangement
 
 Represente l'organisation musicale globale du projet.
 
@@ -78,7 +99,6 @@ Attributs possibles :
 - `id`
 - `tracks`
 - `length`
-- `gridResolution`
 
 Responsabilites :
 
@@ -86,11 +106,13 @@ Responsabilites :
 - definir la duree globale editable ;
 - fournir le cadre temporel commun aux clips.
 
-### Track
+La resolution de la grille n'appartient pas a l'arrangement : elle releve de l'etat de l'editeur.
+
+#### Track
 
 Represente un conteneur de clips ordonnes dans le temps.
 
-Une piste peut etre associee a un instrument, mais elle ne contient pas l'instrument lui-meme. Elle reference l'instrument qui interpretera ses evenements.
+Une piste est associee a un instrument par un `InstrumentId`, mais elle ne contient ni sa definition ni son patch.
 
 Attributs possibles :
 
@@ -106,9 +128,9 @@ Responsabilites :
 
 - contenir et ordonner des clips selon leur position temporelle ;
 - porter les reglages propres a la piste ;
-- faire le lien entre des intentions musicales et un instrument audio sans fusionner avec lui.
+- relier des intentions musicales a un instrument sans dependre de son implementation audio.
 
-### Clip
+#### Clip
 
 Represente une unite musicale editable, deplacable, copiable et potentiellement bouclable.
 
@@ -126,11 +148,9 @@ Responsabilites :
 - definir une region temporelle sur une piste ;
 - permettre l'edition locale d'un motif, d'une phrase ou d'une cellule musicale.
 
-### MusicalEvent
+#### MusicalEvent
 
-Represente un evenement musical abstrait contenu dans un clip.
-
-`MusicalEvent` peut etre pense comme une famille d'evenements plus specialises.
+Represente une famille abstraite d'evenements musicaux contenus dans un clip.
 
 Types possibles :
 
@@ -142,13 +162,13 @@ Responsabilites :
 
 - decrire ce qui doit arriver musicalement ;
 - rester independant du moteur audio ;
-- etre interpretable par un instrument ou par le systeme de lecture.
+- etre interpretable par le systeme de lecture.
 
-### NoteEvent
+#### NoteEvent
 
 Represente une note placee dans un clip. Elle possede une identite propre afin de conserver sa continuite lorsqu'elle est deplacee, redimensionnee, transposee ou modifiee.
 
-Une `NoteEvent` n'est toutefois pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression.
+Une `NoteEvent` n'est pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression.
 
 Attributs possibles :
 
@@ -163,9 +183,9 @@ Responsabilites :
 - definir une position temporelle relative au clip ;
 - definir une duree ;
 - porter des parametres d'interpretation simples ;
-- conserver son identite lors d'un deplacement, d'un redimensionnement ou d'une transposition.
+- conserver son identite au fil de ses modifications.
 
-### AutomationEvent
+#### AutomationEvent
 
 Represente une variation de parametre dans le temps.
 
@@ -180,16 +200,184 @@ Attributs possibles :
 Responsabilites :
 
 - exprimer une modulation composee ou dessinee ;
-- permettre au domaine d'arrangement d'agir sur des parametres audio sans connaitre leur implementation ;
+- cibler un parametre expose sans connaitre son implementation audio ;
 - decrire des changements reproductibles dans le temps musical.
+
+### Value Objects de l'arrangement
+
+Un Value Object ne possede pas d'identite propre. Il est defini par ses valeurs et appartient a un contexte precis, plutot qu'a une categorie transversale commune a toute l'application.
+
+#### Pitch
+
+Represente une hauteur musicale.
+
+Attributs possibles :
+
+- `midiNumber`
+- `name`
+- `octave`
+
+Regles possibles :
+
+- le numero MIDI doit rester dans une plage valide ;
+- le nom et l'octave peuvent etre derives du numero MIDI.
+
+#### TimePosition
+
+Represente une position dans le temps musical continu.
+
+Representations possibles :
+
+- `beats`
+- `ticks`
+
+Responsabilites :
+
+- positionner un evenement dans le temps musical ;
+- accepter des valeurs non alignees sur la grille d'edition ;
+- rester independant du temps reel.
+
+Les secondes ne sont pas stockees dans ce Value Object. Elles sont calculees par le service de lecture a partir du tempo.
+
+#### Duration
+
+Represente une duree musicale.
+
+Representations possibles :
+
+- `beats`
+- `ticks`
+
+Regles possibles :
+
+- une duree doit etre strictement positive ;
+- une duree peut rester libre dans le domaine ;
+- une duree peut etre quantifiee par une operation d'edition.
+
+Comme pour `TimePosition`, la duree en secondes est derivee lors de la lecture.
+
+#### TimeRange
+
+Represente un intervalle musical entre un debut et une duree.
+
+Attributs possibles :
+
+- `start`
+- `duration`
+
+Responsabilites :
+
+- decrire l'emplacement temporel d'un clip ou d'un evenement ;
+- detecter les chevauchements ;
+- faciliter les operations de deplacement et de redimensionnement.
+
+#### Velocity
+
+Represente l'intensite d'une note.
+
+Attributs possibles :
+
+- `value`
+
+Regles possibles :
+
+- valeur comprise entre 0 et 127 si l'on suit le modele MIDI ;
+- valeur par defaut possible : 100.
+
+#### Tempo
+
+Represente la vitesse globale du projet.
+
+Attributs possibles :
+
+- `bpm`
+
+Regles possibles :
+
+- le BPM doit rester dans une plage musicalement exploitable ;
+- le tempo permet au service de lecture de convertir le temps musical en temps reel.
+
+#### TimeSignature
+
+Represente la mesure musicale.
+
+Attributs possibles :
+
+- `beatsPerMeasure`
+- `beatUnit`
+
+Exemples :
+
+- 4/4
+- 3/4
+- 6/8
+
+Responsabilites :
+
+- organiser les reperes en mesures ;
+- influencer les reperes temporels proposes par l'editeur.
+
+#### Loop
+
+Represente le comportement de repetition d'un clip.
+
+Attributs possibles :
+
+- `enabled`
+- `length`
+
+Responsabilites :
+
+- definir si un clip boucle ;
+- distinguer la duree visible du clip et la duree du motif repete.
+
+### Agregats
+
+#### Project comme aggregate root
+
+`Project` peut etre considere comme la racine principale. Il garantit la coherence globale du document musical.
+
+Il contient :
+
+- un `Arrangement` ;
+- des reglages globaux comme `Tempo` et `TimeSignature` ;
+- des informations de sauvegarde.
+
+#### Arrangement comme aggregate
+
+`Arrangement` garantit la coherence temporelle des pistes et des clips.
+
+Regles possibles :
+
+- une piste appartient a un seul arrangement ;
+- l'arrangement definit l'ordre de ses pistes ;
+- une piste ordonne ses clips selon leur position temporelle ;
+- une piste reference un instrument arbitraire sans le contenir ;
+- un clip appartient a une seule piste ;
+- les clips peuvent se chevaucher ou non selon le choix d'edition ;
+- les positions des clips sont exprimees dans le temps global du projet.
+
+#### Clip comme aggregate secondaire
+
+`Clip` garantit la coherence de ses propres evenements.
+
+Regles possibles :
+
+- un evenement appartient a un seul clip et ne possede pas de cycle de vie autonome ;
+- une note modifiee conserve son identite ;
+- une note copiee ou dupliquee recoit une nouvelle identite ;
+- les evenements sont positionnes relativement au debut du clip ;
+- les positions et durees peuvent rester continues dans le modele ;
+- la quantification est appliquee par les operations d'edition ;
+- selon le choix musical, les chevauchements sur une meme hauteur peuvent etre autorises ou interdits.
 
 ## Etat applicatif de l'editeur
 
-L'etat applicatif de l'editeur decrit le contexte transitoire dans lequel l'utilisateur manipule la composition. Il reste distinct du domaine d'arrangement : sa modification ne change pas, a elle seule, le contenu musical du projet.
+L'etat applicatif de l'editeur decrit le contexte transitoire dans lequel l'utilisateur manipule la composition. Sa modification ne change pas, a elle seule, le contenu musical du projet.
 
 ### Selection
 
-Represente l'ensemble courant des objets selectionnes par l'utilisateur. Elle ne possede pas d'identite propre et n'est ni une entity metier ni un agregat du domaine.
+Represente l'ensemble courant des objets selectionnes. Elle ne possede pas d'identite propre et n'est ni une entity metier ni un agregat du domaine.
 
 Attributs possibles :
 
@@ -198,7 +386,7 @@ Attributs possibles :
 - `selectedEventIds`
 - `selectionAnchor`
 
-Des informations comme `activeTrackId` ou `focusedClipId` peuvent completer cet etat pour distinguer l'objet actif de l'ensemble des objets selectionnes.
+Des informations comme `activeTrackId` ou `focusedClipId` permettent de distinguer l'objet actif de l'ensemble des objets selectionnes.
 
 Responsabilites :
 
@@ -207,19 +395,101 @@ Responsabilites :
 - porter la logique de selection independamment de sa representation graphique ;
 - transmettre aux cas d'usage les identifiants des objets concernes.
 
-Lorsqu'une action est executee, la couche applicative transforme la selection en une commande explicite. Le domaine recoit les identifiants des objets a modifier, puis applique et valide l'operation sans connaitre la notion de selection.
+Lorsqu'une action est executee, la couche applicative transforme la selection en une commande explicite. Le domaine recoit les identifiants des objets a modifier et applique l'operation sans connaitre la notion de selection.
 
-La selection est transitoire et n'est pas sauvegardee comme une donnee de la composition.
+### GridResolution
 
-## Catalogue d'instruments
+Represente la precision de la grille utilisee pendant l'edition.
 
-Le catalogue expose en lecture seule les instruments disponibles dans l'application. Ses definitions sont ecrites dans le code et integrees avant la compilation.
+Attributs possibles :
 
-L'utilisateur peut choisir un instrument pour une piste, mais ne peut ni ajouter un instrument au catalogue ni modifier son patch. Le catalogue n'appartient donc pas au projet sauvegarde.
+- `ticksPerBeat`
+- `snapStep`
+
+Responsabilites :
+
+- definir les pas de quantification proposes a l'utilisateur ;
+- controler la finesse du placement et du redimensionnement ;
+- convertir un geste utilisateur vers une position ou une duree quantifiee.
+
+La selection et la resolution de grille sont des donnees transitoires de l'editeur. Elles ne sont pas sauvegardees comme des donnees musicales du projet. Leur persistance eventuelle relevera des preferences ou de la restauration de session.
+
+## Couche applicative et lecture
+
+La couche applicative orchestre les actions de l'utilisateur et la lecture sans contenir les regles internes du moteur audio.
+
+### Cas d'usage d'edition
+
+Responsabilites :
+
+- traduire les gestes de l'editeur en commandes explicites ;
+- resoudre la selection vers les identifiants des objets concernes ;
+- appliquer si necessaire la quantification avant d'appeler le domaine ;
+- charger et sauvegarder le projet a travers des ports.
+
+Exemples :
+
+- deplacer des notes ;
+- redimensionner un clip ;
+- transposer plusieurs evenements ;
+- associer un instrument disponible a une piste.
+
+### PlaybackService
+
+Le service de lecture fait le lien entre la composition et l'infrastructure audio.
+
+Responsabilites :
+
+- parcourir l'arrangement selon le tempo ;
+- convertir le temps musical en temps reel ;
+- transformer les evenements musicaux en commandes audio ;
+- transmettre ces commandes a un `AudioEngine` abstrait.
+
+### Ports
+
+Les ports decrivent les capacites attendues par l'application sans imposer leur implementation.
+
+#### AudioEngine
+
+Port minimal permettant notamment :
+
+- d'initialiser et d'arreter la lecture ;
+- de planifier des commandes audio ;
+- de controler le cycle de lecture ;
+- de transmettre un `InstrumentId` sans connaitre le patch correspondant.
+
+#### InstrumentCatalog
+
+Port de consultation permettant notamment :
+
+- de lister les instruments disponibles ;
+- d'obtenir leurs descripteurs publics ;
+- de verifier qu'un `InstrumentId` peut etre resolu.
+
+Son implementation concrete appartient a l'infrastructure audio.
+
+## Infrastructure audio
+
+L'infrastructure audio regroupe le catalogue integre, les definitions techniques des instruments et le moteur qui produit le son.
+
+Les instruments et leurs patchs sont ecrits dans le code avant la compilation. Ils ne sont ni editables par l'utilisateur ni sauvegardes dans le projet.
+
+### BuiltInInstrumentCatalog
+
+Implementation concrete du port `InstrumentCatalog`. Il expose en lecture seule les instruments disponibles et resout leurs identifiants stables.
+
+### InstrumentDescriptor
+
+Expose uniquement les informations necessaires a l'application ou a l'interface :
+
+- `id`
+- `name`
+
+Il ne revele pas le patch modulaire.
 
 ### InstrumentDefinition
 
-Represente la definition statique d'un instrument disponible.
+Represente la definition technique complete d'un instrument integre.
 
 Attributs possibles :
 
@@ -230,9 +500,9 @@ Attributs possibles :
 
 Responsabilites :
 
-- fournir un identifiant stable reference par les pistes ;
-- decrire le patch necessaire a l'instanciation de l'instrument ;
-- declarer les parametres que la composition peut eventuellement controler.
+- associer un identifiant stable a une implementation sonore ;
+- fournir le patch necessaire a l'instanciation ;
+- declarer les parametres accessibles a la lecture ou aux automations.
 
 ### ModularPatch
 
@@ -247,12 +517,12 @@ Attributs possibles :
 Responsabilites :
 
 - organiser les modules audio ;
-- garantir la coherence des connexions ;
+- garantir la coherence technique des connexions ;
 - decrire le parcours du signal et des modulations.
 
 ### AudioModule
 
-Represente une definition de module audio ou de controle, comme un `VCO`, une enveloppe, un filtre, un `LFO`, un `VCA`, un mixer ou une sortie.
+Represente la definition d'un module audio ou de controle, comme un `VCO`, une enveloppe, un filtre, un `LFO`, un `VCA`, un mixer ou une sortie.
 
 Attributs possibles :
 
@@ -271,216 +541,9 @@ Attributs possibles :
 - `sourcePort`
 - `targetPort`
 
-Les `ModularPatch`, `AudioModule` et `ModuleConnection` ne sont pas des objets editables par l'utilisateur et ne sont pas sauvegardes dans le projet.
-
-## Lecture et infrastructure audio
-
-### PlaybackService
-
-Le service de lecture fait le lien entre la composition et l'infrastructure audio.
-
-Responsabilites :
-
-- parcourir l'arrangement selon le tempo ;
-- resoudre l'`InstrumentId` associe a chaque piste dans le catalogue ;
-- transformer les evenements musicaux en commandes audio ;
-- transmettre ces commandes au moteur audio.
-
-### AudioEngine
-
-Le moteur audio instancie les definitions d'instruments et produit le son.
-
-Il gere notamment :
-
-- l'execution des patchs modulaires ;
-- la planification temporelle des commandes ;
-- le cycle de vie des voix sonores ;
-- la sortie audio.
-
-Le moteur audio ne fait pas partie du modele metier editable. Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
-
-## Value Objects
-
-Un value object ne possede pas d'identite propre. Il est defini par ses valeurs. Deux value objects ayant les memes valeurs sont equivalents.
-
-### Pitch
-
-Represente une hauteur musicale.
-
-Attributs possibles :
-
-- `midiNumber`
-- `name`
-- `octave`
-
-Exemples :
-
-- C4
-- F#3
-- MIDI 60
-
-Regles possibles :
-
-- le numero MIDI doit rester dans une plage valide ;
-- le nom de note peut etre derive du numero MIDI.
-
-### TimePosition
-
-Represente une position dans le temps musical continu.
-
-Attributs possibles :
-
-- `ticks`
-- `beats`
-- `seconds`
-
-Responsabilites :
-
-- positionner un evenement dans le temps musical ;
-- permettre les conversions entre temps musical et temps reel ;
-- accepter des valeurs non quantifiees lorsque l'edition ou l'import le necessite.
-
-### Duration
-
-Represente une duree musicale.
-
-Attributs possibles :
-
-- `ticks`
-- `beats`
-- `seconds`
-
-Regles possibles :
-
-- une duree doit etre strictement positive ;
-- une duree peut etre libre dans le domaine ;
-- une duree peut etre quantifiee lors d'une operation d'edition.
-
-### TimeRange
-
-Represente un intervalle musical entre un debut et une duree.
-
-Attributs possibles :
-
-- `start`
-- `duration`
-
-Responsabilites :
-
-- decrire l'emplacement temporel d'un clip ou d'un evenement ;
-- detecter les chevauchements ;
-- faciliter les operations de deplacement et de redimensionnement.
-
-### Velocity
-
-Represente l'intensite d'une note.
-
-Attributs possibles :
-
-- `value`
-
-Regles possibles :
-
-- valeur comprise entre 0 et 127 si l'on suit le modele MIDI ;
-- valeur par defaut possible : 100.
-
-### Tempo
-
-Represente la vitesse globale du projet.
-
-Attributs possibles :
-
-- `bpm`
-
-Regles possibles :
-
-- le BPM doit rester dans une plage musicalement exploitable ;
-- le tempo permet de convertir le temps musical en temps reel.
-
-### TimeSignature
-
-Represente la mesure musicale.
-
-Attributs possibles :
-
-- `beatsPerMeasure`
-- `beatUnit`
-
-Exemples :
-
-- 4/4
-- 3/4
-- 6/8
-
-Responsabilites :
-
-- organiser les reperes en mesures ;
-- influencer l'affichage et les reperes visuels.
-
-### GridResolution
-
-Represente la precision de la grille utilisee pendant l'edition.
-
-Attributs possibles :
-
-- `ticksPerBeat`
-- `snapStep`
-
-Responsabilites :
-
-- definir les pas de quantification proposes a l'utilisateur ;
-- controler la finesse du placement et du redimensionnement pendant l'edition ;
-- convertir un geste utilisateur vers une position ou une duree quantifiee.
-
-### Loop
-
-Represente le comportement de repetition d'un clip.
-
-Attributs possibles :
-
-- `enabled`
-- `length`
-
-Responsabilites :
-
-- definir si un clip boucle ;
-- distinguer la duree visible du clip et la duree du motif repete.
-
-### ParameterId
-
-Represente l'identifiant stable d'un parametre controlable.
-
-Exemples :
-
-- `filter.cutoff`
-- `vco.frequency`
-- `envelope.attack`
-
-Responsabilites :
-
-- permettre a l'arrangement de cibler un parametre sans connaitre l'objet technique qui l'implemente ;
-- stabiliser les liens entre automation et instrument.
-
-### ParameterValue
-
-Represente la valeur d'un parametre audio ou de controle.
-
-Attributs possibles :
-
-- `value`
-- `unit`
-- `min`
-- `max`
-
-Responsabilites :
-
-- encapsuler une valeur controlable ;
-- permettre la validation d'une plage ;
-- exprimer des unites differentes comme Hz, dB, pourcentage ou temps.
-
 ### ModulePort
 
-Represente une entree ou une sortie de module.
+Value Object propre a l'infrastructure audio.
 
 Attributs possibles :
 
@@ -500,79 +563,142 @@ Responsabilites :
 - identifier un point de connexion ;
 - permettre la validation des connexions entre modules.
 
-## Relations entre les domaines
+### Moteur audio concret
 
-Le couplage entre arrangement et audio doit rester minimal.
+Le moteur audio instancie les definitions d'instruments et produit le son.
+
+Il gere notamment :
+
+- la resolution des `InstrumentId` dans le catalogue integre ;
+- l'execution des patchs modulaires ;
+- la planification temporelle des commandes ;
+- le cycle de vie des voix sonores ;
+- la sortie audio.
+
+Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
+
+## Contrats entre les couches
+
+Les contrats partages doivent rester minimaux afin d'eviter que le domaine depende des structures techniques du moteur.
+
+### InstrumentId
+
+Identifiant stable et opaque reference par une `Track`.
+
+Le domaine peut comparer et conserver cet identifiant, mais il ne sait pas comment l'instrument correspondant est defini ou instancie.
+
+La disparition d'un instrument entre deux versions de l'application doit etre traitee au chargement par la couche applicative.
+
+### ParameterId
+
+Identifiant stable d'un parametre controlable.
+
+Exemples :
+
+- `filter.cutoff`
+- `vco.frequency`
+- `envelope.attack`
+
+Responsabilites :
+
+- permettre a une automation de cibler un parametre expose ;
+- eviter que l'arrangement connaisse l'objet technique qui implemente ce parametre ;
+- stabiliser le lien entre arrangement et instrument.
+
+### ParameterValue
+
+Represente la valeur transmise a un parametre audio ou de controle.
+
+Sa forme partagee doit rester minimale. Les metadonnees techniques comme l'unite, le minimum et le maximum appartiennent au descripteur du parametre dans l'infrastructure audio, sauf si une future regle musicale exige qu'elles appartiennent au domaine.
+
+## Relations architecturales
 
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
-| `Track.instrumentId` | `InstrumentDefinition.id` | Une piste choisit un instrument disponible dans le catalogue. |
-| `NoteEvent` | `PlaybackService` | Le service de lecture transforme une note en commandes pour l'instrument de la piste. |
-| `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre expose par un instrument. |
-| `PlaybackService` | `AudioEngine` | Le service transmet au moteur les commandes necessaires a l'ecoute. |
+| `Track.instrumentId` | `InstrumentId` | Une piste conserve l'identifiant opaque de l'instrument choisi. |
+| `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre expose sans connaitre son implementation. |
+| Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
+| `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
+| `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
+| Moteur audio concret | `InstrumentDefinition` | Le moteur resout l'identifiant, instancie le patch et produit le son. |
 
-## Premiers agregats possibles
+Le sens des dependances de code doit pointer vers l'interieur : l'infrastructure depend des contrats applicatifs et du domaine, jamais l'inverse.
 
-### Project comme aggregate root
+## Arborescence cible
 
-`Project` peut etre considere comme la racine principale. Il garantit la coherence globale du document musical.
+Cette arborescence est une cible de travail provisoire. Elle documente les frontieres actuellement retenues et evoluera avec les prochaines decisions.
 
-Il contient :
+```text
+src/
+├── domain/
+│   └── arrangement/
+│       ├── entities/
+│       │   ├── Project.ts
+│       │   ├── Arrangement.ts
+│       │   ├── Track.ts
+│       │   ├── Clip.ts
+│       │   └── events/
+│       │       ├── MusicalEvent.ts
+│       │       ├── NoteEvent.ts
+│       │       └── AutomationEvent.ts
+│       └── value-objects/
+│           ├── Pitch.ts
+│           ├── TimePosition.ts
+│           ├── Duration.ts
+│           ├── TimeRange.ts
+│           ├── Velocity.ts
+│           ├── Tempo.ts
+│           ├── TimeSignature.ts
+│           └── Loop.ts
+├── application/
+│   ├── editor/
+│   │   ├── EditorState.ts
+│   │   ├── Selection.ts
+│   │   └── GridResolution.ts
+│   ├── use-cases/
+│   ├── playback/
+│   │   └── PlaybackService.ts
+│   ├── contracts/
+│   │   ├── InstrumentId.ts
+│   │   ├── ParameterId.ts
+│   │   └── ParameterValue.ts
+│   └── ports/
+│       ├── AudioEngine.ts
+│       └── InstrumentCatalog.ts
+├── infrastructure/
+│   ├── audio/
+│   │   ├── catalog/
+│   │   │   ├── BuiltInInstrumentCatalog.ts
+│   │   │   ├── InstrumentDescriptor.ts
+│   │   │   └── InstrumentDefinition.ts
+│   │   ├── modular/
+│   │   │   ├── ModularPatch.ts
+│   │   │   ├── AudioModule.ts
+│   │   │   ├── ModuleConnection.ts
+│   │   │   └── ModulePort.ts
+│   │   └── engine/
+│   └── persistence/
+└── presentation/
+    ├── components/
+    └── stores/
+```
 
-- un `Arrangement` ;
-- des reglages globaux comme `Tempo` et `TimeSignature` ;
-- des informations de sauvegarde.
-
-### Arrangement comme aggregate
-
-`Arrangement` garantit la coherence temporelle des pistes et des clips.
-
-Regles possibles :
-
-- une piste appartient a un seul arrangement ;
-- l'arrangement definit l'ordre de ses pistes ;
-- une piste ordonne ses clips selon leur position temporelle ;
-- une piste reference un instrument arbitraire sans le contenir ;
-- un clip appartient a une seule piste ;
-- les clips peuvent se chevaucher ou non selon le choix d'edition ;
-- les positions des clips sont exprimees dans le temps global du projet.
-
-### Clip comme aggregate secondaire
-
-`Clip` garantit la coherence de ses propres evenements.
-
-Regles possibles :
-
-- un evenement appartient a un seul clip et ne possede pas de cycle de vie autonome ;
-- une note modifiee conserve son identite ;
-- une note copiee ou dupliquee recoit une nouvelle identite ;
-- les evenements sont positionnes relativement au debut du clip ;
-- les notes peuvent etre triees par position ;
-- les positions et durees peuvent rester continues dans le modele ;
-- la quantification est appliquee par les operations d'edition quand l'utilisateur active ou utilise la grille ;
-- selon le choix musical, on peut autoriser ou interdire les chevauchements sur une meme hauteur.
-
-### Definitions d'instruments hors du projet
-
-Les definitions d'instruments appartiennent au catalogue statique de l'application. Elles ne constituent pas un agregat editable du projet.
-
-Regles possibles :
-
-- chaque instrument possede un identifiant stable ;
-- une piste ne peut referencer qu'un instrument present dans le catalogue ;
-- un patch doit posseder une sortie audio valide ;
-- une connexion relie deux ports compatibles ;
-- les parametres exposes doivent avoir des identifiants stables.
+Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
 ## Questions ouvertes
 
 - Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
 - Les clips doivent-ils etre uniquement des conteneurs de notes, ou peuvent-ils contenir d'autres types d'evenements comme des automations et des controles ?
+- Quelle representation canonique choisir pour le temps musical continu : battements rationnels, ticks a haute resolution ou autre representation ?
+- Les automations font-elles partie du premier perimetre fonctionnel de Pianola ?
+- Quels descripteurs de parametres doivent etre exposes par l'infrastructure audio a la couche applicative ?
 
-## Intuition de depart
+## Principes directeurs
 
-Pour une architecture clean, le domaine devrait rester independant de l'interface graphique, du moteur Web Audio et du stockage.
+Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets d'arrangement comme `Track`, `Clip`, `NoteEvent`, `TimeRange` ou `GridResolution` doivent pouvoir exister sans connaitre React, canvas ou Web Audio.
+Les objets d'arrangement comme `Track`, `Clip`, `NoteEvent` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
-Le catalogue d'instruments, le service de lecture et le moteur audio doivent rester remplacables sans modifier le coeur de la composition. Le domaine ne connait que les identifiants des instruments et, si necessaire, ceux des parametres exposes.
+L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
+
+La couche applicative orchestre les cas d'usage et depend de ports abstraits. L'infrastructure audio implemente ces ports, contient le catalogue d'instruments et peut etre remplacee sans modifier le coeur de la composition.
