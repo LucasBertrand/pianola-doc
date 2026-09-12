@@ -51,7 +51,7 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 
 - Le `Project` possede un unique `rootGroup`. La composition forme un arbre dont les noeuds sont des `Group` et les feuilles des `Clip`.
 - Un `Group` contient une collection ordonnee de `GroupItem`, union de `Clip` et de `Group`. Les groupes peuvent donc etre imbriques.
-- `GroupPlaybackMode` represente le mode de lecture d'un groupe. Pianola prend initialement en charge `SEQUENTIAL` et `SIMULTANEOUS`, mais cette liste pourra etre enrichie.
+- `PlaybackMode` represente le mode de lecture d'un groupe. Pianola prend initialement en charge `SEQUENTIAL` et `SIMULTANEOUS`, mais cette liste pourra etre enrichie.
 - Chaque mode definit trois aspects : la planification temporelle des enfants, les points d'entree autorises pour `play(itemId?)` et la condition de fin du groupe.
 - En mode `SEQUENTIAL`, chaque enfant commence a la fin du precedent. En mode `SIMULTANEOUS`, tous les enfants commencent au meme instant.
 - Le `playbackMode` gouverne la lecture structurelle du groupe, mais ne limite jamais la preecoute individuelle de ses descendants.
@@ -148,7 +148,7 @@ Le projet ne porte ni tempo ni metrique globaux : ces proprietes appartiennent a
 
 Represente un ensemble ordonne de clips ou d'autres groupes dont il definit le mode de lecture.
 
-`GroupItem` designe l'union `Clip | Group`. Cette union et `GroupPlaybackMode` peuvent etre declares dans le meme module que `Group`, sans introduire prematurement un fichier pour chaque type.
+`GroupItem` designe l'union `Clip | Group`. Cette union et `PlaybackMode` peuvent etre declares dans le meme module que `Group`, sans introduire prematurement un fichier pour chaque type.
 
 Attributs possibles :
 
@@ -164,7 +164,7 @@ Modes initialement pris en charge :
 | `SEQUENTIAL` | Les enfants sont lus dans leur ordre. | Chaque enfant. | Fin du dernier enfant lu. |
 | `SIMULTANEOUS` | Tous les enfants commencent au meme instant. | Le groupe complet. | Fin de l'enfant le plus long. |
 
-`GroupPlaybackMode` est un vocabulaire metier extensible. Ajouter un mode impose de definir explicitement ces trois comportements dans le `PlaybackService`. La preecoute reste independante de cette politique : tout `Clip` ou `Group` peut toujours etre cible par `preview(itemId)`.
+`PlaybackMode` est un vocabulaire metier extensible. Ajouter un mode impose de definir explicitement ces trois comportements dans le `PlaybackService`. La preecoute reste independante de cette politique : tout `Clip` ou `Group` peut toujours etre cible par `preview(itemId)`.
 
 Responsabilites :
 
