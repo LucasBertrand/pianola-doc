@@ -8,9 +8,9 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 
 - [Vision generale](#vision-generale)
 - [Decisions actees](#decisions-actees)
-- [Domaine d'arrangement](#domaine-darrangement)
+- [Domaine de composition](#domaine-de-composition)
   - [Entities](#entities)
-  - [Value Objects de l'arrangement](#value-objects-de-larrangement)
+  - [Value Objects de la composition](#value-objects-de-la-composition)
   - [Agregats](#agregats)
 - [Etat applicatif de l'editeur](#etat-applicatif-de-lediteur)
 - [Couche applicative et lecture](#couche-applicative-et-lecture)
@@ -23,7 +23,7 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 
 ## Vision generale
 
-L'application est centree sur un domaine d'arrangement qui decrit l'organisation musicale dans le temps.
+L'application est centree sur un domaine de composition. L'`Arrangement` y decrit l'organisation musicale des pistes et des clips dans le temps.
 
 Le projet exprime des intentions musicales sous forme de pistes, clips et notes. Il ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
 
@@ -35,7 +35,7 @@ Les moyens necessaires a l'ecoute sont places autour du domaine :
 
 ```mermaid
 flowchart LR
-    Domain["Domaine d'arrangement"] --> App["Application et lecture"]
+    Domain["Domaine de composition"] --> App["Application et lecture"]
     Editor["Etat de l'editeur"] --> App
     App --> Ports["Ports audio"]
     Ports --> Infra["Infrastructure audio"]
@@ -43,11 +43,12 @@ flowchart LR
 
 ## Decisions actees
 
-- Un `Arrangement` est l'ensemble ordonne des pistes du projet.
+- Le terme `Arrangement` designe l'objet qui organise dans le temps l'ensemble ordonne des pistes du projet. Le domaine qui le contient est nomme domaine de composition.
 - Une `Track` est un conteneur de clips ordonnes dans le temps, lie a un instrument arbitraire par son identifiant.
 - Un `Clip` contient uniquement des `NoteEvent` dans le premier perimetre fonctionnel.
 - Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
-- Le temps du domaine est pense comme un espace continu.
+- Le temps musical canonique est represente par des ticks entiers, avec une resolution fixe de 960 ticks par noire.
+- Le placement reste libre a l'echelle de ces ticks : une position n'a pas besoin d'etre alignee sur la grille visible.
 - La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans transformer le modele musical en grille rigide.
 - La selection appartient a l'etat applicatif de l'editeur. Elle reference temporairement des objets du domaine sans faire partie de la composition.
 - L'application est destinee a l'ecriture et au processus initial de composition, pas a la production audio.
@@ -57,9 +58,9 @@ flowchart LR
 - Les automations, les evenements de controle et l'exposition de parametres audio ne font pas partie du premier perimetre fonctionnel.
 - Le domaine ne connait l'audio qu'a travers un `InstrumentId` stable et un port de lecture minimal.
 
-## Domaine d'arrangement
+## Domaine de composition
 
-Le domaine d'arrangement decrit la structure musicale du projet dans le temps. Il repond a des questions comme :
+Le domaine de composition decrit la structure musicale du projet dans le temps. L'`Arrangement` en constitue l'organisation temporelle. Il repond a des questions comme :
 
 - quelles pistes existent ?
 - quels clips sont places sur ces pistes ?
@@ -171,7 +172,7 @@ Responsabilites :
 - porter des parametres d'interpretation simples ;
 - conserver son identite au fil de ses modifications.
 
-### Value Objects de l'arrangement
+### Value Objects de la composition
 
 Un Value Object ne possede pas d'identite propre. Il est defini par ses valeurs et appartient a un contexte precis, plutot qu'a une categorie transversale commune a toute l'application.
 
@@ -192,37 +193,33 @@ Regles possibles :
 
 #### TimePosition
 
-Represente une position dans le temps musical continu.
+Represente une position dans le temps musical.
 
-Representations possibles :
+Representation canonique :
 
-- `beats`
-- `ticks`
+- `ticks`, sous la forme d'un entier positif ou nul ;
+- 960 ticks representent une noire.
 
 Responsabilites :
 
-- positionner un evenement dans le temps musical ;
-- accepter des valeurs non alignees sur la grille d'edition ;
+- positionner une note ou un clip dans le temps musical ;
+- accepter toute position en ticks, y compris lorsqu'elle n'est pas alignee sur la grille d'edition ;
 - rester independant du temps reel.
 
-Les secondes ne sont pas stockees dans ce Value Object. Elles sont calculees par le service de lecture a partir du tempo.
+Les battements et les secondes sont des representations derivees. Les secondes sont calculees par le service de lecture a partir du tempo.
 
 #### Duration
 
-Represente une duree musicale.
-
-Representations possibles :
-
-- `beats`
-- `ticks`
+Represente une duree musicale exprimee en ticks entiers.
 
 Regles possibles :
 
 - une duree doit etre strictement positive ;
-- une duree peut rester libre dans le domaine ;
+- 960 ticks representent une noire ;
+- une duree peut utiliser toute valeur entiere, independamment de la grille ;
 - une duree peut etre quantifiee par une operation d'edition.
 
-Comme pour `TimePosition`, la duree en secondes est derivee lors de la lecture.
+Comme pour `TimePosition`, les battements et les secondes sont derives de la valeur canonique en ticks.
 
 #### TimeRange
 
@@ -235,7 +232,7 @@ Attributs possibles :
 
 Responsabilites :
 
-- decrire l'emplacement temporel d'un clip ou d'un evenement ;
+- decrire l'emplacement temporel d'un clip ou d'une note ;
 - detecter les chevauchements ;
 - faciliter les operations de deplacement et de redimensionnement.
 
@@ -327,7 +324,7 @@ Regles possibles :
 
 #### Clip comme aggregate secondaire
 
-`Clip` garantit la coherence de ses propres evenements.
+`Clip` garantit la coherence de ses propres notes.
 
 Regles possibles :
 
@@ -351,7 +348,7 @@ Attributs possibles :
 
 - `selectedTrackIds`
 - `selectedClipIds`
-- `selectedEventIds`
+- `selectedNoteIds`
 - `selectionAnchor`
 
 Des informations comme `activeTrackId` ou `focusedClipId` permettent de distinguer l'objet actif de l'ensemble des objets selectionnes.
@@ -371,8 +368,7 @@ Represente la precision de la grille utilisee pendant l'edition.
 
 Attributs possibles :
 
-- `ticksPerBeat`
-- `snapStep`
+- `snapStepTicks`
 
 Responsabilites :
 
@@ -624,14 +620,13 @@ Cette structure exprime des responsabilites plutot qu'un decoupage definitif fic
 
 ## Questions ouvertes
 
-- Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
-- Quelle representation canonique choisir pour le temps musical continu : battements rationnels, ticks a haute resolution ou autre representation ?
+Aucune pour le moment.
 
 ## Principes directeurs
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets d'arrangement comme `Track`, `Clip`, `NoteEvent` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Arrangement`, `Track`, `Clip`, `NoteEvent` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
