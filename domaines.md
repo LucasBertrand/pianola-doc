@@ -314,7 +314,7 @@ Regles possibles :
 - valeur entiere comprise entre 0 et 127 si l'on suit le modele MIDI ;
 - valeur par defaut possible : 100.
 
-`Velocity` ne possede actuellement ni cycle de vie ni usage independant de `Note`. Le type et ses regles sont donc declares directement dans `composition/Note.ts`, qui garantit leur validite. Un fichier autonome ne sera introduit que si ce concept acquiert plus tard des comportements ou des usages propres.
+`Velocity` ne possede actuellement ni cycle de vie ni usage independant de `Note`. Le type et ses regles sont donc declares directement dans `domain/Note.ts`, qui garantit leur validite. Un fichier autonome ne sera introduit que si ce concept acquiert plus tard des comportements ou des usages propres.
 
 #### Tempo
 
@@ -709,10 +709,9 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 ```text
 src/
 ├── domain/
-│   ├── composition/
-│   │   ├── Project.ts
-│   │   ├── Clip.ts
-│   │   └── Note.ts
+│   ├── Project.ts
+│   ├── Clip.ts
+│   ├── Note.ts
 │   ├── time/
 │   │   ├── TimePosition.ts
 │   │   ├── Duration.ts
@@ -756,15 +755,14 @@ src/
     └── stores/
 ```
 
-Le domaine est maintenant organise par concepts metier coherents plutot que par categories techniques comme les entities et les Value Objects :
+Les agregats principaux `Project`, `Clip` et `Note` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
 
-- `composition/` contient les agregats qui organisent le document musical ;
 - `time/` contient les positions, les durees, le tempo et la metrique ;
 - `pitch/` contient les hauteurs et leurs contextes.
 
-Les dependances doivent principalement partir de `composition/` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants de `composition/` : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
+Les dependances doivent principalement partir de `Project`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
-`InstrumentId` reste provisoirement a la racine de `domain/`, car il est partage par la composition, les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `composition/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
+`InstrumentId` reste provisoirement a la racine de `domain/`, car il est partage par la composition, les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
