@@ -45,13 +45,14 @@ flowchart LR
 - Le `Project` organise directement une sequence ordonnee de clips.
 - Les clips sont necessairement consecutifs : ils ne possedent pas de position dans une timeline globale et leur ordre determine l'ordre de lecture.
 - Un clip peut etre contourne pendant la lecture. Cet etat est conserve dans le clip afin que la sauvegarde preserve la structure courante de la sequence.
-- Chaque `Clip` porte ses propres chronologies locales de tempo et de metrique, positionnees en ticks.
-- Chaque chronologie possede obligatoirement un changement initial au tick `0` ; il remplace les anciennes proprietes scalaires `tempo` et `timeSignature` du clip.
+- Chaque `Clip` porte ses propres chronologies locales de tempo, de metrique et de contexte de hauteurs, positionnees en ticks.
+- Les chronologies de tempo et de metrique possedent obligatoirement un changement initial au tick `0` ; ils remplacent les anciennes proprietes scalaires `tempo` et `timeSignature` du clip.
 - Un changement de tempo peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; il peut ensuite fermer une mesure devenue incomplete si la metrique precedente est modifiee sans deplacer le marqueur.
-- Les sections metriques ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de metrique, ou entre le dernier changement et la fin du clip.
+- Les `TempoSection`, `MetricSection` et `PitchSection` ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de leur chronologie respective, ou entre le dernier changement et la fin du clip.
 - Modifier une metrique propose deux intentions explicites : conserver la duree en ticks ou conserver le nombre de mesures.
 - Par defaut, un clip vide conserve son nombre de mesures ; une section contenant deja des notes ou suivie d'autres sections conserve sa duree.
-- Un `Clip` contient uniquement des `NoteEvent` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo et de metrique sont des donnees structurelles, et non des automations ou des evenements de controle.
+- Un `Clip` contient uniquement des `NoteEvent` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo, de metrique et de contexte de hauteurs sont des donnees structurelles, et non des automations ou des evenements de controle.
+- Le contexte de hauteurs est descriptif : il permet de mettre en evidence les notes qui appartiennent a un ensemble de hauteurs, sans interdire les notes exterieures.
 - Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
 - Chaque `NoteEvent` reference l'instrument qui doit l'interpreter au moyen d'un `InstrumentId`. Un meme clip peut donc contenir plusieurs instruments.
 - Le temps musical canonique est represente par des ticks entiers, avec une resolution fixe de 960 ticks par noire.
@@ -77,8 +78,9 @@ Le domaine de composition decrit une succession de sections musicales. Le `Proje
 - quelles notes existent dans un clip ?
 - quel instrument doit interpreter chaque note ?
 - a quel moment relatif du clip chaque note doit-elle etre jouee ?
-- quels tempo et quelles metriques sont actifs a un tick donne ?
-- comment le clip est-il decoupe en sections et en mesures ?
+- quels tempo, quelle metrique et quel contexte de hauteurs sont actifs a un tick donne ?
+- comment le clip est-il decoupe en sections temporelles, metriques et de hauteurs ?
+- quelles notes appartiennent au contexte de hauteurs actif ?
 
 Il reste independant de la maniere dont le son est produit et de la maniere dont l'utilisateur manipule visuellement les objets.
 
@@ -123,13 +125,14 @@ Attributs possibles :
 - `notes`
 - `tempoChanges`
 - `timeSignatureChanges`
+- `pitchContextChanges`
 
 Responsabilites :
 
 - contenir et ordonner des notes selon leur position locale ;
 - definir sa duree canonique en ticks ;
-- contenir et ordonner les changements locaux de tempo et de metrique ;
-- fournir le contexte rythmique actif a n'importe quelle position ;
+- contenir et ordonner les changements locaux de tempo, de metrique et de contexte de hauteurs ;
+- fournir le contexte musical actif a n'importe quelle position ;
 - conserver son etat de bypass dans la sauvegarde ;
 - permettre l'edition locale d'un motif, d'une phrase ou d'une section musicale ;
 - permettre a plusieurs instruments de coexister dans une meme section par l'intermediaire des notes.
@@ -193,7 +196,25 @@ Regles possibles :
 - la nouvelle metrique s'applique a partir du tick du changement, inclus ;
 - un changement ferme la section metrique precedente et commence la suivante.
 
-Les marqueurs visibles dans l'editeur sont la representation des `TempoChange` et des `TimeSignatureChange`. Un changement de chaque type peut exister au meme tick.
+#### PitchContextChange
+
+Represente un changement de contexte de hauteurs place sur la chronologie locale d'un clip.
+
+Attributs possibles :
+
+- `id`
+- `position`
+- `context`
+
+Regles possibles :
+
+- un changement peut etre place sur n'importe quel tick compris dans le clip ;
+- un seul changement de contexte de hauteurs peut exister a une meme position ;
+- le nouveau contexte s'applique a partir du tick du changement, inclus ;
+- un changement ferme la section de hauteurs precedente et commence la suivante ;
+- avant le premier changement, aucun contexte de hauteurs n'est actif.
+
+Les marqueurs visibles dans l'editeur sont la representation des `TempoChange`, des `TimeSignatureChange` et des `PitchContextChange`. Un changement de chaque type peut exister au meme tick.
 
 ### Value Objects de la composition
 
@@ -298,6 +319,18 @@ Regles possibles :
 - le tempo permet au service de lecture de convertir un intervalle de temps musical en temps reel ;
 - sa periode de validite est determinee par les `TempoChange` du clip.
 
+#### TempoSection
+
+Represente une vue derivee de l'intervalle compris entre un `TempoChange` et le changement suivant, ou la fin du clip.
+
+Attributs derives possibles :
+
+- `start`
+- `end`
+- `tempo`
+
+La section n'est pas sauvegardee comme un objet autonome. Elle permet notamment au `PlaybackService` de convertir chaque intervalle de ticks en temps reel avec le tempo qui lui est propre.
+
 #### TimeSignature
 
 Represente une valeur de metrique.
@@ -345,6 +378,41 @@ trailingMeasureDuration = sectionDuration % ticksPerMeasure
 ```
 
 Une valeur non nulle de `trailingMeasureDuration` represente une derniere mesure incomplete. Le changement suivant constitue alors une frontiere explicite et commence une nouvelle mesure.
+
+#### PitchContext
+
+Represente un ensemble de classes de hauteurs utilise comme reference harmonique ou melodique dans une partie du clip.
+
+Attributs possibles :
+
+- `label`
+- `pitchClasses`
+
+Exemples :
+
+- `Re dorien` : re, mi, fa, sol, la, si, do ;
+- `Fa majeur 7` : fa, la, do, mi ;
+- une gamme ou un ensemble de hauteurs libre defini par le programme.
+
+Responsabilites :
+
+- determiner si la hauteur d'une note appartient au contexte ;
+- permettre a l'editeur de mettre visuellement en evidence les hauteurs interieures et exterieures ;
+- representer indifferemment une gamme, un mode, un accord ou un ensemble arbitraire de classes de hauteurs.
+
+Le contexte ne valide ni ne refuse les notes. Une note exterieure reste une `NoteEvent` parfaitement valide.
+
+#### PitchSection
+
+Represente une vue derivee de l'intervalle compris entre un `PitchContextChange` et le changement suivant, ou la fin du clip.
+
+Attributs derives possibles :
+
+- `start`
+- `end`
+- `context`
+
+La section n'est pas sauvegardee comme un objet autonome. Elle sert a retrouver le contexte de hauteurs actif pour une note ou une position donnee.
 
 #### Loop
 
@@ -394,8 +462,9 @@ Regles possibles :
 - une note reference exactement un instrument ;
 - plusieurs notes d'un meme clip peuvent referencer des instruments differents ;
 - les positions et durees peuvent rester continues dans le modele ;
-- les changements de tempo et de metrique sont ordonnes par position ;
-- chaque chronologie contient exactement un changement initial au tick `0` ;
+- les changements de tempo, de metrique et de contexte de hauteurs sont ordonnes par position ;
+- les chronologies de tempo et de metrique contiennent exactement un changement initial au tick `0` ;
+- la chronologie de contexte de hauteurs peut etre vide ; avant son premier changement, aucun contexte n'est actif ;
 - un changement s'applique a partir de sa position, incluse, jusqu'au changement suivant ;
 - modifier une metrique en conservant la duree ne deplace ni les notes, ni les marqueurs, ni la fin du clip ;
 - la quantification est appliquee par les operations d'edition ;
@@ -459,8 +528,9 @@ Exemples :
 
 - deplacer des notes ;
 - redimensionner un clip ;
-- ajouter, deplacer ou supprimer un changement de tempo ou de metrique ;
+- ajouter, deplacer ou supprimer un changement de tempo, de metrique ou de contexte de hauteurs ;
 - modifier une metrique en indiquant explicitement s'il faut conserver la duree ou le nombre de mesures ;
+- associer un contexte de hauteurs a une partie du clip sans contraindre les notes ;
 - reordonner ou bypasser un clip ;
 - transposer plusieurs notes ;
 - associer un instrument disponible a une ou plusieurs notes.
@@ -482,8 +552,8 @@ Responsabilites :
 
 - parcourir la sequence de clips dans son ordre ;
 - ignorer les clips contournes ;
-- parcourir les changements de tempo de chaque clip ;
-- convertir chaque segment de temps musical en temps reel selon le tempo actif ;
+- construire les `TempoSection` de chaque clip ;
+- convertir chaque section de temps musical en temps reel selon son tempo ;
 - transformer les notes en commandes audio ;
 - transmettre ces commandes a un `AudioEngine` abstrait.
 
@@ -619,8 +689,9 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | --- | --- | --- |
 | `Project.clips` | `Clip` | Le projet conserve l'ordre persistant des sections musicales. |
 | `NoteEvent.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
-| `Clip.tempoChanges` | `TempoChange` | La chronologie locale determine le tempo actif a chaque tick. |
-| `Clip.timeSignatureChanges` | `TimeSignatureChange` | Les changements delimitent les sections metriques derivees du clip. |
+| `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
+| `Clip.timeSignatureChanges` | `TimeSignatureChange` | Les changements delimitent les `MetricSection` derivees du clip. |
+| `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchSection` utilisees pour analyser visuellement les notes. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
@@ -640,6 +711,7 @@ src/
 │   ├── NoteEvent.ts
 │   ├── TempoChange.ts
 │   ├── TimeSignatureChange.ts
+│   ├── PitchContextChange.ts
 │   ├── Pitch.ts
 │   ├── TimePosition.ts
 │   ├── Duration.ts
@@ -647,8 +719,11 @@ src/
 │   ├── TimeRange.ts
 │   ├── Velocity.ts
 │   ├── Tempo.ts
+│   ├── TempoSection.ts
 │   ├── TimeSignature.ts
 │   ├── MetricSection.ts
+│   ├── PitchContext.ts
+│   ├── PitchSection.ts
 │   └── Loop.ts
 ├── application/
 │   ├── editor/
@@ -689,7 +764,7 @@ Aucune pour le moment.
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets du domaine de composition comme `Project`, `Clip`, `NoteEvent` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Project`, `Clip`, `NoteEvent`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
