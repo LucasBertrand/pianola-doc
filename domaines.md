@@ -750,7 +750,7 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | --- | --- | --- |
 | `Project.rootGroup` | `ClipGroup` | Le projet possede la racine persistante de l'arbre de composition. |
 | `ClipGroup.items` | `PlaybackItem` | Le groupe ordonne des clips ou d'autres groupes et definit leur mode de lecture. |
-| `PlaybackItem` | `Clip | ClipGroup` | L'union rend possible un parcours recursif de la composition. |
+| `PlaybackItem` | `Clip \| ClipGroup` | L'union rend possible un parcours recursif de la composition. |
 | `Note.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
@@ -766,15 +766,15 @@ Le sens des dependances de code doit pointer vers l'interieur : l'application de
 
 Considerons une composition dont le groupe racine utilise le mode `SEQUENTIAL` :
 
-```text
-RootGroup [SEQUENTIAL]
-├── Introduction
-├── Ensemble [SIMULTANEOUS]
-│   ├── Rythme [SEQUENTIAL]
-│   │   ├── Groove A
-│   │   └── Groove B
-│   └── Ligne de basse
-└── Conclusion
+```mermaid
+flowchart TD
+    Root["RootGroup - SEQUENTIAL"] --> Intro["Introduction"]
+    Root --> Ensemble["Ensemble - SIMULTANEOUS"]
+    Root --> Conclusion["Conclusion"]
+    Ensemble --> Rythme["Rythme - SEQUENTIAL"]
+    Ensemble --> Basse["Ligne de basse"]
+    Rythme --> GrooveA["Groove A"]
+    Rythme --> GrooveB["Groove B"]
 ```
 
 Les clips possedent les caracteristiques suivantes :
