@@ -46,9 +46,9 @@ flowchart LR
 - Les clips sont necessairement consecutifs : ils ne possedent pas de position dans une timeline globale et leur ordre determine l'ordre de lecture.
 - Un clip peut etre contourne pendant la lecture. Cet etat est conserve dans le clip afin que la sauvegarde preserve la structure courante de la sequence.
 - Chaque `Clip` porte ses propres chronologies locales de tempo, de metrique et de contexte de hauteurs, positionnees en ticks.
-- Les chronologies de tempo et de metrique possedent obligatoirement un changement initial au tick `0` ; ils remplacent les anciennes proprietes scalaires `tempo` et `timeSignature` du clip.
+- Les chronologies de tempo et de metrique possedent obligatoirement un changement initial au tick `0` ; ils remplacent les anciennes proprietes scalaires `tempo` et `meter` du clip.
 - Un changement de tempo peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; il peut ensuite fermer une mesure devenue incomplete si la metrique precedente est modifiee sans deplacer le marqueur.
-- Les `TempoSection`, `MetricSection` et `PitchSection` ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de leur chronologie respective, ou entre le dernier changement et la fin du clip.
+- Les `TempoSection`, `MeterSection` et `PitchSection` ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de leur chronologie respective, ou entre le dernier changement et la fin du clip.
 - Modifier une metrique propose deux intentions explicites : conserver la duree en ticks ou conserver le nombre de mesures.
 - Par defaut, un clip vide conserve son nombre de mesures ; une section contenant deja des notes ou suivie d'autres sections conserve sa duree.
 - Un `Clip` contient uniquement des `NoteEvent` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo, de metrique et de contexte de hauteurs sont des donnees structurelles, et non des automations ou des evenements de controle.
@@ -124,7 +124,7 @@ Attributs possibles :
 - `loop`
 - `notes`
 - `tempoChanges`
-- `timeSignatureChanges`
+- `meterChanges`
 - `pitchContextChanges`
 
 Responsabilites :
@@ -178,7 +178,7 @@ Regles possibles :
 - le nouveau tempo s'applique a partir du tick du changement, inclus ;
 - la position et le tempo peuvent etre modifies sans changer l'identite du changement.
 
-#### TimeSignatureChange
+#### MeterChange
 
 Represente un changement de metrique place sur la chronologie locale d'un clip.
 
@@ -186,7 +186,7 @@ Attributs possibles :
 
 - `id`
 - `position`
-- `timeSignature`
+- `meter`
 
 Regles possibles :
 
@@ -214,7 +214,7 @@ Regles possibles :
 - un changement ferme la section de hauteurs precedente et commence la suivante ;
 - avant le premier changement, aucun contexte de hauteurs n'est actif.
 
-Les marqueurs visibles dans l'editeur sont la representation des `TempoChange`, des `TimeSignatureChange` et des `PitchContextChange`. Un changement de chaque type peut exister au meme tick.
+Les marqueurs visibles dans l'editeur sont la representation des `TempoChange`, des `MeterChange` et des `PitchContextChange`. Un changement de chaque type peut exister au meme tick.
 
 ### Value Objects de la composition
 
@@ -331,7 +331,7 @@ Attributs derives possibles :
 
 La section n'est pas sauvegardee comme un objet autonome. Elle permet notamment au `PlaybackService` de convertir chaque intervalle de ticks en temps reel avec le tempo qui lui est propre.
 
-#### TimeSignature
+#### Meter
 
 Represente une valeur de metrique.
 
@@ -358,15 +358,15 @@ Avec une resolution de 960 ticks par noire :
 ticksPerMeasure = beatsPerMeasure * (4 / beatUnit) * 960
 ```
 
-#### MetricSection
+#### MeterSection
 
-Represente une vue derivee de l'intervalle compris entre un `TimeSignatureChange` et le changement suivant, ou la fin du clip.
+Represente une vue derivee de l'intervalle compris entre un `MeterChange` et le changement suivant, ou la fin du clip.
 
 Attributs derives possibles :
 
 - `start`
 - `end`
-- `timeSignature`
+- `meter`
 - `fullMeasureCount`
 - `trailingMeasureDuration`
 
@@ -690,7 +690,7 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Project.clips` | `Clip` | Le projet conserve l'ordre persistant des sections musicales. |
 | `NoteEvent.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
-| `Clip.timeSignatureChanges` | `TimeSignatureChange` | Les changements delimitent les `MetricSection` derivees du clip. |
+| `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchSection` utilisees pour analyser visuellement les notes. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
@@ -706,25 +706,28 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 ```text
 src/
 ├── domain/
-│   ├── Project.ts
-│   ├── Clip.ts
-│   ├── NoteEvent.ts
-│   ├── TempoChange.ts
-│   ├── TimeSignatureChange.ts
-│   ├── PitchContextChange.ts
-│   ├── Pitch.ts
-│   ├── TimePosition.ts
-│   ├── Duration.ts
+│   ├── composition/
+│   │   ├── Project.ts
+│   │   ├── Clip.ts
+│   │   ├── NoteEvent.ts
+│   │   └── Loop.ts
+│   ├── time/
+│   │   ├── TimePosition.ts
+│   │   ├── Duration.ts
+│   │   ├── TimeRange.ts
+│   │   ├── Tempo.ts
+│   │   ├── TempoChange.ts
+│   │   ├── TempoSection.ts
+│   │   ├── Meter.ts
+│   │   ├── MeterChange.ts
+│   │   └── MeterSection.ts
+│   ├── pitch/
+│   │   ├── Pitch.ts
+│   │   ├── PitchContext.ts
+│   │   ├── PitchContextChange.ts
+│   │   └── PitchSection.ts
 │   ├── InstrumentId.ts
-│   ├── TimeRange.ts
-│   ├── Velocity.ts
-│   ├── Tempo.ts
-│   ├── TempoSection.ts
-│   ├── TimeSignature.ts
-│   ├── MetricSection.ts
-│   ├── PitchContext.ts
-│   ├── PitchSection.ts
-│   └── Loop.ts
+│   └── Velocity.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
@@ -752,7 +755,15 @@ src/
     └── stores/
 ```
 
-Le domaine adopte pour commencer une architecture plate : ses entites et ses Value Objects sont exposes directement dans `domain/`. Des sous-dossiers ne seront introduits que lorsque des groupes de concepts suffisamment coherents le justifieront.
+Le domaine est maintenant organise par concepts metier coherents plutot que par categories techniques comme les entities et les Value Objects :
+
+- `composition/` contient les agregats qui organisent le document musical ;
+- `time/` contient les positions, les durees, le tempo et la metrique ;
+- `pitch/` contient les hauteurs et leurs contextes.
+
+Les dependances doivent principalement partir de `composition/` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants de `composition/` : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
+
+`InstrumentId` et `Velocity` restent provisoirement a la racine de `domain/`. Des sous-dossiers ne seront crees pour eux que lorsqu'un ensemble de concepts suffisamment coherent apparaitra.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
