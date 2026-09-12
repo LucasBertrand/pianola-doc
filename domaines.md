@@ -23,7 +23,7 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 
 ## Vision generale
 
-L'application est centree sur un domaine de composition. Le `Project` possede un unique `rootGroup`, qui constitue la racine d'un arbre compose de `ClipGroup` et de `Clip`.
+L'application est centree sur un domaine de composition. Le `Project` possede un unique `rootGroup`, qui constitue la racine d'un arbre compose de `Group` et de `Clip`.
 
 Chaque groupe ordonne ses enfants et definit leur mode de lecture : les lire les uns apres les autres ou les faire commencer simultanement. Les feuilles de cet arbre sont les clips. Chaque clip conserve sa propre chronologie, son tempo, sa metrique et ses contextes de hauteurs.
 
@@ -49,8 +49,8 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 
 ### Structure de la composition
 
-- Le `Project` possede un unique `rootGroup`. La composition forme un arbre dont les noeuds sont des `ClipGroup` et les feuilles des `Clip`.
-- Un `ClipGroup` contient une collection ordonnee de `PlaybackItem`, union de `Clip` et de `ClipGroup`. Les groupes peuvent donc etre imbriques.
+- Le `Project` possede un unique `rootGroup`. La composition forme un arbre dont les noeuds sont des `Group` et les feuilles des `Clip`.
+- Un `Group` contient une collection ordonnee de `GroupItem`, union de `Clip` et de `Group`. Les groupes peuvent donc etre imbriques.
 - Le `playbackMode` d'un groupe vaut `SEQUENTIAL` ou `SIMULTANEOUS`. En mode sequentiel, chaque enfant commence a la fin du precedent. En mode simultane, tous les enfants commencent au meme instant.
 - Les clips ne possedent pas de position dans une timeline globale. Leur instant de depart est derive de leur place dans l'arbre et des modes de lecture de leurs groupes ancetres.
 - `isBypassed` permet de contourner un clip sans le retirer de son groupe. Cet etat est sauvegarde et reste independant de `repeatCount`.
@@ -127,11 +127,11 @@ Responsabilites :
 
 Le projet ne porte ni tempo ni metrique globaux : ces proprietes appartiennent a chaque clip.
 
-#### ClipGroup
+#### Group
 
 Represente un ensemble ordonne de clips ou d'autres groupes dont il definit le mode de lecture.
 
-`PlaybackItem` designe l'union `Clip | ClipGroup`. Cette union et `PlaybackMode` peuvent etre declares dans le meme module que `ClipGroup`, sans introduire prematurement un fichier pour chaque type.
+`GroupItem` designe l'union `Clip | Group`. Cette union et `PlaybackMode` peuvent etre declares dans le meme module que `Group`, sans introduire prematurement un fichier pour chaque type.
 
 Attributs possibles :
 
@@ -483,7 +483,7 @@ Il contient :
 
 Regles possibles :
 
-- le groupe racine est un `ClipGroup` ordinaire et peut utiliser l'un ou l'autre mode de lecture ;
+- le groupe racine est un `Group` ordinaire et peut utiliser l'un ou l'autre mode de lecture ;
 - un clip ou un groupe non racine appartient a un seul groupe parent ;
 - un groupe ne peut pas se contenir lui-meme, directement ou indirectement ;
 - reordonner un enfant modifie la structure de son groupe ;
@@ -750,9 +750,9 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
-| `Project.rootGroup` | `ClipGroup` | Le projet possede la racine persistante de l'arbre de composition. |
-| `ClipGroup.items` | `PlaybackItem` | Le groupe ordonne des clips ou d'autres groupes et definit leur mode de lecture. |
-| `PlaybackItem` | `Clip \| ClipGroup` | L'union rend possible un parcours recursif de la composition. |
+| `Project.rootGroup` | `Group` | Le projet possede la racine persistante de l'arbre de composition. |
+| `Group.items` | `GroupItem` | Le groupe ordonne des clips ou d'autres groupes et definit leur mode de lecture. |
+| `GroupItem` | `Clip \| Group` | L'union rend possible un parcours recursif de la composition. |
 | `Note.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
@@ -772,7 +772,7 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 src/
 ├── domain/
 │   ├── Project.ts
-│   ├── ClipGroup.ts
+│   ├── Group.ts
 │   ├── Clip.ts
 │   ├── Note.ts
 │   ├── time/
@@ -818,12 +818,12 @@ src/
     └── stores/
 ```
 
-Les objets centraux `Project`, `ClipGroup`, `Clip` et `Note` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
+Les objets centraux `Project`, `Group`, `Clip` et `Note` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
 
 - `time/` contient les positions, les durees, le tempo et la metrique ;
 - `pitch/` contient les hauteurs et leurs contextes.
 
-Les dependances doivent principalement partir de `Project`, `ClipGroup`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
+Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
 `InstrumentId` reste provisoirement a la racine de `domain/`, car il est partage par la composition, les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
@@ -837,7 +837,7 @@ Aucune pour le moment.
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets du domaine de composition comme `Project`, `ClipGroup`, `Clip`, `Note`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Project`, `Group`, `Clip`, `Note`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
