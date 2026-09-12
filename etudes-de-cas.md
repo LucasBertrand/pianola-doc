@@ -145,18 +145,65 @@ La note A commence a zero seconde et se termine a quatre secondes. La note B com
 
 A deux secondes, le moteur relache uniquement `occurrence-b`. La voix correspondant a `occurrence-a` continue jusqu'a quatre secondes. Une commande de relachement identifiee seulement par l'instrument et la hauteur serait insuffisante, car elle risquerait d'interrompre les deux voix.
 
-Les deux notes ne sont jamais fusionnees implicitement. Si la definition du piano est polyphonique, elles occupent deux voix independantes. Si elle est monophonique, `InstrumentDefinition.voiceAllocation` determine le retrigger, la priorite des notes et l'eventuelle interruption de la voix precedente.
+Les deux notes ne sont jamais fusionnees implicitement. Chaque activation de clip possede son propre `PlaybackContext` et sa propre `InstrumentInstance` du piano. La politique `InstrumentDefinition.voiceAllocation` s'applique donc separement dans chaque instance.
+
+Meme si le piano est monophonique, la note du clip B n'interrompt pas celle du clip A. La monophonie limite les notes concurrentes a l'interieur d'un meme contexte ; elle n'est pas globale a tous les clips utilisant le meme `InstrumentId`.
+
+## Cas 6 - Lecture et preecoute simultanees du meme clip
+
+Le clip `Motif` est deja actif dans la lecture du projet lorsque l'utilisateur en lance une preecoute.
+
+| Operation | Session | Contexte | Source persistante |
+| --- | --- | --- | --- |
+| Lecture du projet | `project-session` | `clip-playback-a` | `ClipId = motif` |
+| Preecoute | `preview-session` | `clip-playback-b` | `ClipId = motif` |
+
+Les deux descripteurs sont strictement de type `CLIP` et portent le meme `ClipId`, mais des `ClipPlaybackId` differents. Chaque contexte cree ses propres instances. Arreter la preecoute detruit seulement `clip-playback-b` et ne relache aucune voix de `clip-playback-a`.
+
+Une preecoute de note isolee utilise au contraire un descripteur de type `NOTE_PREVIEW`. Elle porte un `NotePreviewPlaybackId` et un `InstrumentId`, mais aucun `ClipId` optionnel : elle ne pretend pas etre la lecture d'un clip.
+
+## Cas 7 - Repetitions et occurrences de notes
+
+Un clip contient une note `note-a` et possede `repeatCount = 3`. Les trois lectures reutilisent le meme `ClipPlaybackId` et la meme `InstrumentInstance`, mais elles produisent trois occurrences distinctes.
+
+| Repetition | Note persistante | Occurrence d'execution |
+| ---: | --- | --- |
+| 1 | `note-a` | `occurrence-a-1` |
+| 2 | `note-a` | `occurrence-a-2` |
+| 3 | `note-a` | `occurrence-a-3` |
+
+Chaque `NoteOff` cible son `NoteOccurrenceId`. Une release de la premiere repetition peut donc continuer au debut de la deuxieme. Si l'instrument est monophonique, la nouvelle attaque peut appliquer sa politique de retrigger ou de vol de voix a l'occurrence precedente, puisqu'elles appartiennent a la meme instance.
+
+Si une voix a deja ete volee, le `NoteOff` programme pour son ancienne occurrence devient une operation sans effet. Le moteur doit donc traiter les relachements comme des commandes idempotentes.
+
+## Cas 8 - Fin structurelle et tail audio
+
+Un clip `Nappe` possede une duree structurelle de deux secondes, mais son instrument produit une release et une reverberation qui restent audibles une seconde supplementaire. `Nappe` est suivi du clip `Conclusion` dans un groupe sequentiel.
+
+| Temps reel | Evenement structurel | Etat audio de `Nappe` |
+| --- | --- | --- |
+| 0 s | debut de `Nappe` | `ACTIVE` |
+| 2 s | fin de `Nappe`, debut de `Conclusion` | `DRAINING` |
+| 3 s | aucune modification de la structure | `DISPOSED` apres extinction du tail |
+
+La fin structurelle, calculee a partir des ticks et du tempo, determine le depart de `Conclusion`. Le tail ne rallonge donc pas le groupe et peut se superposer au clip suivant. Le contexte de `Nappe` refuse toute nouvelle attaque apres deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'a une duree maximale de securite.
 
 ## Consequences pour le PlaybackService
 
-Ces cas peuvent tous etre interpretes par une operation recursive :
+Le calcul structurel peut etre interprete par une operation recursive :
 
 ```ts
-schedule(item: GroupItem, startTime: number): number
+calculateDuration(item: GroupItem): number
 ```
 
-- un `Clip` planifie ses notes depuis `startTime` en utilisant ses propres `TempoSection` et retourne son instant de fin ;
+Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. La planification effective utilise une fenetre d'anticipation bornee afin de ne jamais tenter de developper entierement une repetition infinie.
+
+- un `Clip` calcule ses evenements depuis son instant de depart en utilisant ses propres `TempoSection` et possede une fin structurelle ;
 - un groupe `SEQUENTIAL` transmet la fin de chaque enfant comme debut du suivant ;
 - un groupe `SIMULTANEOUS` transmet le meme debut a tous ses enfants et retourne la fin la plus tardive ;
 - une duree `infinite` se propage aux groupes ancetres selon les memes regles ;
-- aucun de ces calculs n'ajoute de position temporelle globale au modele sauvegarde.
+- chaque operation globale ouvre une `PlaybackSession` transitoire ;
+- chaque activation de clip recoit un `ClipPlaybackId` distinct de son `ClipId` ;
+- chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
+- la fin structurelle permet au parcours de continuer pendant que l'infrastructure conserve eventuellement le contexte en `DRAINING` ;
+- aucun de ces calculs ni identifiants d'execution n'ajoute de position temporelle globale ou d'etat audio au modele sauvegarde.
