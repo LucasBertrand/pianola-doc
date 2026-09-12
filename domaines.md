@@ -26,7 +26,8 @@ flowchart TD
 
 ## Decisions actees
 
-- Une `Track` est une ligne d'arrangement. Elle contient des clips et peut referencer un instrument, mais elle ne se confond ni avec une voix musicale ni avec un instrument audio.
+- Un `Arrangement` est l'ensemble ordonne des pistes du projet.
+- Une `Track` est un conteneur de clips ordonnes dans le temps, lie a un instrument arbitraire par son identifiant. Elle ne se confond ni avec une voix musicale ni avec l'instrument audio lui-meme.
 - Le temps du domaine est pense comme un espace continu. L'utilisateur pourra toutefois placer, deplacer et redimensionner des evenements a l'aide d'une grille quantifiee.
 - La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans obliger le modele musical a devenir une grille rigide.
 
@@ -85,7 +86,7 @@ Responsabilites :
 
 ### Track
 
-Represente une ligne d'arrangement dans laquelle l'utilisateur organise des clips.
+Represente un conteneur de clips ordonnes dans le temps.
 
 Une piste peut etre associee a un instrument, mais elle ne contient pas l'instrument lui-meme. Elle reference l'instrument qui interpretera ses evenements.
 
@@ -101,8 +102,8 @@ Attributs possibles :
 
 Responsabilites :
 
-- contenir des clips ;
-- porter les reglages d'arrangement propres a une ligne temporelle ;
+- contenir et ordonner des clips selon leur position temporelle ;
+- porter les reglages propres a la piste ;
 - faire le lien entre des intentions musicales et un instrument audio sans fusionner avec lui.
 
 ### Clip
@@ -533,7 +534,9 @@ Il contient :
 Regles possibles :
 
 - une piste appartient a un seul arrangement ;
-- une piste est une ligne d'arrangement, pas un instrument ;
+- l'arrangement definit l'ordre de ses pistes ;
+- une piste ordonne ses clips selon leur position temporelle ;
+- une piste reference un instrument arbitraire sans le contenir ;
 - un clip appartient a une seule piste ;
 - les clips peuvent se chevaucher ou non selon le choix d'edition ;
 - les positions des clips sont exprimees dans le temps global du projet.
