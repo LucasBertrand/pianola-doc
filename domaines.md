@@ -70,6 +70,7 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Les `Note` constituent le seul contenu musical des clips dans le premier perimetre fonctionnel. Les changements de contexte sont des donnees structurelles, et non des automations ou des evenements de controle.
 - Une `Note` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et en recoit une nouvelle lorsqu'elle est copiee.
 - Chaque note reference exactement un `InstrumentId`. Plusieurs instruments peuvent ainsi coexister dans un meme clip.
+- Plusieurs clips lus simultanement peuvent utiliser le meme instrument, y compris a la meme hauteur et au meme instant. Leurs notes restent des intentions distinctes et ne sont jamais fusionnees implicitement.
 - Le contexte de hauteurs est descriptif : il met en evidence l'appartenance des notes a un ensemble de hauteurs sans interdire les notes exterieures.
 - La quantification et la selection appartiennent a l'experience d'edition. Elles guident les actions de l'utilisateur sans transformer le modele musical en grille rigide ni devenir des donnees de composition.
 
@@ -77,7 +78,9 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 
 - Pianola est destine a l'ecriture et au processus initial de composition, pas a la production audio. Les automations, les evenements de controle et l'edition de patchs ne font pas partie du premier perimetre fonctionnel.
 - Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour ses notes, mais ne peut ni creer ni modifier son patch.
-- Le moteur audio et le catalogue d'instruments appartiennent a l'infrastructure. Le domaine ne connait de l'audio que les `InstrumentId` stables associes aux notes.
+- Le domaine definit la representation publique minimale `Instrument` ainsi que son `InstrumentId`. Les notes ne sauvegardent que cet identifiant.
+- Le catalogue et le moteur audio appartiennent a l'infrastructure. Les patchs, les politiques d'allocation des voix et les autres details techniques restent dans `InstrumentDefinition`.
+- Chaque lecture d'une note produit une occurrence sonore distincte. Son identite d'execution permet de relacher cette voix sans interrompre les autres notes utilisant le meme instrument et la meme hauteur.
 
 ### Conventions architecturales
 
@@ -218,6 +221,26 @@ Regles possibles :
 - l'appartenance au `PitchContext` actif est calculee a partir de la position de debut et n'est pas stockee dans la note ;
 - une note exterieure au contexte de hauteurs actif reste valide.
 
+#### Instrument
+
+Represente la description publique, stable et minimale d'un instrument integre. L'instrument est une entity de reference identifiee par son `InstrumentId` ; il n'appartient pas a l'agregat `Project` et n'est pas sauvegarde avec la composition.
+
+Attributs possibles :
+
+- `id`
+- `name`
+
+Responsabilites :
+
+- fournir l'identite stable utilisee par les notes ;
+- permettre a l'application de presenter les instruments disponibles ;
+- rester independant du patch, de l'allocation des voix et du moteur audio ;
+- servir de representation retournee par le port `InstrumentCatalog`.
+
+`InstrumentId` est un type stable et opaque declare dans le meme module `domain/Instrument.ts`. Une `Note` conserve uniquement cet identifiant, et non une reference directe vers l'objet `Instrument`.
+
+Les instruments sont definis avant la compilation et ne sont pas editables par l'utilisateur. La disparition d'un instrument entre deux versions de l'application est traitee au chargement par la couche applicative.
+
 #### TempoChange
 
 Represente un changement de tempo place sur la chronologie locale d'un clip.
@@ -322,18 +345,6 @@ Regles possibles :
 - une duree peut etre quantifiee par une operation d'edition.
 
 Comme pour `TimePosition`, les battements et les secondes sont derives de la valeur canonique en ticks.
-
-#### InstrumentId
-
-Represente l'identifiant stable et opaque de l'instrument associe a une `Note`.
-
-Responsabilites :
-
-- permettre au domaine de conserver et comparer l'instrument choisi ;
-- ne reveler aucune information sur la definition technique ou le patch de l'instrument ;
-- rester exploitable par les couches applicative et d'infrastructure sans inverser le sens des dependances.
-
-La disparition d'un instrument entre deux versions de l'application est traitee au chargement par la couche applicative.
 
 #### TimeRange
 
@@ -613,7 +624,8 @@ Responsabilites :
 - recommencer les chronologies locales au tick `0` a chaque repetition ;
 - construire les `TempoSection` de chaque clip ;
 - convertir independamment la chronologie en ticks de chaque clip en temps reel selon son propre tempo ;
-- transformer les notes en commandes audio ;
+- transformer chaque lecture d'une note en une occurrence sonore possedant une identite d'execution propre ;
+- produire des commandes d'attaque et de relachement ciblant cette occurrence, afin que deux notes utilisant le meme instrument et la meme hauteur restent independantes ;
 - transmettre ces commandes a un `AudioEngine` abstrait.
 
 Le parcours peut etre conceptualise par une operation recursive `schedule(item, startTime): endTime`. Un groupe simultane transmet le meme `startTime` a tous ses enfants et retourne le plus grand `endTime`. Un groupe sequentiel transmet le `endTime` de chaque enfant comme `startTime` du suivant.
@@ -631,22 +643,19 @@ Port minimal permettant notamment :
 - d'initialiser et d'arreter la lecture ;
 - de planifier des commandes audio ;
 - de controler le cycle de lecture ;
-- de transmettre un `InstrumentId` sans connaitre le patch correspondant.
+- de transmettre un `InstrumentId` sans connaitre le patch correspondant ;
+- d'associer chaque attaque a une identite d'occurrence ;
+- de relacher une occurrence precise sans interrompre les autres voix du meme instrument.
 
 #### InstrumentCatalog
 
 Port de consultation permettant notamment :
 
-- de lister les instruments disponibles ;
-- d'obtenir pour chacun un `InstrumentSummary` ;
+- de lister les `Instrument` disponibles ;
+- d'obtenir un `Instrument` a partir de son `InstrumentId` ;
 - de verifier qu'un `InstrumentId` peut etre resolu.
 
-`InstrumentSummary` est un modele de sortie minimal declare a cote du port :
-
-- `id`, de type `InstrumentId` ;
-- `name`.
-
-Il ne contient aucune definition de patch ni aucun parametre audio. L'implementation concrete du port appartient a l'infrastructure audio.
+Le port retourne directement les objets `Instrument` du domaine. L'ancien modele de sortie `InstrumentSummary` devient donc inutile et est supprime. Aucun patch, parametre audio ou detail d'allocation des voix ne traverse ce port. L'implementation concrete appartient a l'infrastructure audio.
 
 ## Infrastructure audio
 
@@ -656,7 +665,7 @@ Les instruments et leurs patchs sont ecrits dans le code avant la compilation. I
 
 ### BuiltInInstrumentCatalog
 
-Implementation concrete du port `InstrumentCatalog`. Il expose en lecture seule les instruments disponibles et resout leurs identifiants stables.
+Implementation concrete du port `InstrumentCatalog`. Il expose en lecture seule les objets `Instrument` disponibles et resout leurs identifiants stables. Il conserve en interne les `InstrumentDefinition` completes sans les exposer a la couche applicative.
 
 ### InstrumentDefinition
 
@@ -664,14 +673,24 @@ Represente la definition technique complete d'un instrument integre.
 
 Attributs possibles :
 
-- `id`
-- `name`
+- `instrument`
 - `patch`
+- `voiceAllocation`
 
 Responsabilites :
 
-- associer un identifiant stable a une implementation sonore ;
-- fournir le patch necessaire a l'instanciation.
+- associer un `Instrument` public a son implementation sonore ;
+- fournir le patch necessaire a l'instanciation ;
+- definir comment les occurrences concurrentes sont affectees aux voix du moteur.
+
+`voiceAllocation` peut notamment preciser :
+
+- un mode `MONOPHONIC` ou `POLYPHONIC` ;
+- un nombre maximal de voix ;
+- une politique de vol de voix lorsque cette limite est atteinte ;
+- une politique de priorite ou de retrigger pour un instrument monophonique.
+
+Ces informations sont des details d'interpretation et d'execution. Elles peuvent etre declarees a cote de `InstrumentDefinition` sans introduire immediatement un fichier autonome.
 
 ### ModularPatch
 
@@ -738,10 +757,12 @@ Le moteur audio instancie les definitions d'instruments et produit le son.
 
 Il gere notamment :
 
-- la resolution des `InstrumentId` dans le catalogue integre ;
+- la resolution des `InstrumentId` vers les `InstrumentDefinition` du catalogue integre ;
 - l'execution des patchs modulaires ;
 - la planification temporelle des commandes ;
-- le cycle de vie des voix sonores ;
+- la creation d'une voix pour chaque occurrence de note ;
+- le relachement cible d'une occurrence sans interrompre les autres voix du meme instrument ;
+- l'application des politiques de monophonie, de polyphonie et de vol de voix ;
 - la sortie audio.
 
 Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
@@ -754,6 +775,8 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Group.items` | `GroupItem` | Le groupe ordonne des clips ou d'autres groupes et definit leur mode de lecture. |
 | `GroupItem` | `Clip \| Group` | L'union rend possible un parcours recursif de la composition. |
 | `Note.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
+| `InstrumentCatalog` | `Instrument` | Le port expose la representation publique minimale des instruments disponibles. |
+| `InstrumentDefinition.instrument` | `Instrument` | La definition technique associe l'instrument public a son patch et a sa politique d'allocation des voix. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
@@ -790,7 +813,7 @@ src/
 │   │   ├── PitchContext.ts
 │   │   ├── PitchContextChange.ts
 │   │   └── PitchContextSection.ts
-│   └── InstrumentId.ts
+│   └── Instrument.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
@@ -818,14 +841,14 @@ src/
     └── stores/
 ```
 
-Les objets centraux `Project`, `Group`, `Clip` et `Note` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
+Les objets centraux `Project`, `Group`, `Clip`, `Note` et `Instrument` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
 
 - `time/` contient les positions, les durees, le tempo et la metrique ;
 - `pitch/` contient les hauteurs et leurs contextes.
 
 Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
-`InstrumentId` reste provisoirement a la racine de `domain/`, car il est partage par la composition, les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
+`Instrument` et `InstrumentId` sont declares ensemble dans `domain/Instrument.ts`. Le premier constitue la representation publique minimale de l'instrument ; le second reste l'identifiant sauvegarde par les notes et partage avec les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
@@ -837,7 +860,7 @@ Aucune pour le moment.
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets du domaine de composition comme `Project`, `Group`, `Clip`, `Note`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Project`, `Group`, `Clip`, `Note`, `Instrument`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
