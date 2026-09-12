@@ -229,7 +229,7 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - un groupe `SEQUENTIAL` transmet la fin de chaque enfant comme debut du suivant ;
 - un groupe `SIMULTANEOUS` transmet le meme debut a tous ses enfants et retourne la fin la plus tardive ;
 - une duree `infinite` se propage aux groupes ancetres selon les memes regles ;
-- `play()` commence au debut du `rootGroup`, tandis que `play(fromItemId)` utilise un point d'entree structurel valide et poursuit ensuite jusqu'a la fin du projet ;
+- `play()` commence au debut du `rootGroup`, tandis que `play(itemId)` utilise un point d'entree structurel valide et poursuit ensuite jusqu'a la fin du projet ;
 - un enfant isole d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, car ses freres devraient commencer au meme instant ;
 - `preview(itemId)` borne le parcours au clip ou au groupe cible et ne rejoint jamais le noeud suivant hors de cette racine ;
 - chaque operation globale ouvre une `PlaybackSession` transitoire ;
