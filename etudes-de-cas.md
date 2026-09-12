@@ -158,9 +158,9 @@ Le clip `Motif` est deja actif dans la lecture du projet lorsque l'utilisateur e
 | Lecture du projet | `project-session` | `clip-playback-a` | `ClipId = motif` |
 | Preecoute | `preview-session` | `clip-playback-b` | `ClipId = motif` |
 
-Les deux descripteurs sont strictement de type `CLIP` et portent le meme `ClipId`, mais des `ClipPlaybackId` differents. Chaque contexte cree ses propres instances. Arreter la preecoute detruit seulement `clip-playback-b` et ne relache aucune voix de `clip-playback-a`.
+Le `PlaybackService` sait que les deux operations planifient le meme `ClipId`, mais il transmet a l'`AudioEngine` deux descripteurs de type `CLIP` portant uniquement des `ClipPlaybackId` differents. Chaque contexte cree ainsi ses propres instances. Arreter la preecoute detruit seulement `clip-playback-b` et ne relache aucune voix de `clip-playback-a`.
 
-Une preecoute de note isolee utilise au contraire un descripteur de type `NOTE_PREVIEW`. Elle porte un `NotePreviewPlaybackId` et un `InstrumentId`, mais aucun `ClipId` optionnel : elle ne pretend pas etre la lecture d'un clip.
+Une preecoute de note isolee utilise au contraire un descripteur de type `NOTE_PREVIEW`, portant un `NotePreviewPlaybackId` et un `InstrumentId`. Aucun identifiant de source persistante ne traverse le port audio.
 
 ## Cas 7 - Repetitions et occurrences de notes
 
