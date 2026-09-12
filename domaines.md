@@ -90,7 +90,7 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Une operation globale de lecture est identifiee par un `PlaybackSessionId` et qualifiee par un `PlaybackSessionKind` : `PROJECT`, `GROUP_PREVIEW`, `CLIP_PREVIEW`, `NOTE_PREVIEW` ou `OFFLINE_RENDER`.
 - Une session `PROJECT` provient de `play(itemId?)` : l'identifiant optionnel modifie son point de depart, mais pas sa racine structurelle, qui reste le projet.
 - Une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` provient de `preview(itemId)` et reste bornee au groupe ou au clip cible.
-- Chaque unite de lecture audio isolee possede un descripteur strict `PlaybackContextDescriptor`. Une source `CLIP` porte obligatoirement un `ClipPlaybackId` et un `ClipId` ; une source `NOTE_PREVIEW` porte obligatoirement un `NotePreviewPlaybackId` et un `InstrumentId`.
+- Chaque unite de lecture audio isolee possede un descripteur strict `PlaybackContextDescriptor`. Une source `CLIP` porte obligatoirement un `ClipPlaybackId` ; une source `NOTE_PREVIEW` porte obligatoirement un `NotePreviewPlaybackId` et un `InstrumentId`.
 - Un `ClipPlaybackId` identifie une activation transitoire d'un clip et reste distinct du `ClipId` persistant. Deux activations du meme clip ne partagent donc jamais leurs instances audio.
 - Pour chaque `InstrumentId` effectivement utilise dans un contexte de clip, l'infrastructure cree une `InstrumentInstance` exclusive a partir de l'`InstrumentDefinition` partagee.
 - Les repetitions d'une meme activation reutilisent le meme contexte et les memes instances, mais produisent de nouvelles occurrences de notes.
@@ -705,7 +705,6 @@ type PlaybackContextDescriptor =
   | {
       kind: "CLIP";
       playbackId: ClipPlaybackId;
-      clipId: ClipId;
     }
   | {
       kind: "NOTE_PREVIEW";
@@ -729,7 +728,7 @@ type AudioCommand =
     };
 ```
 
-Les identifiants d'execution sont opaques et transitoires. `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais ce port.
+Les identifiants d'execution sont opaques et transitoires. Le `ClipId` persistant reste connu du domaine et du `PlaybackService`, qui cree le `ClipPlaybackId` correspondant, mais il ne traverse pas le port `AudioEngine`. `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais non plus ce port.
 
 #### InstrumentCatalog
 
@@ -775,7 +774,7 @@ Represente une unite de lecture audio isolee dans une session. Il est construit 
 - les commandes programmees qui doivent pouvoir etre annulees ;
 - un etat de cycle de vie : `SCHEDULED`, `ACTIVE`, `DRAINING` ou `DISPOSED`.
 
-Un contexte de type `CLIP` correspond a une seule activation du clip. Un contexte de type `NOTE_PREVIEW` ne pretend pas provenir d'un clip et ne contient donc aucun `ClipId` optionnel.
+Un contexte de type `CLIP` correspond a une seule activation audio identifiee par son `ClipPlaybackId`. Son clip persistant d'origine reste une connaissance du `PlaybackService`. Un contexte de type `NOTE_PREVIEW` est identifie par un `NotePreviewPlaybackId` et limite a l'`InstrumentId` indique par son descripteur.
 
 Les groupes ne possedent pas de contexte audio dans le premier perimetre : ils organisent la lecture sans gain, bus ni effet propre. Une session `GROUP_PREVIEW` contient donc les `PlaybackContext` des clips effectivement actives dans son sous-arbre, et non un `PlaybackContext` du groupe. Un tel contexte de groupe ne deviendrait pertinent que si les groupes acqueraient plus tard un comportement audio.
 
@@ -916,7 +915,6 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `PlaybackService.preview(itemId)` | `GroupItem` | Le service borne la lecture au clip ou au groupe cible sans atteindre les noeuds exterieurs. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes et des identites d'execution a travers un port abstrait. |
 | `PlaybackSession` | `PlaybackContext` | Une operation globale de lecture possede plusieurs unites audio isolees. |
-| `PlaybackContextDescriptor.CLIP.clipId` | `ClipId` | Le descripteur relie une activation transitoire a sa source persistante sans confondre leurs identites. |
 | `PlaybackContext` | `InstrumentInstance` | Le contexte possede au plus une instance exclusive par `InstrumentId`. |
 | `InstrumentInstance` | `InstrumentDefinition` | L'instance mutable est creee a partir d'une definition immuable partagee. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
