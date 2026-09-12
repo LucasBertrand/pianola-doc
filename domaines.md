@@ -794,7 +794,8 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 ```text
 src/
 ├── domain/
-│   ├── Project.ts
+│   ├── Project.ts 
+│   ├── Instrument.ts
 │   ├── Group.ts
 │   ├── Clip.ts
 │   ├── Note.ts
@@ -808,12 +809,11 @@ src/
 │   │   ├── Meter.ts
 │   │   ├── MeterChange.ts
 │   │   └── MeterSection.ts
-│   ├── pitch/
-│   │   ├── Pitch.ts
-│   │   ├── PitchContext.ts
-│   │   ├── PitchContextChange.ts
-│   │   └── PitchContextSection.ts
-│   └── Instrument.ts
+│   └── pitch/
+│       ├── Pitch.ts
+│       ├── PitchContext.ts
+│       ├── PitchContextChange.ts
+│       └── PitchContextSection.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
