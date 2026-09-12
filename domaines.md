@@ -22,13 +22,13 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 
 ## Vision generale
 
-L'application est centree sur un domaine de composition. L'`Arrangement` y decrit l'organisation musicale des pistes et des clips dans le temps.
+L'application est centree sur un domaine de composition. Le `Project` y organise une sequence de clips necessairement consecutifs.
 
-Le projet exprime des intentions musicales sous forme de pistes, clips et notes. Il ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
+Le projet exprime des intentions musicales sous forme de clips et de notes. Chaque note reference l'instrument qui doit l'interpreter. Le projet ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
 
-Les moyens necessaires a l'ecoute sont places autour du domaine :
+Il n'existe pas de vue d'arrangement multipiste dans laquelle des clips seraient places librement sur plusieurs pistes instrumentales. Les moyens necessaires a l'ecoute sont places autour du domaine :
 
-- une couche applicative qui interprete l'arrangement ;
+- une couche applicative qui interprete la sequence de clips ;
 - des ports qui definissent ce dont l'application a besoin pour produire du son ;
 - une infrastructure audio qui contient le catalogue d'instruments integre, leurs patchs et le moteur audio.
 
@@ -42,31 +42,36 @@ flowchart LR
 
 ## Decisions actees
 
-- Le terme `Arrangement` designe l'objet qui organise dans le temps l'ensemble ordonne des pistes du projet. Le domaine qui le contient est nomme domaine de composition.
-- Une `Track` est un conteneur de clips ordonnes dans le temps, lie a un instrument arbitraire par son identifiant.
+- Le `Project` organise directement une sequence ordonnee de clips.
+- Les clips sont necessairement consecutifs : ils ne possedent pas de position dans une timeline globale et leur ordre determine l'ordre de lecture.
+- Un clip peut etre contourne pendant la lecture. Cet etat est conserve dans le clip afin que la sauvegarde preserve la structure courante de la sequence.
+- Chaque `Clip` porte son propre tempo et sa propre metrique.
 - Un `Clip` contient uniquement des `NoteEvent` dans le premier perimetre fonctionnel.
 - Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
+- Chaque `NoteEvent` reference l'instrument qui doit l'interpreter au moyen d'un `InstrumentId`. Un meme clip peut donc contenir plusieurs instruments.
 - Le temps musical canonique est represente par des ticks entiers, avec une resolution fixe de 960 ticks par noire.
-- Le placement reste libre a l'echelle de ces ticks : une position n'a pas besoin d'etre alignee sur la grille visible.
+- Les positions des notes sont locales au clip et restent libres a l'echelle de ces ticks : une position n'a pas besoin d'etre alignee sur la grille visible.
 - La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans transformer le modele musical en grille rigide.
 - La selection appartient a l'etat applicatif de l'editeur. Elle reference temporairement des objets du domaine sans faire partie de la composition.
 - L'application est destinee a l'ecriture et au processus initial de composition, pas a la production audio.
-- Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour une piste, mais ne peut ni creer ni modifier son patch.
+- Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour les notes, mais ne peut ni creer ni modifier son patch.
 - Le catalogue d'instruments fait partie de l'infrastructure audio.
 - Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
 - Les automations, les evenements de controle et l'exposition de parametres audio ne font pas partie du premier perimetre fonctionnel.
-- Le domaine ne connait de l'audio que l'`InstrumentId` stable associe a chaque piste. Les ports audio appartiennent a la couche applicative.
+- Le domaine ne connait de l'audio que les `InstrumentId` stables associes aux notes. Les ports audio appartiennent a la couche applicative.
 - Les services applicatifs sont ranges dans `application/use-cases/`. Aucun service d'edition generique n'est cree avant que ses responsabilites soient definies.
 - Aucun dossier generique `application/contracts/` n'est necessaire : les ports portent leurs propres modeles d'echange et les types metier restent dans le domaine.
 
 ## Domaine de composition
 
-Le domaine de composition decrit la structure musicale du projet dans le temps. L'`Arrangement` en constitue l'organisation temporelle. Il repond a des questions comme :
+Le domaine de composition decrit une succession de sections musicales. Le `Project` ordonne directement les clips et repond a des questions comme :
 
-- quelles pistes existent ?
-- quels clips sont places sur ces pistes ?
+- quels clips composent la sequence ?
+- dans quel ordre doivent-ils etre lus ?
+- quels clips doivent etre contournes ?
 - quelles notes existent dans un clip ?
-- a quel moment ces notes doivent-elles etre jouees ?
+- quel instrument doit interpreter chaque note ?
+- a quel moment relatif du clip chaque note doit-elle etre jouee ?
 
 Il reste independant de la maniere dont le son est produit et de la maniere dont l'utilisateur manipule visuellement les objets.
 
@@ -76,85 +81,53 @@ Une entity possede une identite propre. Elle peut changer au cours du temps tout
 
 #### Project
 
-Represente le document musical complet ouvert dans l'application.
+Represente le document musical complet ouvert dans l'application et la sequence de clips qui le compose.
 
 Attributs possibles :
 
 - `id`
 - `name`
-- `arrangement`
-- `tempo`
-- `timeSignature`
+- `clips`
 - `createdAt`
 - `updatedAt`
 
 Responsabilites :
 
 - servir de racine de sauvegarde ;
-- contenir l'arrangement et les donnees propres a la composition ;
-- porter les reglages globaux du morceau.
+- contenir et ordonner la sequence de clips ;
+- garantir que les clips sont lus consecutivement ;
+- permettre de reorganiser la composition sans recourir a des pistes ni a une timeline libre.
 
-#### Arrangement
-
-Represente l'organisation musicale globale du projet.
-
-Attributs possibles :
-
-- `id`
-- `tracks`
-- `length`
-
-Responsabilites :
-
-- organiser les pistes dans le temps ;
-- definir la duree globale editable ;
-- fournir le cadre temporel commun aux clips.
-
-La resolution de la grille n'appartient pas a l'arrangement : elle releve de l'etat de l'editeur.
-
-#### Track
-
-Represente un conteneur de clips ordonnes dans le temps.
-
-Une piste est associee a un instrument par un `InstrumentId`, mais elle ne contient ni sa definition ni son patch.
-
-Attributs possibles :
-
-- `id`
-- `name`
-- `instrumentId`
-- `color`
-- `isMuted`
-- `isSolo`
-- `clips`
-
-Responsabilites :
-
-- contenir et ordonner des clips selon leur position temporelle ;
-- porter les reglages propres a la piste ;
-- relier des intentions musicales a un instrument sans dependre de son implementation audio.
+Le projet ne porte ni tempo ni metrique globaux : ces proprietes appartiennent a chaque clip.
 
 #### Clip
 
-Represente une unite musicale editable, deplacable, copiable et potentiellement bouclable.
+Represente une section musicale editable, copiable, reordonnable et potentiellement bouclable.
+
+Un clip ne possede pas de position globale. Il commence lorsque le clip precedent se termine, sauf s'il est contourne pendant la lecture.
 
 Attributs possibles :
 
 - `id`
 - `name`
-- `range`
+- `duration`
+- `tempo`
+- `timeSignature`
+- `isBypassed`
 - `loop`
 - `notes`
 
 Responsabilites :
 
-- contenir et ordonner des notes ;
-- definir une region temporelle sur une piste ;
-- permettre l'edition locale d'un motif, d'une phrase ou d'une cellule musicale.
+- contenir et ordonner des notes selon leur position locale ;
+- definir la duree et le contexte rythmique d'une section ;
+- conserver son etat de bypass dans la sauvegarde ;
+- permettre l'edition locale d'un motif, d'une phrase ou d'une section musicale ;
+- permettre a plusieurs instruments de coexister dans une meme section par l'intermediaire des notes.
 
 #### NoteEvent
 
-Represente une note placee dans un clip. Elle possede une identite propre afin de conserver sa continuite lorsqu'elle est deplacee, redimensionnee, transposee ou modifiee.
+Represente une note placee dans un clip et associee a un instrument. Elle possede une identite propre afin de conserver sa continuite lorsqu'elle est deplacee, redimensionnee, transposee ou modifiee.
 
 Une `NoteEvent` n'est pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression.
 
@@ -164,6 +137,7 @@ Attributs possibles :
 - `pitch`
 - `range`
 - `velocity`
+- `instrumentId`
 
 Responsabilites :
 
@@ -171,6 +145,7 @@ Responsabilites :
 - definir une position temporelle relative au clip ;
 - definir une duree ;
 - porter des parametres d'interpretation simples ;
+- identifier l'instrument charge de l'interpreter ;
 - conserver son identite au fil de ses modifications.
 
 ### Value Objects de la composition
@@ -203,11 +178,11 @@ Representation canonique :
 
 Responsabilites :
 
-- positionner une note ou un clip dans le temps musical ;
+- positionner une note dans le temps musical local d'un clip ;
 - accepter toute position en ticks, y compris lorsqu'elle n'est pas alignee sur la grille d'edition ;
 - rester independant du temps reel.
 
-Les battements et les secondes sont des representations derivees. Les secondes sont calculees par le service de lecture a partir du tempo.
+Les battements et les secondes sont des representations derivees. Les secondes sont calculees par le service de lecture a partir du tempo du clip courant.
 
 #### Duration
 
@@ -224,7 +199,7 @@ Comme pour `TimePosition`, les battements et les secondes sont derives de la val
 
 #### InstrumentId
 
-Represente l'identifiant stable et opaque de l'instrument associe a une `Track`.
+Represente l'identifiant stable et opaque de l'instrument associe a une `NoteEvent`.
 
 Responsabilites :
 
@@ -245,7 +220,7 @@ Attributs possibles :
 
 Responsabilites :
 
-- decrire l'emplacement temporel d'un clip ou d'une note ;
+- decrire l'emplacement temporel d'une note dans son clip ;
 - detecter les chevauchements ;
 - faciliter les operations de deplacement et de redimensionnement.
 
@@ -264,7 +239,7 @@ Regles possibles :
 
 #### Tempo
 
-Represente la vitesse globale du projet.
+Represente la vitesse propre a un clip.
 
 Attributs possibles :
 
@@ -273,11 +248,12 @@ Attributs possibles :
 Regles possibles :
 
 - le BPM doit rester dans une plage musicalement exploitable ;
-- le tempo permet au service de lecture de convertir le temps musical en temps reel.
+- le tempo permet au service de lecture de convertir le temps musical local du clip en temps reel ;
+- un changement de tempo intervient uniquement a la frontiere entre deux clips.
 
 #### TimeSignature
 
-Represente la mesure musicale.
+Represente la metrique propre a un clip.
 
 Attributs possibles :
 
@@ -292,8 +268,9 @@ Exemples :
 
 Responsabilites :
 
-- organiser les reperes en mesures ;
-- influencer les reperes temporels proposes par l'editeur.
+- organiser les reperes en mesures a l'interieur du clip ;
+- influencer les reperes temporels proposes par l'editeur ;
+- permettre un changement de metrique a la frontiere entre deux clips.
 
 #### Loop
 
@@ -313,31 +290,26 @@ Responsabilites :
 
 #### Project comme aggregate root
 
-`Project` peut etre considere comme la racine principale. Il garantit la coherence globale du document musical.
+`Project` est la racine principale. Il garantit la coherence globale du document musical et de sa sequence.
 
 Il contient :
 
-- un `Arrangement` ;
-- des reglages globaux comme `Tempo` et `TimeSignature` ;
+- une collection ordonnee de clips ;
 - des informations de sauvegarde.
-
-#### Arrangement comme aggregate
-
-`Arrangement` garantit la coherence temporelle des pistes et des clips.
 
 Regles possibles :
 
-- une piste appartient a un seul arrangement ;
-- l'arrangement definit l'ordre de ses pistes ;
-- une piste ordonne ses clips selon leur position temporelle ;
-- une piste reference un instrument arbitraire sans le contenir ;
-- un clip appartient a une seule piste ;
-- les clips peuvent se chevaucher ou non selon le choix d'edition ;
-- les positions des clips sont exprimees dans le temps global du projet.
+- un clip appartient a un seul projet ;
+- l'ordre des clips definit integralement leur ordre de lecture ;
+- les clips sont consecutifs et ne possedent pas de position temporelle globale ;
+- reordonner un clip modifie la structure de la sequence ;
+- un clip contourne reste present a sa place dans la sequence et son etat est sauvegarde ;
+- pendant la lecture, un clip contourne est ignore et le clip suivant commence immediatement ;
+- le contexte de tempo et de metrique change aux frontieres entre clips.
 
 #### Clip comme aggregate secondaire
 
-`Clip` garantit la coherence de ses propres notes.
+`Clip` garantit la coherence de ses propres notes et de son contexte rythmique.
 
 Regles possibles :
 
@@ -345,6 +317,8 @@ Regles possibles :
 - une note modifiee conserve son identite ;
 - une note copiee ou dupliquee recoit une nouvelle identite ;
 - les notes sont positionnees relativement au debut du clip ;
+- une note reference exactement un instrument ;
+- plusieurs notes d'un meme clip peuvent referencer des instruments differents ;
 - les positions et durees peuvent rester continues dans le modele ;
 - la quantification est appliquee par les operations d'edition ;
 - selon le choix musical, les chevauchements sur une meme hauteur peuvent etre autorises ou interdits.
@@ -359,12 +333,11 @@ Represente l'ensemble courant des objets selectionnes. Elle ne possede pas d'ide
 
 Attributs possibles :
 
-- `selectedTrackIds`
 - `selectedClipIds`
 - `selectedNoteIds`
 - `selectionAnchor`
 
-Des informations comme `activeTrackId` ou `focusedClipId` permettent de distinguer l'objet actif de l'ensemble des objets selectionnes.
+Des informations comme `activeClipId` ou `focusedNoteId` permettent de distinguer l'objet actif de l'ensemble des objets selectionnes.
 
 Responsabilites :
 
@@ -408,8 +381,9 @@ Exemples :
 
 - deplacer des notes ;
 - redimensionner un clip ;
+- reordonner ou bypasser un clip ;
 - transposer plusieurs notes ;
-- associer un instrument disponible a une piste.
+- associer un instrument disponible a une ou plusieurs notes.
 
 Aucun `EditorService` generique n'est introduit. Les futurs services d'edition seront nommes et ajoutes dans `application/use-cases/` lorsque leurs responsabilites precises seront etablies.
 
@@ -419,8 +393,9 @@ Le service de lecture fait le lien entre la composition et l'infrastructure audi
 
 Responsabilites :
 
-- parcourir l'arrangement selon le tempo ;
-- convertir le temps musical en temps reel ;
+- parcourir la sequence de clips dans son ordre ;
+- ignorer les clips contournes ;
+- convertir le temps musical de chaque clip en temps reel selon son propre tempo ;
 - transformer les notes en commandes audio ;
 - transmettre ces commandes a un `AudioEngine` abstrait.
 
@@ -554,7 +529,8 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
-| `Track.instrumentId` | `InstrumentId` | Une piste conserve l'identifiant opaque de l'instrument choisi. |
+| `Project.clips` | `Clip` | Le projet conserve l'ordre persistant des sections musicales. |
+| `NoteEvent.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
@@ -570,8 +546,6 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 src/
 ├── domain/
 │   ├── Project.ts
-│   ├── Arrangement.ts
-│   ├── Track.ts
 │   ├── Clip.ts
 │   ├── NoteEvent.ts
 │   ├── Pitch.ts
@@ -622,7 +596,7 @@ Aucune pour le moment.
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets du domaine de composition comme `Arrangement`, `Track`, `Clip`, `NoteEvent` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Project`, `Clip`, `NoteEvent` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
