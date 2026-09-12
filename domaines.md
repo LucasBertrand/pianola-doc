@@ -42,31 +42,40 @@ flowchart LR
 
 ## Decisions actees
 
-- Le `Project` organise directement une sequence ordonnee de clips.
-- Les clips sont necessairement consecutifs : ils ne possedent pas de position dans une timeline globale et leur ordre determine l'ordre de lecture.
-- Un clip peut etre contourne pendant la lecture. Cet etat est conserve dans le clip afin que la sauvegarde preserve la structure courante de la sequence.
-- Chaque clip possede un `repeatCount`, independant du bypass, qui indique son nombre total de lectures. Sa valeur est un entier strictement positif ou `infinite`.
-- Chaque `Clip` porte ses propres chronologies locales de tempo, de metrique et de contexte de hauteurs, positionnees en ticks.
-- Les chronologies de tempo et de metrique possedent obligatoirement un changement initial au tick `0` ; ils remplacent les anciennes proprietes scalaires `tempo` et `meter` du clip.
-- Un changement de tempo peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; il peut ensuite fermer une mesure devenue incomplete si la metrique precedente est modifiee sans deplacer le marqueur.
-- Les `TempoSection`, `MeterSection` et `PitchSection` ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de leur chronologie respective, ou entre le dernier changement et la fin du clip.
-- Modifier une metrique propose deux intentions explicites : conserver la duree en ticks ou conserver le nombre de mesures.
-- Par defaut, un clip vide conserve son nombre de mesures ; une section contenant deja des notes ou suivie d'autres sections conserve sa duree.
-- Un `Clip` contient uniquement des `Note` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo, de metrique et de contexte de hauteurs sont des donnees structurelles, et non des automations ou des evenements de controle.
-- Le contexte de hauteurs est descriptif : il permet de mettre en evidence les notes qui appartiennent a un ensemble de hauteurs, sans interdire les notes exterieures.
-- Une `Note` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
-- Chaque `Note` reference l'instrument qui doit l'interpreter au moyen d'un `InstrumentId`. Un meme clip peut donc contenir plusieurs instruments.
-- Le temps musical canonique est represente par des ticks entiers, avec une resolution fixe de 960 ticks par noire.
-- Les positions des notes sont locales au clip et restent libres a l'echelle de ces ticks : une position n'a pas besoin d'etre alignee sur la grille visible.
-- La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans transformer le modele musical en grille rigide.
-- La selection appartient a l'etat applicatif de l'editeur. Elle reference temporairement des objets du domaine sans faire partie de la composition.
-- L'application est destinee a l'ecriture et au processus initial de composition, pas a la production audio.
-- Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour les notes, mais ne peut ni creer ni modifier son patch.
-- Le catalogue d'instruments fait partie de l'infrastructure audio.
-- Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
-- Les automations, les evenements de controle et l'exposition de parametres audio ne font pas partie du premier perimetre fonctionnel.
-- Le domaine ne connait de l'audio que les `InstrumentId` stables associes aux notes. Les ports audio appartiennent a la couche applicative.
-- Les services applicatifs sont ranges dans `application/use-cases/`. Aucun service d'edition generique n'est cree avant que ses responsabilites soient definies.
+Cette section synthetise les choix structurants. Les invariants et responsabilites propres a chaque objet sont detailles dans les sections suivantes.
+
+### Structure de la composition
+
+- Le `Project` organise directement une sequence ordonnee de clips consecutifs. Les clips ne possedent pas de position dans une timeline globale : leur ordre et leur nombre de lectures determinent la lecture de la composition.
+- `isBypassed` permet de contourner un clip sans le retirer de la sequence. Cet etat est sauvegarde et reste independant de `repeatCount`.
+- `repeatCount` indique le nombre total de lectures du clip. Il accepte un entier strictement positif ou `infinite` ; chaque repetition recommence au tick `0` avec les chronologies locales du clip.
+
+### Temps musical et contextes
+
+- Le temps musical canonique utilise des ticks entiers, avec une resolution fixe de 960 ticks par noire. Les positions sont locales au clip, libres et independantes de la grille visible.
+- Chaque `Clip` contient trois chronologies structurelles : `tempoChanges`, `meterChanges` et `pitchContextChanges`. Les chronologies de tempo et de metrique commencent obligatoirement au tick `0`.
+- Un changement de tempo ou de contexte de hauteurs peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; un changement deja place peut fermer une mesure devenue incomplete apres la modification de la metrique precedente.
+- Les `TempoSection`, `MeterSection` et `PitchSection` sont des vues derivees des intervalles entre les changements. Elles ne sont pas sauvegardees directement.
+- Modifier une metrique exprime explicitement l'une de deux intentions : conserver la duree en ticks ou conserver le nombre de mesures. Un clip vide conserve par defaut son nombre de mesures ; une section contenant des notes ou suivie d'autres sections conserve par defaut sa duree.
+
+### Notes et edition
+
+- Les `Note` constituent le seul contenu musical des clips dans le premier perimetre fonctionnel. Les changements de contexte sont des donnees structurelles, et non des automations ou des evenements de controle.
+- Une `Note` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et en recoit une nouvelle lorsqu'elle est copiee.
+- Chaque note reference exactement un `InstrumentId`. Plusieurs instruments peuvent ainsi coexister dans un meme clip.
+- Le contexte de hauteurs est descriptif : il met en evidence l'appartenance des notes a un ensemble de hauteurs sans interdire les notes exterieures.
+- La quantification et la selection appartiennent a l'experience d'edition. Elles guident les actions de l'utilisateur sans transformer le modele musical en grille rigide ni devenir des donnees de composition.
+
+### Perimetre audio
+
+- Pianola est destine a l'ecriture et au processus initial de composition, pas a la production audio. Les automations, les evenements de controle et l'edition de patchs ne font pas partie du premier perimetre fonctionnel.
+- Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour ses notes, mais ne peut ni creer ni modifier son patch.
+- Le moteur audio et le catalogue d'instruments appartiennent a l'infrastructure. Le domaine ne connait de l'audio que les `InstrumentId` stables associes aux notes.
+
+### Conventions architecturales
+
+- Les ports audio appartiennent a la couche applicative et sont implementes par l'infrastructure.
+- Les services applicatifs sont ranges dans `application/use-cases/`. Aucun service d'edition generique n'est introduit avant que ses responsabilites soient clairement definies.
 - Aucun dossier generique `application/contracts/` n'est necessaire : les ports portent leurs propres modeles d'echange et les types metier restent dans le domaine.
 
 ## Domaine de composition
