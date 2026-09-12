@@ -6,22 +6,21 @@ L'objectif est de poser un vocabulaire metier stable avant de penser interface, 
 
 ## Vision generale
 
-Un projet contient deux grands espaces volontairement decouples :
+L'application est centree sur un domaine de composition qui decrit l'organisation musicale dans le temps.
 
-- le domaine d'arrangement, qui decrit l'organisation musicale dans le temps ;
-- le domaine audio, qui decrit la fabrication et le comportement sonore des instruments.
+Les moyens necessaires a l'ecoute sont places autour de ce domaine :
 
-Le domaine d'arrangement ne produit pas directement de son. Il exprime des intentions musicales sous forme de pistes, clips et evenements. Le domaine audio interprete ces intentions a travers des instruments construits comme des patchs modulaires.
+- un catalogue d'instruments en lecture seule, defini dans le code avant la compilation ;
+- un service de lecture qui interprete l'arrangement ;
+- un moteur audio qui instancie les instruments et produit le son.
+
+Le projet exprime des intentions musicales sous forme de pistes, clips et evenements. Il ne contient ni les patchs des instruments ni l'etat d'execution du moteur audio.
 
 ```mermaid
-flowchart TD
-    Project --> Arrangement
-    Project --> AudioSystem
-    Arrangement --> Track
-    Track --> Clip
-    Clip --> MusicalEvent
-    AudioSystem --> ModularInstrument
-    ModularInstrument --> ModularPatch
+flowchart LR
+    Composition["Domaine de composition"] --> Playback["Service de lecture"]
+    Catalog["Catalogue d'instruments"] --> Playback
+    Playback --> Engine["Moteur audio"]
 ```
 
 ## Decisions actees
@@ -29,6 +28,10 @@ flowchart TD
 - Un `Arrangement` est l'ensemble ordonne des pistes du projet.
 - Une `Track` est un conteneur de clips ordonnes dans le temps, lie a un instrument arbitraire par son identifiant.
 - Le temps du domaine est pense comme un espace continu. L'utilisateur pourra toutefois placer, deplacer et redimensionner des evenements a l'aide d'une grille quantifiee (la quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans obliger le modele musical a devenir une grille rigide).
+
+- L'application est destinee a l'ecriture et au processus initial de composition, pas a la production audio.
+- Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour une piste, mais ne peut ni creer ni modifier son patch.
+- Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
 
 ## Domaine d'arrangement
 
@@ -54,7 +57,6 @@ Attributs possibles :
 - `id`
 - `name`
 - `arrangement`
-- `audioSystem`
 - `tempo`
 - `timeSignature`
 - `createdAt`
@@ -63,7 +65,7 @@ Attributs possibles :
 Responsabilites :
 
 - servir de racine de sauvegarde ;
-- contenir les grands sous-domaines du projet ;
+- contenir l'arrangement et les donnees propres a la composition ;
 - porter les reglages globaux du morceau.
 
 ### Arrangement
@@ -199,57 +201,35 @@ Responsabilites :
 - permettre les operations de groupe ;
 - separer la logique de selection de la representation graphique.
 
-## Domaine audio
+## Catalogue d'instruments
 
-Le domaine audio decrit les instruments et leur architecture interne. Il repond a des questions comme :
+Le catalogue expose en lecture seule les instruments disponibles dans l'application. Ses definitions sont ecrites dans le code et integrees avant la compilation.
 
-- quels instruments existent dans le projet ?
-- quels modules composent un instrument ?
-- comment ces modules sont-ils connectes ?
-- quels parametres peuvent etre controles par les clips ou l'utilisateur ?
+L'utilisateur peut choisir un instrument pour une piste, mais ne peut ni ajouter un instrument au catalogue ni modifier son patch. Le catalogue n'appartient donc pas au projet sauvegarde.
 
-Il reste independant de l'interface de piano roll et de la disposition graphique des clips.
+### InstrumentDefinition
 
-### AudioSystem
-
-Represente l'ensemble des ressources audio du projet.
-
-Attributs possibles :
-
-- `id`
-- `instruments`
-- `masterOutput`
-
-Responsabilites :
-
-- contenir les instruments disponibles ;
-- definir la sortie audio globale ;
-- fournir les instruments references par les pistes.
-
-### ModularInstrument
-
-Represente un instrument fabrique a partir d'un patch modulaire.
+Represente la definition statique d'un instrument disponible.
 
 Attributs possibles :
 
 - `id`
 - `name`
 - `patch`
-- `parameters`
+- `exposedParameters`
 
 Responsabilites :
 
-- recevoir des evenements musicaux ;
-- exposer des parametres controlables ;
-- produire un signal audio a partir d'un patch.
+- fournir un identifiant stable reference par les pistes ;
+- decrire le patch necessaire a l'instanciation de l'instrument ;
+- declarer les parametres que la composition peut eventuellement controler.
 
 ### ModularPatch
 
-Represente le graphe interne d'un instrument modulaire.
+Represente le graphe interne statique d'un instrument.
 
 Attributs possibles :
 
-- `id`
 - `modules`
 - `connections`
 - `outputModuleId`
@@ -262,17 +242,7 @@ Responsabilites :
 
 ### AudioModule
 
-Represente un module audio ou de controle.
-
-Types possibles :
-
-- `VCO`
-- `Envelope`
-- `Filter`
-- `LFO`
-- `VCA`
-- `Mixer`
-- `Output`
+Represente une definition de module audio ou de controle, comme un `VCO`, une enveloppe, un filtre, un `LFO`, un `VCA`, un mixer ou une sortie.
 
 Attributs possibles :
 
@@ -282,27 +252,42 @@ Attributs possibles :
 - `inputs`
 - `outputs`
 
-Responsabilites :
-
-- fournir une fonction sonore ou de controle ;
-- declarer ses entrees et sorties ;
-- exposer des parametres modulables.
-
 ### ModuleConnection
 
-Represente une connexion entre deux ports de modules.
+Represente une connexion statique entre deux ports de modules.
 
 Attributs possibles :
 
-- `id`
 - `sourcePort`
 - `targetPort`
 
+Les `ModularPatch`, `AudioModule` et `ModuleConnection` ne sont pas des objets editables par l'utilisateur et ne sont pas sauvegardes dans le projet.
+
+## Lecture et infrastructure audio
+
+### PlaybackService
+
+Le service de lecture fait le lien entre la composition et l'infrastructure audio.
+
 Responsabilites :
 
-- relier deux modules ;
-- distinguer signal audio et signal de controle si necessaire ;
-- permettre la validation du graphe modulaire.
+- parcourir l'arrangement selon le tempo ;
+- resoudre l'`InstrumentId` associe a chaque piste dans le catalogue ;
+- transformer les evenements musicaux en commandes audio ;
+- transmettre ces commandes au moteur audio.
+
+### AudioEngine
+
+Le moteur audio instancie les definitions d'instruments et produit le son.
+
+Il gere notamment :
+
+- l'execution des patchs modulaires ;
+- la planification temporelle des commandes ;
+- le cycle de vie des voix sonores ;
+- la sortie audio.
+
+Le moteur audio ne fait pas partie du modele metier editable. Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
 ## Value Objects
 
@@ -511,10 +496,10 @@ Le couplage entre arrangement et audio doit rester minimal.
 
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
-| `Track.instrumentId` | `ModularInstrument.id` | Une piste choisit l'instrument qui interprete ses clips. |
-| `NoteEvent` | `ModularInstrument` | Une note declenche l'instrument pendant la lecture. |
+| `Track.instrumentId` | `InstrumentDefinition.id` | Une piste choisit un instrument disponible dans le catalogue. |
+| `NoteEvent` | `PlaybackService` | Le service de lecture transforme une note en commandes pour l'instrument de la piste. |
 | `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre expose par un instrument. |
-| `Project` | `Arrangement` et `AudioSystem` | Le projet coordonne les deux sous-domaines. |
+| `PlaybackService` | `AudioEngine` | Le service transmet au moteur les commandes necessaires a l'ecoute. |
 
 ## Premiers agregats possibles
 
@@ -525,7 +510,6 @@ Le couplage entre arrangement et audio doit rester minimal.
 Il contient :
 
 - un `Arrangement` ;
-- un `AudioSystem` ;
 - des reglages globaux comme `Tempo` et `TimeSignature` ;
 - des informations de sauvegarde.
 
@@ -558,15 +542,16 @@ Regles possibles :
 - la quantification est appliquee par les operations d'edition quand l'utilisateur active ou utilise la grille ;
 - selon le choix musical, on peut autoriser ou interdire les chevauchements sur une meme hauteur.
 
-### ModularInstrument comme aggregate
+### Definitions d'instruments hors du projet
 
-`ModularInstrument` garantit la coherence de son patch.
+Les definitions d'instruments appartiennent au catalogue statique de l'application. Elles ne constituent pas un agregat editable du projet.
 
 Regles possibles :
 
-- un module appartient a un seul patch ;
-- une connexion relie deux ports compatibles ;
+- chaque instrument possede un identifiant stable ;
+- une piste ne peut referencer qu'un instrument present dans le catalogue ;
 - un patch doit posseder une sortie audio valide ;
+- une connexion relie deux ports compatibles ;
 - les parametres exposes doivent avoir des identifiants stables.
 
 ## Questions ouvertes
@@ -574,8 +559,6 @@ Regles possibles :
 - Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
 - Les clips doivent-ils etre uniquement des conteneurs de notes, ou peuvent-ils contenir d'autres types d'evenements comme des automations et des controles ?
 - La selection appartient-elle vraiment au domaine, ou plutot a l'etat applicatif de l'editeur ?
-- Le domaine audio doit-il modeliser seulement la definition des instruments, ou aussi leur etat d'execution pendant la lecture ?
-- Comment representer proprement les parametres exposes par un instrument modulaire pour que l'arrangement puisse les automatiser sans connaitre le patch en detail ?
 
 ## Intuition de depart
 
@@ -583,4 +566,4 @@ Pour une architecture clean, le domaine devrait rester independant de l'interfac
 
 Les objets d'arrangement comme `Track`, `Clip`, `NoteEvent`, `TimeRange` ou `GridResolution` doivent pouvoir exister sans connaitre React, canvas ou Web Audio.
 
-Les objets audio comme `ModularInstrument`, `ModularPatch`, `AudioModule` ou `ModuleConnection` doivent pouvoir exister sans connaitre le piano roll. Ils decrivent une architecture sonore ; le moteur audio concret viendra plus tard interpreter cette architecture.
+Le catalogue d'instruments, le service de lecture et le moteur audio doivent rester remplacables sans modifier le coeur de la composition. Le domaine ne connait que les identifiants des instruments et, si necessaire, ceux des parametres exposes.
