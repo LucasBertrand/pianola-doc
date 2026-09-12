@@ -77,7 +77,7 @@ La composition comporte une introduction, un ensemble simultane, puis une conclu
 ```mermaid
 flowchart TD
     Root["RootGroup - SEQUENTIAL"] --> Intro["Introduction"]
-    Root --> Ensemble["Ensembleusiaste - SIMULTANEOUS"]
+    Root --> Ensemble["Ensemble - SIMULTANEOUS"]
     Root --> Conclusion["Conclusion"]
     Ensemble --> Rythme["Rythme - SEQUENTIAL"]
     Ensemble --> Basse["Ligne de basse"]
