@@ -16,7 +16,7 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 - [Couche applicative et lecture](#couche-applicative-et-lecture)
 - [Infrastructure audio](#infrastructure-audio)
 - [Relations architecturales](#relations-architecturales)
-- [Etude de cas](#etude-de-cas)
+- [Etudes de cas](etudes-de-cas.md)
 - [Arborescence cible](#arborescence-cible)
 - [Questions ouvertes](#questions-ouvertes)
 - [Principes directeurs](#principes-directeurs)
@@ -618,6 +618,8 @@ Responsabilites :
 
 Le parcours peut etre conceptualise par une operation recursive `schedule(item, startTime): endTime`. Un groupe simultane transmet le meme `startTime` a tous ses enfants et retourne le plus grand `endTime`. Un groupe sequentiel transmet le `endTime` de chaque enfant comme `startTime` du suivant.
 
+Les scenarios detailles, notamment les repetitions, le bypass, les superpositions a tempos differents et les branches infinies, sont presentes dans [les etudes de cas](etudes-de-cas.md).
+
 ### Ports
 
 Les ports decrivent les capacites attendues par l'application sans imposer leur implementation.
@@ -761,52 +763,6 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | Moteur audio concret | `InstrumentDefinition` | Le moteur resout l'identifiant, instancie le patch et produit le son. |
 
 Le sens des dependances de code doit pointer vers l'interieur : l'application depend du domaine, et l'infrastructure depend des ports applicatifs ainsi que du domaine, jamais l'inverse.
-
-## Etude de cas
-
-Considerons une composition dont le groupe racine utilise le mode `SEQUENTIAL` :
-
-```mermaid
-flowchart TD
-    Root["RootGroup - SEQUENTIAL"] --> Intro["Introduction"]
-    Root --> Ensemble["Ensemble - SIMULTANEOUS"]
-    Root --> Conclusion["Conclusion"]
-    Ensemble --> Rythme["Rythme - SEQUENTIAL"]
-    Ensemble --> Basse["Ligne de basse"]
-    Rythme --> GrooveA["Groove A"]
-    Rythme --> GrooveB["Groove B"]
-```
-
-Les clips possedent les caracteristiques suivantes :
-
-| Clip | Duree | Metrique | Tempo | Duree reelle |
-| --- | ---: | ---: | ---: | ---: |
-| `Introduction` | 3840 ticks | 4/4 | 120 BPM | 2 s |
-| `Groove A` | 3840 ticks | 4/4 | 120 BPM | 2 s |
-| `Groove B` | 3840 ticks | 4/4 | 120 BPM | 2 s |
-| `Ligne de basse` | 5760 ticks | 3/4 | 90 BPM | 4 s |
-| `Conclusion` | 2880 ticks | 3/4 | 90 BPM | 2 s |
-
-Avec un tempo constant, la duree reelle d'un clip se calcule ainsi :
-
-```text
-durationSeconds = (durationTicks / 960) * (60 / bpm)
-```
-
-La lecture se deroule comme suit :
-
-| Temps reel | Lecture |
-| --- | --- |
-| 0 a 2 s | `Introduction` |
-| 2 a 4 s | `Groove A` et premiere partie de `Ligne de basse` |
-| 4 a 6 s | `Groove B` et seconde partie de `Ligne de basse` |
-| 6 a 8 s | `Conclusion` |
-
-Le groupe `Rythme` dure quatre secondes, car il additionne deux clips de deux secondes. Le groupe `Ensemble` dure egalement quatre secondes : ses deux enfants commencent a deux secondes et se terminent tous les deux a six secondes.
-
-La `Ligne de basse` reste entierement independante du groupe `Rythme`. Sa metrique 3/4 et son tempo de 90 BPM ne modifient ni les reperes ni les chronologies des clips de rythme en 4/4 a 120 BPM. Seul leur instant de depart reel est commun.
-
-Aucune position globale n'est sauvegardee. Le debut de `Conclusion` a six secondes est derive du parcours de l'arbre : deux secondes pour l'introduction, puis quatre secondes pour l'enfant le plus long du groupe simultane. Si un tempo evolue a l'interieur d'un clip, le `PlaybackService` integre ses `TempoSection` avant de comparer son instant de fin avec ceux des autres branches.
 
 ## Arborescence cible
 
