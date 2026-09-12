@@ -32,6 +32,7 @@ flowchart LR
 - L'application est destinee a l'ecriture et au processus initial de composition, pas a la production audio.
 - Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour une piste, mais ne peut ni creer ni modifier son patch.
 - Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
+- La selection appartient a l'etat applicatif de l'editeur. Elle reference temporairement des objets du domaine par leurs identifiants, sans faire partie de la composition.
 
 ## Domaine d'arrangement
 
@@ -145,7 +146,7 @@ Responsabilites :
 
 ### NoteEvent
 
-Represente une note placee dans un clip. Elle possede une identite propre afin de pouvoir etre selectionnee et modifiee individuellement tout en restant la meme note.
+Represente une note placee dans un clip. Elle possede une identite propre afin de conserver sa continuite lorsqu'elle est deplacee, redimensionnee, transposee ou modifiee.
 
 Une `NoteEvent` n'est toutefois pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression.
 
@@ -182,24 +183,33 @@ Responsabilites :
 - permettre au domaine d'arrangement d'agir sur des parametres audio sans connaitre leur implementation ;
 - decrire des changements reproductibles dans le temps musical.
 
+## Etat applicatif de l'editeur
+
+L'etat applicatif de l'editeur decrit le contexte transitoire dans lequel l'utilisateur manipule la composition. Il reste distinct du domaine d'arrangement : sa modification ne change pas, a elle seule, le contenu musical du projet.
+
 ### Selection
 
-Represente l'ensemble courant des objets selectionnes par l'utilisateur.
-
-Question ouverte : `Selection` appartient peut-etre davantage a l'etat applicatif de l'editeur qu'au domaine metier pur.
+Represente l'ensemble courant des objets selectionnes par l'utilisateur. Elle ne possede pas d'identite propre et n'est ni une entity metier ni un agregat du domaine.
 
 Attributs possibles :
 
-- `id`
-- `selectedTrackId`
+- `selectedTrackIds`
 - `selectedClipIds`
 - `selectedEventIds`
+- `selectionAnchor`
+
+Des informations comme `activeTrackId` ou `focusedClipId` peuvent completer cet etat pour distinguer l'objet actif de l'ensemble des objets selectionnes.
 
 Responsabilites :
 
 - conserver l'intention d'edition courante ;
 - permettre les operations de groupe ;
-- separer la logique de selection de la representation graphique.
+- porter la logique de selection independamment de sa representation graphique ;
+- transmettre aux cas d'usage les identifiants des objets concernes.
+
+Lorsqu'une action est executee, la couche applicative transforme la selection en une commande explicite. Le domaine recoit les identifiants des objets a modifier, puis applique et valide l'operation sans connaitre la notion de selection.
+
+La selection est transitoire et n'est pas sauvegardee comme une donnee de la composition.
 
 ## Catalogue d'instruments
 
@@ -558,7 +568,6 @@ Regles possibles :
 
 - Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
 - Les clips doivent-ils etre uniquement des conteneurs de notes, ou peuvent-ils contenir d'autres types d'evenements comme des automations et des controles ?
-- La selection appartient-elle vraiment au domaine, ou plutot a l'etat applicatif de l'editeur ?
 
 ## Intuition de depart
 
