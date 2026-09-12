@@ -81,6 +81,12 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Le domaine definit la representation publique minimale `Instrument` ainsi que son `InstrumentId`. Les notes ne sauvegardent que cet identifiant.
 - Le catalogue et le moteur audio appartiennent a l'infrastructure. Les patchs, les politiques d'allocation des voix et les autres details techniques restent dans `InstrumentDefinition`.
 - Chaque lecture d'une note produit une occurrence sonore distincte. Son identite d'execution permet de relacher cette voix sans interrompre les autres notes utilisant le meme instrument et la meme hauteur.
+- Une operation globale de lecture est identifiee par un `PlaybackSessionId` et qualifiee par un `PlaybackSessionKind` : `PROJECT`, `CLIP_PREVIEW`, `NOTE_PREVIEW` ou `OFFLINE_RENDER`.
+- Chaque unite de lecture audio isolee possede un descripteur strict `PlaybackContextDescriptor`. Une source `CLIP` porte obligatoirement un `ClipPlaybackId` et un `ClipId` ; une source `NOTE_PREVIEW` porte obligatoirement un `NotePreviewPlaybackId` et un `InstrumentId`.
+- Un `ClipPlaybackId` identifie une activation transitoire d'un clip et reste distinct du `ClipId` persistant. Deux activations du meme clip ne partagent donc jamais leurs instances audio.
+- Pour chaque `InstrumentId` effectivement utilise dans un contexte de clip, l'infrastructure cree une `InstrumentInstance` exclusive a partir de l'`InstrumentDefinition` partagee.
+- Les repetitions d'une meme activation reutilisent le meme contexte et les memes instances, mais produisent de nouvelles occurrences de notes.
+- Le moteur et son `AudioContext` Web Audio restent globaux : un `PlaybackContext` est un perimetre logique et un sous-graphe audio, non un `AudioContext` natif supplementaire.
 
 ### Conventions architecturales
 
@@ -626,9 +632,17 @@ Responsabilites :
 - convertir independamment la chronologie en ticks de chaque clip en temps reel selon son propre tempo ;
 - transformer chaque lecture d'une note en une occurrence sonore possedant une identite d'execution propre ;
 - produire des commandes d'attaque et de relachement ciblant cette occurrence, afin que deux notes utilisant le meme instrument et la meme hauteur restent independantes ;
-- transmettre ces commandes a un `AudioEngine` abstrait.
+- transmettre ces commandes a un `AudioEngine` abstrait ;
+- ouvrir une `PlaybackSession` pour chaque operation globale de lecture ;
+- attribuer un nouveau `ClipPlaybackId` a chaque activation d'un clip, y compris lorsqu'un meme `ClipId` est simultanement lu et preecoute ;
+- attribuer un nouveau `NoteOccurrenceId` a chaque attaque, y compris a chaque repetition d'une meme `Note` ;
+- distinguer la fin structurelle d'un clip de la fin audible de ses releases et de ses effets ;
+- annuler les commandes futures d'un contexte lors d'un bypass dynamique ou d'un arret ;
+- planifier les repetitions infinies dans une fenetre d'anticipation bornee.
 
-Le parcours peut etre conceptualise par une operation recursive `schedule(item, startTime): endTime`. Un groupe simultane transmet le meme `startTime` a tous ses enfants et retourne le plus grand `endTime`. Un groupe sequentiel transmet le `endTime` de chaque enfant comme `startTime` du suivant.
+Le parcours peut etre conceptualise par une operation recursive de calcul `calculateDuration(item): duration`, puis par une planification glissante des evenements. Une operation qui tenterait de programmer immediatement tout l'arbre ne pourrait pas traiter un `repeatCount` infini.
+
+Pour une portion finie, la relation reste equivalente a `schedule(item, startTime): endTime`. Un groupe simultane transmet le meme `startTime` a tous ses enfants et retourne le plus grand `endTime`. Un groupe sequentiel transmet le `endTime` de chaque enfant comme `startTime` du suivant.
 
 Les scenarios detailles, notamment les repetitions, le bypass, les superpositions a tempos differents et les branches infinies, sont presentes dans [les etudes de cas](etudes-de-cas.md).
 
@@ -645,7 +659,50 @@ Port minimal permettant notamment :
 - de controler le cycle de lecture ;
 - de transmettre un `InstrumentId` sans connaitre le patch correspondant ;
 - d'associer chaque attaque a une identite d'occurrence ;
-- de relacher une occurrence precise sans interrompre les autres voix du meme instrument.
+- de relacher une occurrence precise sans interrompre les autres voix du meme instrument ;
+- d'ouvrir une session et un contexte de lecture a partir d'un descripteur strict ;
+- d'annuler les commandes futures d'un contexte ou d'une session ;
+- de terminer un contexte a sa fin structurelle, puis de laisser l'infrastructure gerer son drainage sonore ;
+- de demander un arret `GRACEFUL` ou `IMMEDIATE` sans exposer la maniere dont les noeuds audio sont relaches.
+
+Modeles d'echange possibles, declares avec le port :
+
+```ts
+type PlaybackSessionKind =
+  | "PROJECT"
+  | "CLIP_PREVIEW"
+  | "NOTE_PREVIEW"
+  | "OFFLINE_RENDER";
+
+type PlaybackContextDescriptor =
+  | {
+      kind: "CLIP";
+      playbackId: ClipPlaybackId;
+      clipId: ClipId;
+    }
+  | {
+      kind: "NOTE_PREVIEW";
+      playbackId: NotePreviewPlaybackId;
+      instrumentId: InstrumentId;
+    };
+
+type AudioCommand =
+  | {
+      kind: "NOTE_ON";
+      occurrenceId: NoteOccurrenceId;
+      instrumentId: InstrumentId;
+      pitch: Pitch;
+      velocity: Velocity;
+      at: number;
+    }
+  | {
+      kind: "NOTE_OFF";
+      occurrenceId: NoteOccurrenceId;
+      at: number;
+    };
+```
+
+Les identifiants d'execution sont opaques et transitoires. `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais ce port.
 
 #### InstrumentCatalog
 
@@ -667,9 +724,39 @@ Les instruments et leurs patchs sont ecrits dans le code avant la compilation. I
 
 Implementation concrete du port `InstrumentCatalog`. Il expose en lecture seule les objets `Instrument` disponibles et resout leurs identifiants stables. Il conserve en interne les `InstrumentDefinition` completes sans les exposer a la couche applicative.
 
+### InstrumentDefinitionRegistry
+
+Registre technique prive utilise par le moteur pour resoudre un `InstrumentId` vers son `InstrumentDefinition`. Il constitue la source de verite technique dont `BuiltInInstrumentCatalog` expose seulement la projection publique `Instrument`.
+
+Ce registre n'implemente pas un besoin de la couche applicative et ne constitue donc pas un port supplementaire. Il reste interne a l'infrastructure audio.
+
+### PlaybackSession
+
+Represente l'etat transitoire d'une operation globale de lecture. Une session regroupe les contextes crees pour une lecture du projet, une preecoute ou un rendu hors ligne et permet leur arret collectif.
+
+### PlaybackContext
+
+Represente une unite de lecture audio isolee dans une session. Il est construit a partir d'un `PlaybackContextDescriptor` strict et possede notamment :
+
+- un bus de sortie propre ;
+- une table `InstrumentId -> InstrumentInstance` ;
+- une table `NoteOccurrenceId -> VoiceHandle` ;
+- les commandes programmees qui doivent pouvoir etre annulees ;
+- un etat de cycle de vie : `SCHEDULED`, `ACTIVE`, `DRAINING` ou `DISPOSED`.
+
+Un contexte de type `CLIP` correspond a une seule activation du clip. Un contexte de type `NOTE_PREVIEW` ne pretend pas provenir d'un clip et ne contient donc aucun `ClipId` optionnel.
+
+Les groupes ne possedent pas de contexte audio dans le premier perimetre : ils organisent la lecture sans gain, bus ni effet propre. Un tel contexte ne deviendrait pertinent que si les groupes acqueraient plus tard un comportement audio.
+
+### InstrumentInstance
+
+Represente l'etat audio mutable cree a partir d'une `InstrumentDefinition`. Une instance appartient exclusivement a un `PlaybackContext` et possede ses voix, ses phases, ses enveloppes, ses filtres, ses effets et son allocateur de voix.
+
+Pour un contexte de clip, une seule instance est creee paresseusement par `InstrumentId`. Deux contextes utilisant le meme instrument possedent deux instances independantes, mais partagent la meme definition et les memes ressources statiques immuables.
+
 ### InstrumentDefinition
 
-Represente la definition technique complete d'un instrument integre.
+Represente la definition technique complete, immuable et partagee d'un instrument integre.
 
 Attributs possibles :
 
@@ -681,7 +768,8 @@ Responsabilites :
 
 - associer un `Instrument` public a son implementation sonore ;
 - fournir le patch necessaire a l'instanciation ;
-- definir comment les occurrences concurrentes sont affectees aux voix du moteur.
+- definir comment les occurrences concurrentes d'une meme instance sont affectees aux voix du moteur ;
+- fournir, si necessaire, une duree maximale de tail ou les informations permettant au moteur de borner la destruction.
 
 `voiceAllocation` peut notamment preciser :
 
@@ -690,7 +778,7 @@ Responsabilites :
 - une politique de vol de voix lorsque cette limite est atteinte ;
 - une politique de priorite ou de retrigger pour un instrument monophonique.
 
-Ces informations sont des details d'interpretation et d'execution. Elles peuvent etre declarees a cote de `InstrumentDefinition` sans introduire immediatement un fichier autonome.
+Ces informations sont des details d'interpretation et d'execution. Elles peuvent etre declarees a cote de `InstrumentDefinition` sans introduire immediatement un fichier autonome. La monophonie, la limite de polyphonie et le vol de voix s'appliquent par `InstrumentInstance`, donc a l'interieur d'un seul contexte. Une limite globale du moteur peut proteger les ressources, mais ne constitue pas la politique musicale de l'instrument.
 
 ### ModularPatch
 
@@ -751,19 +839,31 @@ Responsabilites :
 - identifier un point de connexion ;
 - permettre la validation des connexions entre modules.
 
+### Ressources audio partagees
+
+Les donnees immuables couteuses sont mutualisees entre les instances : echantillons decodes, tables d'ondes, reponses impulsionnelles, descriptions de patch et code des processeurs audio. Les objets possedant un etat temporel, comme les enveloppes, filtres, oscillateurs, effets et allocateurs de voix, restent propres a chaque instance.
+
+La creation des instances est paresseuse, mais peut etre anticipee dans la fenetre de planification avant le premier `NoteOn`. Une instance terminee peut etre remise dans un pool uniquement si elle est completement reinitialisable et n'est plus utilisee par aucun contexte.
+
 ### Moteur audio concret
 
-Le moteur audio instancie les definitions d'instruments et produit le son.
+Le moteur audio conserve un moteur et un `AudioContext` Web Audio globaux. Il instancie des sous-graphes propres aux contextes de lecture et produit leur mixage.
 
 Il gere notamment :
 
-- la resolution des `InstrumentId` vers les `InstrumentDefinition` du catalogue integre ;
+- la gestion des `PlaybackSession` et de leurs `PlaybackContext` ;
+- la resolution des `InstrumentId` vers les `InstrumentDefinition` du registre technique ;
+- la creation paresseuse d'une `InstrumentInstance` par couple `(PlaybackContext, InstrumentId)` ;
 - l'execution des patchs modulaires ;
 - la planification temporelle des commandes ;
 - la creation d'une voix pour chaque occurrence de note ;
 - le relachement cible d'une occurrence sans interrompre les autres voix du meme instrument ;
-- l'application des politiques de monophonie, de polyphonie et de vol de voix ;
-- la sortie audio.
+- l'application par instance des politiques de monophonie, de polyphonie et de vol de voix ;
+- l'annulation ciblee des commandes et occurrences d'un contexte ;
+- le passage d'un contexte termine en `DRAINING` pendant les releases et les tails ;
+- sa destruction apres silence ou apres une duree maximale de securite ;
+- la mutualisation des ressources statiques ;
+- la sortie audio et les limites globales de securite.
 
 Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
@@ -781,7 +881,11 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
-| `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
+| `PlaybackService` | `AudioEngine` | Le service transmet des commandes et des identites d'execution a travers un port abstrait. |
+| `PlaybackSession` | `PlaybackContext` | Une operation globale de lecture possede plusieurs unites audio isolees. |
+| `PlaybackContextDescriptor.CLIP.clipId` | `ClipId` | Le descripteur relie une activation transitoire a sa source persistante sans confondre leurs identites. |
+| `PlaybackContext` | `InstrumentInstance` | Le contexte possede au plus une instance exclusive par `InstrumentId`. |
+| `InstrumentInstance` | `InstrumentDefinition` | L'instance mutable est creee a partir d'une definition immuable partagee. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
 | Moteur audio concret | `InstrumentDefinition` | Le moteur resout l'identifiant, instancie le patch et produit le son. |
 
@@ -828,6 +932,7 @@ src/
 │   ├── audio/
 │   │   ├── catalog/
 │   │   │   ├── BuiltInInstrumentCatalog.ts
+│   │   │   ├── InstrumentDefinitionRegistry.ts
 │   │   │   └── InstrumentDefinition.ts
 │   │   ├── modular/
 │   │   │   ├── ModularPatch.ts
@@ -835,6 +940,12 @@ src/
 │   │   │   ├── ModuleConnection.ts
 │   │   │   └── ModulePort.ts
 │   │   └── engine/
+│   │       ├── WebAudioEngine.ts
+│   │       ├── PlaybackSession.ts
+│   │       ├── PlaybackContext.ts
+│   │       ├── InstrumentInstance.ts
+│   │       ├── InstrumentInstanceFactory.ts
+│   │       └── SharedAudioResources.ts
 │   └── persistence/
 └── presentation/
     ├── components/
@@ -849,6 +960,8 @@ Les objets centraux `Project`, `Group`, `Clip`, `Note` et `Instrument` restent d
 Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
 `Instrument` et `InstrumentId` sont declares ensemble dans `domain/Instrument.ts`. Le premier constitue la representation publique minimale de l'instrument ; le second reste l'identifiant sauvegarde par les notes et partage avec les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
+
+Les types `PlaybackSessionId`, `ClipPlaybackId`, `NotePreviewPlaybackId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `PlaybackContextDescriptor`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
