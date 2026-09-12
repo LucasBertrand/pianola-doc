@@ -16,15 +16,18 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 - [Couche applicative et lecture](#couche-applicative-et-lecture)
 - [Infrastructure audio](#infrastructure-audio)
 - [Relations architecturales](#relations-architecturales)
+- [Etude de cas](#etude-de-cas)
 - [Arborescence cible](#arborescence-cible)
 - [Questions ouvertes](#questions-ouvertes)
 - [Principes directeurs](#principes-directeurs)
 
 ## Vision generale
 
-L'application est centree sur un domaine de composition. Le `Project` y organise une sequence de clips necessairement consecutifs.
+L'application est centree sur un domaine de composition. Le `Project` possede un unique `rootGroup`, qui constitue la racine d'un arbre compose de `ClipGroup` et de `Clip`.
 
-Le projet exprime des intentions musicales sous forme de clips et de notes. Chaque note reference l'instrument qui doit l'interpreter. Le projet ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
+Chaque groupe ordonne ses enfants et definit leur mode de lecture : les lire les uns apres les autres ou les faire commencer simultanement. Les feuilles de cet arbre sont les clips. Chaque clip conserve sa propre chronologie, son tempo, sa metrique et ses contextes de hauteurs.
+
+Le projet exprime des intentions musicales sous forme de groupes, de clips et de notes. Chaque note reference l'instrument qui doit l'interpreter. Le projet ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
 
 Il n'existe pas de vue d'arrangement multipiste dans laquelle des clips seraient places librement sur plusieurs pistes instrumentales. Les moyens necessaires a l'ecoute sont places autour du domaine :
 
@@ -46,9 +49,13 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 
 ### Structure de la composition
 
-- Le `Project` organise directement une sequence ordonnee de clips consecutifs. Les clips ne possedent pas de position dans une timeline globale : leur ordre et leur nombre de lectures determinent la lecture de la composition.
-- `isBypassed` permet de contourner un clip sans le retirer de la sequence. Cet etat est sauvegarde et reste independant de `repeatCount`.
+- Le `Project` possede un unique `rootGroup`. La composition forme un arbre dont les noeuds sont des `ClipGroup` et les feuilles des `Clip`.
+- Un `ClipGroup` contient une collection ordonnee de `PlaybackItem`, union de `Clip` et de `ClipGroup`. Les groupes peuvent donc etre imbriques.
+- Le `playbackMode` d'un groupe vaut `SEQUENTIAL` ou `SIMULTANEOUS`. En mode sequentiel, chaque enfant commence a la fin du precedent. En mode simultane, tous les enfants commencent au meme instant.
+- Les clips ne possedent pas de position dans une timeline globale. Leur instant de depart est derive de leur place dans l'arbre et des modes de lecture de leurs groupes ancetres.
+- `isBypassed` permet de contourner un clip sans le retirer de son groupe. Cet etat est sauvegarde et reste independant de `repeatCount`.
 - `repeatCount` indique le nombre total de lectures du clip. Il accepte un entier strictement positif ou `infinite` ; chaque repetition recommence au tick `0` avec les chronologies locales du clip.
+- Dans le premier perimetre, les groupes ne portent ni `repeatCount` ni `isBypassed` : ils organisent la lecture sans ajouter une seconde couche de repetition ou de contournement.
 
 ### Temps musical et contextes
 
@@ -80,10 +87,11 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 
 ## Domaine de composition
 
-Le domaine de composition decrit une succession de sections musicales. Le `Project` ordonne directement les clips et repond a des questions comme :
+Le domaine de composition decrit un arbre de sections musicales. Le `Project` en possede le groupe racine et repond a des questions comme :
 
-- quels clips composent la sequence ?
-- dans quel ordre doivent-ils etre lus ?
+- quels groupes et quels clips composent la structure ?
+- quels elements doivent etre lus en sequence ou simultanement ?
+- dans quel ordre les enfants d'un groupe doivent-ils etre lus ?
 - quels clips doivent etre contournes ?
 - quelles notes existent dans un clip ?
 - quel instrument doit interpreter chaque note ?
@@ -106,24 +114,52 @@ Attributs possibles :
 
 - `id`
 - `name`
-- `clips`
+- `rootGroup`
 - `createdAt`
 - `updatedAt`
 
 Responsabilites :
 
 - servir de racine de sauvegarde ;
-- contenir et ordonner la sequence de clips ;
-- garantir que les clips sont lus consecutivement ;
+- posseder l'unique groupe racine de la composition ;
+- garantir la coherence de l'arbre de groupes et de clips ;
 - permettre de reorganiser la composition sans recourir a des pistes ni a une timeline libre.
 
 Le projet ne porte ni tempo ni metrique globaux : ces proprietes appartiennent a chaque clip.
+
+#### ClipGroup
+
+Represente un ensemble ordonne de clips ou d'autres groupes dont il definit le mode de lecture.
+
+`PlaybackItem` designe l'union `Clip | ClipGroup`. Cette union et `PlaybackMode` peuvent etre declares dans le meme module que `ClipGroup`, sans introduire prematurement un fichier pour chaque type.
+
+Attributs possibles :
+
+- `id`
+- `name`
+- `playbackMode`
+- `items`
+
+Valeurs de `playbackMode` :
+
+- `SEQUENTIAL` : les enfants sont lus dans leur ordre, chacun commencant lorsque le precedent est termine ;
+- `SIMULTANEOUS` : tous les enfants commencent au meme instant et le groupe se termine avec l'enfant le plus long.
+
+Responsabilites :
+
+- contenir et ordonner ses enfants ;
+- exprimer leur relation temporelle sans leur attribuer de position globale ;
+- permettre l'imbrication de sequences et de superpositions ;
+- garantir qu'un element n'apparait qu'a un seul endroit de l'arbre ;
+- interdire les cycles.
+
+Un groupe ne possede ni tempo, ni metrique, ni chronologie locale. Il ne possede pas non plus de duree canonique en ticks, car ses enfants simultanes peuvent convertir leurs ticks en temps reel avec des tempos differents. Sa duree de lecture est derivee par le `PlaybackService`.
 
 #### Clip
 
 Represente une section musicale editable, copiable, reordonnable et repetable.
 
-Un clip ne possede pas de position globale. Il commence lorsque le clip precedent se termine, sauf s'il est contourne pendant la lecture.
+Un clip ne possede pas de position globale. Son instant de depart est determine par sa place dans l'arbre : apres l'enfant precedent d'un groupe sequentiel, ou au meme instant que les autres enfants d'un groupe simultane. S'il est contourne, il ne contribue pas a la duree de son groupe parent.
 
 Attributs possibles :
 
@@ -442,19 +478,22 @@ La section n'est pas sauvegardee comme un objet autonome. Elle sert a retrouver 
 
 Il contient :
 
-- une collection ordonnee de clips ;
+- un unique `rootGroup` ;
 - des informations de sauvegarde.
 
 Regles possibles :
 
-- un clip appartient a un seul projet ;
-- l'ordre des clips definit integralement leur ordre de lecture ;
-- les clips sont consecutifs et ne possedent pas de position temporelle globale ;
-- reordonner un clip modifie la structure de la sequence ;
-- un clip contourne reste present a sa place dans la sequence et son etat est sauvegarde ;
-- pendant la lecture, un clip contourne est ignore et le clip suivant commence immediatement, quel que soit son `repeatCount` ;
-- un `repeatCount` fini indique le nombre total de lectures du clip avant de passer au suivant ;
-- un `repeatCount` egal a `infinite` repete le clip jusqu'a l'arret ou au deplacement manuel de la lecture et rend les clips suivants inaccessibles par progression automatique ;
+- le groupe racine est un `ClipGroup` ordinaire et peut utiliser l'un ou l'autre mode de lecture ;
+- un clip ou un groupe non racine appartient a un seul groupe parent ;
+- un groupe ne peut pas se contenir lui-meme, directement ou indirectement ;
+- reordonner un enfant modifie la structure de son groupe ;
+- dans un groupe sequentiel, l'ordre des enfants determine leur ordre de lecture ;
+- dans un groupe simultane, l'ordre reste significatif pour l'organisation et l'affichage, mais tous les enfants commencent ensemble ;
+- un groupe vide est valide et possede une duree de lecture nulle ;
+- un clip contourne reste present a sa place dans l'arbre et son etat est sauvegarde ;
+- pendant la lecture, un clip contourne est ignore et ne contribue pas a la duree de son groupe parent, quel que soit son `repeatCount` ;
+- un `repeatCount` fini indique le nombre total de lectures du clip ;
+- un `repeatCount` egal a `infinite` rend infinie la branche qui le contient ; dans un groupe sequentiel, les enfants places apres cette branche deviennent inaccessibles par progression automatique ;
 - chaque repetition recommence au tick `0` avec les changements initiaux de tempo, de metrique et de contexte de hauteurs du clip.
 
 #### Clip comme aggregate secondaire
@@ -463,6 +502,7 @@ Regles possibles :
 
 Regles possibles :
 
+- un clip appartient a un seul groupe parent ;
 - une note appartient a un seul clip et ne possede pas de cycle de vie autonome ;
 - une note modifiee conserve son identite ;
 - une note copiee ou dupliquee recoit une nouvelle identite ;
@@ -541,7 +581,10 @@ Exemples :
 - ajouter, deplacer ou supprimer un changement de tempo, de metrique ou de contexte de hauteurs ;
 - modifier une metrique en indiquant explicitement s'il faut conserver la duree ou le nombre de mesures ;
 - associer un contexte de hauteurs a une partie du clip sans contraindre les notes ;
-- reordonner un clip, modifier son `repeatCount` ou son etat de bypass ;
+- creer, supprimer, imbriquer ou reordonner un groupe ;
+- choisir le mode de lecture sequentiel ou simultane d'un groupe ;
+- deplacer un clip ou un groupe dans l'arbre ;
+- modifier le `repeatCount` ou l'etat de bypass d'un clip ;
 - transposer plusieurs notes ;
 - associer un instrument disponible a une ou plusieurs notes.
 
@@ -560,14 +603,20 @@ Le service de lecture fait le lien entre la composition et l'infrastructure audi
 
 Responsabilites :
 
-- parcourir la sequence de clips dans son ordre ;
+- parcourir recursivement l'arbre a partir du `rootGroup` ;
+- planifier successivement les enfants d'un groupe `SEQUENTIAL` ;
+- donner le meme instant de depart aux enfants d'un groupe `SIMULTANEOUS` ;
+- calculer la fin d'un groupe sequentiel par la somme des durees reelles de ses enfants ;
+- calculer la fin d'un groupe simultane par la duree reelle maximale de ses enfants ;
 - ignorer les clips contournes sans modifier leur `repeatCount` ;
-- repeter chaque clip selon son `repeatCount` avant de poursuivre la sequence ;
+- repeter chaque clip selon son `repeatCount` ;
 - recommencer les chronologies locales au tick `0` a chaque repetition ;
 - construire les `TempoSection` de chaque clip ;
-- convertir chaque section de temps musical en temps reel selon son tempo ;
+- convertir independamment la chronologie en ticks de chaque clip en temps reel selon son propre tempo ;
 - transformer les notes en commandes audio ;
 - transmettre ces commandes a un `AudioEngine` abstrait.
+
+Le parcours peut etre conceptualise par une operation recursive `schedule(item, startTime): endTime`. Un groupe simultane transmet le meme `startTime` a tous ses enfants et retourne le plus grand `endTime`. Un groupe sequentiel transmet le `endTime` de chaque enfant comme `startTime` du suivant.
 
 ### Ports
 
@@ -699,7 +748,9 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
-| `Project.clips` | `Clip` | Le projet conserve l'ordre persistant des sections musicales. |
+| `Project.rootGroup` | `ClipGroup` | Le projet possede la racine persistante de l'arbre de composition. |
+| `ClipGroup.items` | `PlaybackItem` | Le groupe ordonne des clips ou d'autres groupes et definit leur mode de lecture. |
+| `PlaybackItem` | `Clip | ClipGroup` | L'union rend possible un parcours recursif de la composition. |
 | `Note.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
@@ -711,6 +762,52 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
 Le sens des dependances de code doit pointer vers l'interieur : l'application depend du domaine, et l'infrastructure depend des ports applicatifs ainsi que du domaine, jamais l'inverse.
 
+## Etude de cas
+
+Considerons une composition dont le groupe racine utilise le mode `SEQUENTIAL` :
+
+```text
+RootGroup [SEQUENTIAL]
+├── Introduction
+├── Ensemble [SIMULTANEOUS]
+│   ├── Rythme [SEQUENTIAL]
+│   │   ├── Groove A
+│   │   └── Groove B
+│   └── Ligne de basse
+└── Conclusion
+```
+
+Les clips possedent les caracteristiques suivantes :
+
+| Clip | Duree | Metrique | Tempo | Duree reelle |
+| --- | ---: | ---: | ---: | ---: |
+| `Introduction` | 3840 ticks | 4/4 | 120 BPM | 2 s |
+| `Groove A` | 3840 ticks | 4/4 | 120 BPM | 2 s |
+| `Groove B` | 3840 ticks | 4/4 | 120 BPM | 2 s |
+| `Ligne de basse` | 5760 ticks | 3/4 | 90 BPM | 4 s |
+| `Conclusion` | 2880 ticks | 3/4 | 90 BPM | 2 s |
+
+Avec un tempo constant, la duree reelle d'un clip se calcule ainsi :
+
+```text
+durationSeconds = (durationTicks / 960) * (60 / bpm)
+```
+
+La lecture se deroule comme suit :
+
+| Temps reel | Lecture |
+| --- | --- |
+| 0 a 2 s | `Introduction` |
+| 2 a 4 s | `Groove A` et premiere partie de `Ligne de basse` |
+| 4 a 6 s | `Groove B` et seconde partie de `Ligne de basse` |
+| 6 a 8 s | `Conclusion` |
+
+Le groupe `Rythme` dure quatre secondes, car il additionne deux clips de deux secondes. Le groupe `Ensemble` dure egalement quatre secondes : ses deux enfants commencent a deux secondes et se terminent tous les deux a six secondes.
+
+La `Ligne de basse` reste entierement independante du groupe `Rythme`. Sa metrique 3/4 et son tempo de 90 BPM ne modifient ni les reperes ni les chronologies des clips de rythme en 4/4 a 120 BPM. Seul leur instant de depart reel est commun.
+
+Aucune position globale n'est sauvegardee. Le debut de `Conclusion` a six secondes est derive du parcours de l'arbre : deux secondes pour l'introduction, puis quatre secondes pour l'enfant le plus long du groupe simultane. Si un tempo evolue a l'interieur d'un clip, le `PlaybackService` integre ses `TempoSection` avant de comparer son instant de fin avec ceux des autres branches.
+
 ## Arborescence cible
 
 Cette arborescence est une cible de travail provisoire. Elle documente les frontieres actuellement retenues et evoluera avec les prochaines decisions.
@@ -719,6 +816,7 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 src/
 ├── domain/
 │   ├── Project.ts
+│   ├── ClipGroup.ts
 │   ├── Clip.ts
 │   ├── Note.ts
 │   ├── time/
@@ -764,12 +862,12 @@ src/
     └── stores/
 ```
 
-Les agregats principaux `Project`, `Clip` et `Note` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
+Les objets centraux `Project`, `ClipGroup`, `Clip` et `Note` restent directement a la racine de `domain/`. Les concepts qui forment deja des ensembles suffisamment coherents sont regroupes :
 
 - `time/` contient les positions, les durees, le tempo et la metrique ;
 - `pitch/` contient les hauteurs et leurs contextes.
 
-Les dependances doivent principalement partir de `Project`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
+Les dependances doivent principalement partir de `Project`, `ClipGroup`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
 `InstrumentId` reste provisoirement a la racine de `domain/`, car il est partage par la composition, les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
@@ -783,7 +881,7 @@ Aucune pour le moment.
 
 Pour une architecture clean, le domaine doit rester independant de l'interface graphique, du moteur Web Audio et du stockage.
 
-Les objets du domaine de composition comme `Project`, `Clip`, `Note`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
+Les objets du domaine de composition comme `Project`, `ClipGroup`, `Clip`, `Note`, `PitchContext` ou `TimeRange` doivent pouvoir exister sans connaitre React, canvas, Zustand ou Web Audio.
 
 L'etat de l'editeur peut connaitre les identifiants du domaine, mais le domaine ne connait ni la selection, ni la grille, ni les outils de l'interface.
 
