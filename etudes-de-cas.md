@@ -123,6 +123,30 @@ Apres l'introduction, la nappe et le rythme commencent ensemble. Le rythme peut 
 
 Si la nappe est contournee, sa contribution devient nulle. Le groupe se termine alors avec le rythme fini et la lecture peut atteindre la conclusion. Arreter la lecture ou deplacer manuellement la tete de lecture permet egalement de quitter la repetition infinie.
 
+
+## Cas 5 - Deux clips utilisent le meme instrument
+
+Deux clips lus simultanement contiennent chacun une note de meme hauteur jouee par le meme instrument.
+
+```mermaid
+flowchart TD
+    Root["RootGroup - SIMULTANEOUS"] --> A["Clip A"]
+    Root --> B["Clip B"]
+    A --> NA["Note A - piano, do"]
+    B --> NB["Note B - piano, do"]
+```
+
+La note A commence a zero seconde et se termine a quatre secondes. La note B commence a une seconde et se termine a deux secondes. Le `PlaybackService` produit deux occurrences distinctes :
+
+| Occurrence | Source | Instrument | Hauteur | Debut | Fin |
+| --- | --- | --- | --- | ---: | ---: |
+| `occurrence-a` | note A du clip A | piano | do | 0 s | 4 s |
+| `occurrence-b` | note B du clip B | piano | do | 1 s | 2 s |
+
+A deux secondes, le moteur relache uniquement `occurrence-b`. La voix correspondant a `occurrence-a` continue jusqu'a quatre secondes. Une commande de relachement identifiee seulement par l'instrument et la hauteur serait insuffisante, car elle risquerait d'interrompre les deux voix.
+
+Les deux notes ne sont jamais fusionnees implicitement. Si la definition du piano est polyphonique, elles occupent deux voix independantes. Si elle est monophonique, `InstrumentDefinition.voiceAllocation` determine le retrigger, la priorite des notes et l'eventuelle interruption de la voix precedente.
+
 ## Consequences pour le PlaybackService
 
 Ces cas peuvent tous etre interpretes par une operation recursive :
