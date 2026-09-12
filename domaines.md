@@ -57,6 +57,7 @@ flowchart LR
 - Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
 - Les automations, les evenements de controle et l'exposition de parametres audio ne font pas partie du premier perimetre fonctionnel.
 - Le domaine ne connait l'audio qu'a travers un `InstrumentId` stable et un port de lecture minimal.
+- Les services applicatifs sont ranges dans `application/use-cases/`. Aucun service d'edition generique n'est cree avant que ses responsabilites soient definies.
 
 ## Domaine de composition
 
@@ -398,6 +399,8 @@ Exemples :
 - transposer plusieurs notes ;
 - associer un instrument disponible a une piste.
 
+Aucun `EditorService` generique n'est introduit. Les futurs services d'edition seront nommes et ajoutes dans `application/use-cases/` lorsque leurs responsabilites precises seront etablies.
+
 ### PlaybackService
 
 Le service de lecture fait le lien entre la composition et l'infrastructure audio.
@@ -589,7 +592,6 @@ src/
 │   │   ├── Selection.ts
 │   │   └── GridResolution.ts
 │   ├── use-cases/
-│   ├── playback/
 │   │   └── PlaybackService.ts
 │   ├── contracts/
 │   │   └── InstrumentId.ts
