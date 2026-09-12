@@ -1,6 +1,6 @@
 # Etudes de cas
 
-Ce document illustre les regles de composition et de lecture definies dans [domaines.md](domaines.md). Les exemples ne decrivent aucune position globale sauvegardee : tous les instants de depart et de fin sont derives de l'arbre de `ClipGroup` et de `Clip`.
+Ce document illustre les regles de composition et de lecture definies dans [domaines.md](domaines.md). Les exemples ne decrivent aucune position globale sauvegardee : tous les instants de depart et de fin sont derives de l'arbre de `Group` et de `Clip`.
 
 ## Conventions de calcul
 
@@ -128,7 +128,7 @@ Si la nappe est contournee, sa contribution devient nulle. Le groupe se termine 
 Ces cas peuvent tous etre interpretes par une operation recursive :
 
 ```ts
-schedule(item: PlaybackItem, startTime: number): number
+schedule(item: GroupItem, startTime: number): number
 ```
 
 - un `Clip` planifie ses notes depuis `startTime` en utilisant ses propres `TempoSection` et retourne son instant de fin ;
