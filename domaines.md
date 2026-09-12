@@ -1,12 +1,41 @@
 # Domaines
 
-Ce document recense les premiers objets fondamentaux du domaine pour une application de piano roll. L'objectif est de poser un vocabulaire metier stable avant de penser interface, stockage ou moteur audio.
+Ce document recense les premiers objets fondamentaux du domaine pour une application de piano roll avec instruments modulaires.
 
-## Domaine principal : edition musicale
+L'objectif est de poser un vocabulaire metier stable avant de penser interface, stockage, Web Audio API ou implementation React.
 
-Le coeur de l'application est l'edition d'une sequence musicale organisee dans le temps. Le piano roll permet de placer, modifier, deplacer et supprimer des evenements musicaux sur une grille temporelle.
+## Vision generale
 
-## Entities
+Un projet contient deux grands espaces volontairement decouples :
+
+- le domaine d'arrangement, qui decrit l'organisation musicale dans le temps ;
+- le domaine audio, qui decrit la fabrication et le comportement sonore des instruments.
+
+Le domaine d'arrangement ne produit pas directement de son. Il exprime des intentions musicales sous forme de pistes, clips et evenements. Le domaine audio interprete ces intentions a travers des instruments construits comme des patchs modulaires.
+
+```mermaid
+flowchart TD
+    Project --> Arrangement
+    Project --> AudioSystem
+    Arrangement --> Track
+    Track --> Clip
+    Clip --> MusicalEvent
+    AudioSystem --> ModularInstrument
+    ModularInstrument --> ModularPatch
+```
+
+## Domaine d'arrangement
+
+Le domaine d'arrangement decrit la structure musicale du projet dans le temps. Il repond a des questions comme :
+
+- quelles pistes existent ?
+- quels clips sont places sur ces pistes ?
+- quels evenements musicaux existent dans un clip ?
+- a quel moment ces evenements doivent-ils etre joues ?
+
+Il reste independant de la maniere dont le son est produit.
+
+### Entities
 
 Une entity possede une identite propre. Elle peut changer au cours du temps tout en restant le meme objet du point de vue du domaine.
 
@@ -18,7 +47,8 @@ Attributs possibles :
 
 - `id`
 - `name`
-- `score`
+- `arrangement`
+- `audioSystem`
 - `tempo`
 - `timeSignature`
 - `createdAt`
@@ -26,13 +56,13 @@ Attributs possibles :
 
 Responsabilites :
 
-- contenir l'etat musical principal ;
 - servir de racine de sauvegarde ;
+- contenir les grands sous-domaines du projet ;
 - porter les reglages globaux du morceau.
 
-### Score
+### Arrangement
 
-Represente l'organisation musicale generale du projet.
+Represente l'organisation musicale globale du projet.
 
 Attributs possibles :
 
@@ -43,33 +73,71 @@ Attributs possibles :
 
 Responsabilites :
 
-- organiser les pistes ;
+- organiser les pistes dans le temps ;
 - definir la duree globale editable ;
-- fournir le cadre temporel commun.
+- fournir le cadre temporel commun aux clips.
 
 ### Track
 
-Represente une voix, un instrument ou une ligne musicale editable dans le piano roll.
+Represente une ligne musicale dans l'arrangement.
+
+Une piste peut etre associee a un instrument, mais elle ne contient pas l'instrument lui-meme. Elle reference l'instrument qui interpretera ses evenements.
 
 Attributs possibles :
 
 - `id`
 - `name`
-- `instrument`
+- `instrumentId`
 - `color`
 - `isMuted`
 - `isSolo`
-- `notes`
+- `clips`
 
 Responsabilites :
 
-- contenir les notes d'une voix ;
-- porter les reglages propres a cette voix ;
-- permettre l'edition separee de plusieurs parties musicales.
+- contenir des clips ;
+- porter les reglages d'arrangement propres a une ligne musicale ;
+- faire le lien entre des intentions musicales et un instrument audio.
 
-### Note
+### Clip
 
-Represente un evenement musical place sur la grille.
+Represente une unite musicale editable, deplacable, copiable et potentiellement bouclable.
+
+Attributs possibles :
+
+- `id`
+- `name`
+- `range`
+- `loop`
+- `events`
+
+Responsabilites :
+
+- contenir des evenements musicaux ;
+- definir une region temporelle sur une piste ;
+- permettre l'edition locale d'un motif, d'une phrase ou d'une cellule musicale.
+
+### MusicalEvent
+
+Represente un evenement musical abstrait contenu dans un clip.
+
+`MusicalEvent` peut etre pense comme une famille d'evenements plus specialises.
+
+Types possibles :
+
+- `NoteEvent`
+- `AutomationEvent`
+- `ControlEvent`
+
+Responsabilites :
+
+- decrire ce qui doit arriver musicalement ;
+- rester independant du moteur audio ;
+- etre interpretable par un instrument ou par le systeme de lecture.
+
+### NoteEvent
+
+Represente une note placee dans un clip.
 
 Attributs possibles :
 
@@ -81,24 +149,151 @@ Attributs possibles :
 Responsabilites :
 
 - definir une hauteur ;
-- definir une position temporelle et une duree ;
+- definir une position temporelle relative au clip ;
+- definir une duree ;
 - porter des parametres d'interpretation simples.
+
+### AutomationEvent
+
+Represente une variation de parametre dans le temps.
+
+Attributs possibles :
+
+- `id`
+- `target`
+- `time`
+- `value`
+- `curve`
+
+Responsabilites :
+
+- exprimer une modulation composee ou dessinee ;
+- permettre au domaine d'arrangement d'agir sur des parametres audio sans connaitre leur implementation ;
+- decrire des changements reproductibles dans le temps musical.
 
 ### Selection
 
 Represente l'ensemble courant des objets selectionnes par l'utilisateur.
 
+Question ouverte : `Selection` appartient peut-etre davantage a l'etat applicatif de l'editeur qu'au domaine metier pur.
+
 Attributs possibles :
 
 - `id`
-- `selectedNoteIds`
 - `selectedTrackId`
+- `selectedClipIds`
+- `selectedEventIds`
 
 Responsabilites :
 
 - conserver l'intention d'edition courante ;
 - permettre les operations de groupe ;
 - separer la logique de selection de la representation graphique.
+
+## Domaine audio
+
+Le domaine audio decrit les instruments et leur architecture interne. Il repond a des questions comme :
+
+- quels instruments existent dans le projet ?
+- quels modules composent un instrument ?
+- comment ces modules sont-ils connectes ?
+- quels parametres peuvent etre controles par les clips ou l'utilisateur ?
+
+Il reste independant de l'interface de piano roll et de la disposition graphique des clips.
+
+### AudioSystem
+
+Represente l'ensemble des ressources audio du projet.
+
+Attributs possibles :
+
+- `id`
+- `instruments`
+- `masterOutput`
+
+Responsabilites :
+
+- contenir les instruments disponibles ;
+- definir la sortie audio globale ;
+- fournir les instruments references par les pistes.
+
+### ModularInstrument
+
+Represente un instrument fabrique a partir d'un patch modulaire.
+
+Attributs possibles :
+
+- `id`
+- `name`
+- `patch`
+- `parameters`
+
+Responsabilites :
+
+- recevoir des evenements musicaux ;
+- exposer des parametres controlables ;
+- produire un signal audio a partir d'un patch.
+
+### ModularPatch
+
+Represente le graphe interne d'un instrument modulaire.
+
+Attributs possibles :
+
+- `id`
+- `modules`
+- `connections`
+- `outputModuleId`
+
+Responsabilites :
+
+- organiser les modules audio ;
+- garantir la coherence des connexions ;
+- decrire le parcours du signal et des modulations.
+
+### AudioModule
+
+Represente un module audio ou de controle.
+
+Types possibles :
+
+- `VCO`
+- `Envelope`
+- `Filter`
+- `LFO`
+- `VCA`
+- `Mixer`
+- `Output`
+
+Attributs possibles :
+
+- `id`
+- `type`
+- `parameters`
+- `inputs`
+- `outputs`
+
+Responsabilites :
+
+- fournir une fonction sonore ou de controle ;
+- declarer ses entrees et sorties ;
+- exposer des parametres modulables.
+
+### ModuleConnection
+
+Represente une connexion entre deux ports de modules.
+
+Attributs possibles :
+
+- `id`
+- `sourcePort`
+- `targetPort`
+
+Responsabilites :
+
+- relier deux modules ;
+- distinguer signal audio et signal de controle si necessaire ;
+- permettre la validation du graphe modulaire.
 
 ## Value Objects
 
@@ -165,7 +360,7 @@ Attributs possibles :
 
 Responsabilites :
 
-- decrire l'emplacement temporel d'une note ;
+- decrire l'emplacement temporel d'un clip ou d'un evenement ;
 - detecter les chevauchements ;
 - faciliter les operations de deplacement et de redimensionnement.
 
@@ -229,21 +424,84 @@ Responsabilites :
 - definir les pas de quantification ;
 - controler la finesse du placement et du redimensionnement.
 
-### Instrument
+### Loop
 
-Represente le timbre ou la source sonore associee a une piste.
+Represente le comportement de repetition d'un clip.
 
 Attributs possibles :
 
-- `type`
-- `name`
-- `parameters`
+- `enabled`
+- `length`
+
+Responsabilites :
+
+- definir si un clip boucle ;
+- distinguer la duree visible du clip et la duree du motif repete.
+
+### ParameterId
+
+Represente l'identifiant stable d'un parametre controlable.
 
 Exemples :
 
-- synthese simple Web Audio ;
-- sampler ;
-- instrument MIDI externe.
+- `filter.cutoff`
+- `vco.frequency`
+- `envelope.attack`
+
+Responsabilites :
+
+- permettre a l'arrangement de cibler un parametre sans connaitre l'objet technique qui l'implemente ;
+- stabiliser les liens entre automation et instrument.
+
+### ParameterValue
+
+Represente la valeur d'un parametre audio ou de controle.
+
+Attributs possibles :
+
+- `value`
+- `unit`
+- `min`
+- `max`
+
+Responsabilites :
+
+- encapsuler une valeur controlable ;
+- permettre la validation d'une plage ;
+- exprimer des unites differentes comme Hz, dB, pourcentage ou temps.
+
+### ModulePort
+
+Represente une entree ou une sortie de module.
+
+Attributs possibles :
+
+- `moduleId`
+- `portName`
+- `signalType`
+
+Types de signal possibles :
+
+- `audio`
+- `control`
+- `gate`
+- `trigger`
+
+Responsabilites :
+
+- identifier un point de connexion ;
+- permettre la validation des connexions entre modules.
+
+## Relations entre les domaines
+
+Le couplage entre arrangement et audio doit rester minimal.
+
+| Depuis | Vers | Nature du lien |
+| --- | --- | --- |
+| `Track.instrumentId` | `ModularInstrument.id` | Une piste choisit l'instrument qui interprete ses clips. |
+| `NoteEvent` | `ModularInstrument` | Une note declenche l'instrument pendant la lecture. |
+| `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre exposé par un instrument. |
+| `Project` | `Arrangement` et `AudioSystem` | Le projet coordonne les deux sous-domaines. |
 
 ## Premiers agregats possibles
 
@@ -253,28 +511,58 @@ Exemples :
 
 Il contient :
 
-- un `Score` ;
+- un `Arrangement` ;
+- un `AudioSystem` ;
 - des reglages globaux comme `Tempo` et `TimeSignature` ;
 - des informations de sauvegarde.
 
-### Track comme aggregate secondaire
+### Arrangement comme aggregate
 
-`Track` peut garantir la coherence de ses propres notes.
+`Arrangement` garantit la coherence temporelle des pistes et des clips.
 
 Regles possibles :
 
-- une note appartient a une seule piste ;
-- les notes d'une piste peuvent etre triees par position ;
+- une piste appartient a un seul arrangement ;
+- un clip appartient a une seule piste ;
+- les clips peuvent se chevaucher ou non selon le choix d'edition ;
+- les positions des clips sont exprimees dans le temps global du projet.
+
+### Clip comme aggregate secondaire
+
+`Clip` garantit la coherence de ses propres evenements.
+
+Regles possibles :
+
+- un evenement appartient a un seul clip ;
+- les evenements sont positionnes relativement au debut du clip ;
+- les notes peuvent etre triees par position ;
 - selon le choix musical, on peut autoriser ou interdire les chevauchements sur une meme hauteur.
+
+### ModularInstrument comme aggregate
+
+`ModularInstrument` garantit la coherence de son patch.
+
+Regles possibles :
+
+- un module appartient a un seul patch ;
+- une connexion relie deux ports compatibles ;
+- un patch doit posseder une sortie audio valide ;
+- les parametres exposes doivent avoir des identifiants stables.
 
 ## Questions a trancher
 
-- Une `Note` doit-elle etre une entity, ou un value object contenu dans une piste ?
-- Le piano roll vise-t-il principalement une ecriture MIDI classique, ou un modele plus libre adapte a la composition algorithmique ?
-- Les pistes representent-elles des instruments, des voix musicales, ou les deux ?
-- Faut-il penser la partition comme une grille fixe, ou comme un espace temporel continu avec quantification optionnelle ?
+- Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
+- Une `NoteEvent` doit-elle etre une entity, ou un value object contenu dans un clip ?
+- Les pistes representent-elles des voix musicales, des instruments, ou seulement des lignes d'arrangement ?
+- Les clips doivent-ils etre uniquement MIDI, ou peuvent-ils contenir d'autres types d'evenements ?
+- Faut-il penser le piano roll comme une grille fixe, ou comme un espace temporel continu avec quantification optionnelle ?
 - La selection appartient-elle vraiment au domaine, ou plutot a l'etat applicatif de l'editeur ?
+- Le domaine audio doit-il modeliser seulement la definition des instruments, ou aussi leur etat d'execution pendant la lecture ?
 
 ## Intuition de depart
 
-Pour une architecture clean, le domaine devrait rester independant de l'interface graphique, du moteur Web Audio et du stockage. Les objets comme `Note`, `Track`, `Pitch`, `Duration` ou `TimeRange` doivent pouvoir exister sans React, sans canvas et sans navigateur.
+Pour une architecture clean, le domaine devrait rester independant de l'interface graphique, du moteur Web Audio et du stockage.
+
+Les objets d'arrangement comme `Track`, `Clip`, `NoteEvent`, `TimeRange` ou `GridResolution` doivent pouvoir exister sans connaitre React, canvas ou Web Audio.
+
+Les objets audio comme `ModularInstrument`, `ModularPatch`, `AudioModule` ou `ModuleConnection` doivent pouvoir exister sans connaitre le piano roll. Ils decrivent une architecture sonore ; le moteur audio concret viendra plus tard interpreter cette architecture.
