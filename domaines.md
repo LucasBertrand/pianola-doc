@@ -25,7 +25,7 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 
 L'application est centree sur un domaine d'arrangement qui decrit l'organisation musicale dans le temps.
 
-Le projet exprime des intentions musicales sous forme de pistes, clips et evenements. Il ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
+Le projet exprime des intentions musicales sous forme de pistes, clips et notes. Il ne contient ni les patchs des instruments, ni l'etat d'execution du moteur audio, ni l'etat transitoire de l'editeur.
 
 Les moyens necessaires a l'ecoute sont places autour du domaine :
 
@@ -45,6 +45,7 @@ flowchart LR
 
 - Un `Arrangement` est l'ensemble ordonne des pistes du projet.
 - Une `Track` est un conteneur de clips ordonnes dans le temps, lie a un instrument arbitraire par son identifiant.
+- Un `Clip` contient uniquement des `NoteEvent` dans le premier perimetre fonctionnel.
 - Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
 - Le temps du domaine est pense comme un espace continu.
 - La quantification appartient d'abord a l'experience d'edition : elle guide les gestes de l'utilisateur sans transformer le modele musical en grille rigide.
@@ -53,7 +54,8 @@ flowchart LR
 - Les instruments et leurs patchs sont definis dans le code avant la compilation. L'utilisateur choisit un instrument pour une piste, mais ne peut ni creer ni modifier son patch.
 - Le catalogue d'instruments fait partie de l'infrastructure audio.
 - Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
-- Le domaine ne connait l'audio qu'a travers des identifiants stables et des contrats minimaux.
+- Les automations, les evenements de controle et l'exposition de parametres audio ne font pas partie du premier perimetre fonctionnel.
+- Le domaine ne connait l'audio qu'a travers un `InstrumentId` stable et un port de lecture minimal.
 
 ## Domaine d'arrangement
 
@@ -61,8 +63,8 @@ Le domaine d'arrangement decrit la structure musicale du projet dans le temps. I
 
 - quelles pistes existent ?
 - quels clips sont places sur ces pistes ?
-- quels evenements musicaux existent dans un clip ?
-- a quel moment ces evenements doivent-ils etre joues ?
+- quelles notes existent dans un clip ?
+- a quel moment ces notes doivent-elles etre jouees ?
 
 Il reste independant de la maniere dont le son est produit et de la maniere dont l'utilisateur manipule visuellement les objets.
 
@@ -140,29 +142,13 @@ Attributs possibles :
 - `name`
 - `range`
 - `loop`
-- `events`
+- `notes`
 
 Responsabilites :
 
-- contenir des evenements musicaux ;
+- contenir et ordonner des notes ;
 - definir une region temporelle sur une piste ;
 - permettre l'edition locale d'un motif, d'une phrase ou d'une cellule musicale.
-
-#### MusicalEvent
-
-Represente une famille abstraite d'evenements musicaux contenus dans un clip.
-
-Types possibles :
-
-- `NoteEvent`
-- `AutomationEvent`
-- `ControlEvent`
-
-Responsabilites :
-
-- decrire ce qui doit arriver musicalement ;
-- rester independant du moteur audio ;
-- etre interpretable par le systeme de lecture.
 
 #### NoteEvent
 
@@ -184,24 +170,6 @@ Responsabilites :
 - definir une duree ;
 - porter des parametres d'interpretation simples ;
 - conserver son identite au fil de ses modifications.
-
-#### AutomationEvent
-
-Represente une variation de parametre dans le temps.
-
-Attributs possibles :
-
-- `id`
-- `target`
-- `time`
-- `value`
-- `curve`
-
-Responsabilites :
-
-- exprimer une modulation composee ou dessinee ;
-- cibler un parametre expose sans connaitre son implementation audio ;
-- decrire des changements reproductibles dans le temps musical.
 
 ### Value Objects de l'arrangement
 
@@ -363,10 +331,10 @@ Regles possibles :
 
 Regles possibles :
 
-- un evenement appartient a un seul clip et ne possede pas de cycle de vie autonome ;
+- une note appartient a un seul clip et ne possede pas de cycle de vie autonome ;
 - une note modifiee conserve son identite ;
 - une note copiee ou dupliquee recoit une nouvelle identite ;
-- les evenements sont positionnes relativement au debut du clip ;
+- les notes sont positionnees relativement au debut du clip ;
 - les positions et durees peuvent rester continues dans le modele ;
 - la quantification est appliquee par les operations d'edition ;
 - selon le choix musical, les chevauchements sur une meme hauteur peuvent etre autorises ou interdits.
@@ -431,7 +399,7 @@ Exemples :
 
 - deplacer des notes ;
 - redimensionner un clip ;
-- transposer plusieurs evenements ;
+- transposer plusieurs notes ;
 - associer un instrument disponible a une piste.
 
 ### PlaybackService
@@ -442,7 +410,7 @@ Responsabilites :
 
 - parcourir l'arrangement selon le tempo ;
 - convertir le temps musical en temps reel ;
-- transformer les evenements musicaux en commandes audio ;
+- transformer les notes en commandes audio ;
 - transmettre ces commandes a un `AudioEngine` abstrait.
 
 ### Ports
@@ -496,13 +464,11 @@ Attributs possibles :
 - `id`
 - `name`
 - `patch`
-- `exposedParameters`
 
 Responsabilites :
 
 - associer un identifiant stable a une implementation sonore ;
-- fournir le patch necessaire a l'instanciation ;
-- declarer les parametres accessibles a la lecture ou aux automations.
+- fournir le patch necessaire a l'instanciation.
 
 ### ModularPatch
 
@@ -589,34 +555,11 @@ Le domaine peut comparer et conserver cet identifiant, mais il ne sait pas comme
 
 La disparition d'un instrument entre deux versions de l'application doit etre traitee au chargement par la couche applicative.
 
-### ParameterId
-
-Identifiant stable d'un parametre controlable.
-
-Exemples :
-
-- `filter.cutoff`
-- `vco.frequency`
-- `envelope.attack`
-
-Responsabilites :
-
-- permettre a une automation de cibler un parametre expose ;
-- eviter que l'arrangement connaisse l'objet technique qui implemente ce parametre ;
-- stabiliser le lien entre arrangement et instrument.
-
-### ParameterValue
-
-Represente la valeur transmise a un parametre audio ou de controle.
-
-Sa forme partagee doit rester minimale. Les metadonnees techniques comme l'unite, le minimum et le maximum appartiennent au descripteur du parametre dans l'infrastructure audio, sauf si une future regle musicale exige qu'elles appartiennent au domaine.
-
 ## Relations architecturales
 
 | Depuis | Vers | Nature du lien |
 | --- | --- | --- |
 | `Track.instrumentId` | `InstrumentId` | Une piste conserve l'identifiant opaque de l'instrument choisi. |
-| `AutomationEvent.target` | `ParameterId` | Une automation cible un parametre expose sans connaitre son implementation. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
@@ -631,25 +574,19 @@ Cette arborescence est une cible de travail provisoire. Elle documente les front
 ```text
 src/
 ├── domain/
-│   └── arrangement/
-│       ├── entities/
-│       │   ├── Project.ts
-│       │   ├── Arrangement.ts
-│       │   ├── Track.ts
-│       │   ├── Clip.ts
-│       │   └── events/
-│       │       ├── MusicalEvent.ts
-│       │       ├── NoteEvent.ts
-│       │       └── AutomationEvent.ts
-│       └── value-objects/
-│           ├── Pitch.ts
-│           ├── TimePosition.ts
-│           ├── Duration.ts
-│           ├── TimeRange.ts
-│           ├── Velocity.ts
-│           ├── Tempo.ts
-│           ├── TimeSignature.ts
-│           └── Loop.ts
+│   ├── Project.ts
+│   ├── Arrangement.ts
+│   ├── Track.ts
+│   ├── Clip.ts
+│   ├── NoteEvent.ts
+│   ├── Pitch.ts
+│   ├── TimePosition.ts
+│   ├── Duration.ts
+│   ├── TimeRange.ts
+│   ├── Velocity.ts
+│   ├── Tempo.ts
+│   ├── TimeSignature.ts
+│   └── Loop.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
@@ -659,9 +596,7 @@ src/
 │   ├── playback/
 │   │   └── PlaybackService.ts
 │   ├── contracts/
-│   │   ├── InstrumentId.ts
-│   │   ├── ParameterId.ts
-│   │   └── ParameterValue.ts
+│   │   └── InstrumentId.ts
 │   └── ports/
 │       ├── AudioEngine.ts
 │       └── InstrumentCatalog.ts
@@ -683,15 +618,14 @@ src/
     └── stores/
 ```
 
+Le domaine adopte pour commencer une architecture plate : ses entites et ses Value Objects sont exposes directement dans `domain/`. Des sous-dossiers ne seront introduits que lorsque des groupes de concepts suffisamment coherents le justifieront.
+
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
 ## Questions ouvertes
 
 - Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
-- Les clips doivent-ils etre uniquement des conteneurs de notes, ou peuvent-ils contenir d'autres types d'evenements comme des automations et des controles ?
 - Quelle representation canonique choisir pour le temps musical continu : battements rationnels, ticks a haute resolution ou autre representation ?
-- Les automations font-elles partie du premier perimetre fonctionnel de Pianola ?
-- Quels descripteurs de parametres doivent etre exposes par l'infrastructure audio a la couche applicative ?
 
 ## Principes directeurs
 
