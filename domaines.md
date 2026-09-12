@@ -15,7 +15,6 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 - [Etat applicatif de l'editeur](#etat-applicatif-de-lediteur)
 - [Couche applicative et lecture](#couche-applicative-et-lecture)
 - [Infrastructure audio](#infrastructure-audio)
-- [Contrats entre les couches](#contrats-entre-les-couches)
 - [Relations architecturales](#relations-architecturales)
 - [Arborescence cible](#arborescence-cible)
 - [Questions ouvertes](#questions-ouvertes)
@@ -56,8 +55,9 @@ flowchart LR
 - Le catalogue d'instruments fait partie de l'infrastructure audio.
 - Le moteur audio est indispensable a l'ecoute, mais il appartient a l'infrastructure et non au modele metier editable.
 - Les automations, les evenements de controle et l'exposition de parametres audio ne font pas partie du premier perimetre fonctionnel.
-- Le domaine ne connait l'audio qu'a travers un `InstrumentId` stable et un port de lecture minimal.
+- Le domaine ne connait de l'audio que l'`InstrumentId` stable associe a chaque piste. Les ports audio appartiennent a la couche applicative.
 - Les services applicatifs sont ranges dans `application/use-cases/`. Aucun service d'edition generique n'est cree avant que ses responsabilites soient definies.
+- Aucun dossier generique `application/contracts/` n'est necessaire : les ports portent leurs propres modeles d'echange et les types metier restent dans le domaine.
 
 ## Domaine de composition
 
@@ -221,6 +221,18 @@ Regles possibles :
 - une duree peut etre quantifiee par une operation d'edition.
 
 Comme pour `TimePosition`, les battements et les secondes sont derives de la valeur canonique en ticks.
+
+#### InstrumentId
+
+Represente l'identifiant stable et opaque de l'instrument associe a une `Track`.
+
+Responsabilites :
+
+- permettre au domaine de conserver et comparer l'instrument choisi ;
+- ne reveler aucune information sur la definition technique ou le patch de l'instrument ;
+- rester exploitable par les couches applicative et d'infrastructure sans inverser le sens des dependances.
+
+La disparition d'un instrument entre deux versions de l'application est traitee au chargement par la couche applicative.
 
 #### TimeRange
 
@@ -430,10 +442,15 @@ Port minimal permettant notamment :
 Port de consultation permettant notamment :
 
 - de lister les instruments disponibles ;
-- d'obtenir leurs descripteurs publics ;
+- d'obtenir pour chacun un `InstrumentSummary` ;
 - de verifier qu'un `InstrumentId` peut etre resolu.
 
-Son implementation concrete appartient a l'infrastructure audio.
+`InstrumentSummary` est un modele de sortie minimal declare a cote du port :
+
+- `id`, de type `InstrumentId` ;
+- `name`.
+
+Il ne contient aucune definition de patch ni aucun parametre audio. L'implementation concrete du port appartient a l'infrastructure audio.
 
 ## Infrastructure audio
 
@@ -444,15 +461,6 @@ Les instruments et leurs patchs sont ecrits dans le code avant la compilation. I
 ### BuiltInInstrumentCatalog
 
 Implementation concrete du port `InstrumentCatalog`. Il expose en lecture seule les instruments disponibles et resout leurs identifiants stables.
-
-### InstrumentDescriptor
-
-Expose uniquement les informations necessaires a l'application ou a l'interface :
-
-- `id`
-- `name`
-
-Il ne revele pas le patch modulaire.
 
 ### InstrumentDefinition
 
@@ -542,18 +550,6 @@ Il gere notamment :
 
 Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 
-## Contrats entre les couches
-
-Les contrats partages doivent rester minimaux afin d'eviter que le domaine depende des structures techniques du moteur.
-
-### InstrumentId
-
-Identifiant stable et opaque reference par une `Track`.
-
-Le domaine peut comparer et conserver cet identifiant, mais il ne sait pas comment l'instrument correspondant est defini ou instancie.
-
-La disparition d'un instrument entre deux versions de l'application doit etre traitee au chargement par la couche applicative.
-
 ## Relations architecturales
 
 | Depuis | Vers | Nature du lien |
@@ -564,7 +560,7 @@ La disparition d'un instrument entre deux versions de l'application doit etre tr
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
 | Moteur audio concret | `InstrumentDefinition` | Le moteur resout l'identifiant, instancie le patch et produit le son. |
 
-Le sens des dependances de code doit pointer vers l'interieur : l'infrastructure depend des contrats applicatifs et du domaine, jamais l'inverse.
+Le sens des dependances de code doit pointer vers l'interieur : l'application depend du domaine, et l'infrastructure depend des ports applicatifs ainsi que du domaine, jamais l'inverse.
 
 ## Arborescence cible
 
@@ -581,6 +577,7 @@ src/
 │   ├── Pitch.ts
 │   ├── TimePosition.ts
 │   ├── Duration.ts
+│   ├── InstrumentId.ts
 │   ├── TimeRange.ts
 │   ├── Velocity.ts
 │   ├── Tempo.ts
@@ -593,8 +590,6 @@ src/
 │   │   └── GridResolution.ts
 │   ├── use-cases/
 │   │   └── PlaybackService.ts
-│   ├── contracts/
-│   │   └── InstrumentId.ts
 │   └── ports/
 │       ├── AudioEngine.ts
 │       └── InstrumentCatalog.ts
@@ -602,7 +597,6 @@ src/
 │   ├── audio/
 │   │   ├── catalog/
 │   │   │   ├── BuiltInInstrumentCatalog.ts
-│   │   │   ├── InstrumentDescriptor.ts
 │   │   │   └── InstrumentDefinition.ts
 │   │   ├── modular/
 │   │   │   ├── ModularPatch.ts
