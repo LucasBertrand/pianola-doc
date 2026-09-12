@@ -45,8 +45,13 @@ flowchart LR
 - Le `Project` organise directement une sequence ordonnee de clips.
 - Les clips sont necessairement consecutifs : ils ne possedent pas de position dans une timeline globale et leur ordre determine l'ordre de lecture.
 - Un clip peut etre contourne pendant la lecture. Cet etat est conserve dans le clip afin que la sauvegarde preserve la structure courante de la sequence.
-- Chaque `Clip` porte son propre tempo et sa propre metrique.
-- Un `Clip` contient uniquement des `NoteEvent` dans le premier perimetre fonctionnel.
+- Chaque `Clip` porte ses propres chronologies locales de tempo et de metrique, positionnees en ticks.
+- Chaque chronologie possede obligatoirement un changement initial au tick `0` ; il remplace les anciennes proprietes scalaires `tempo` et `timeSignature` du clip.
+- Un changement de tempo peut intervenir sur n'importe quel tick. Un changement de metrique est insere sur une frontiere de mesure ; il peut ensuite fermer une mesure devenue incomplete si la metrique precedente est modifiee sans deplacer le marqueur.
+- Les sections metriques ne sont pas stockees directement : elles sont derivees des intervalles entre deux changements de metrique, ou entre le dernier changement et la fin du clip.
+- Modifier une metrique propose deux intentions explicites : conserver la duree en ticks ou conserver le nombre de mesures.
+- Par defaut, un clip vide conserve son nombre de mesures ; une section contenant deja des notes ou suivie d'autres sections conserve sa duree.
+- Un `Clip` contient uniquement des `NoteEvent` comme contenu musical dans le premier perimetre fonctionnel. Les changements de tempo et de metrique sont des donnees structurelles, et non des automations ou des evenements de controle.
 - Une `NoteEvent` est une entity appartenant a un `Clip`. Elle conserve son identite lorsqu'elle est modifiee et recoit une nouvelle identite lorsqu'elle est copiee.
 - Chaque `NoteEvent` reference l'instrument qui doit l'interpreter au moyen d'un `InstrumentId`. Un meme clip peut donc contenir plusieurs instruments.
 - Le temps musical canonique est represente par des ticks entiers, avec une resolution fixe de 960 ticks par noire.
@@ -72,6 +77,8 @@ Le domaine de composition decrit une succession de sections musicales. Le `Proje
 - quelles notes existent dans un clip ?
 - quel instrument doit interpreter chaque note ?
 - a quel moment relatif du clip chaque note doit-elle etre jouee ?
+- quels tempo et quelles metriques sont actifs a un tick donne ?
+- comment le clip est-il decoupe en sections et en mesures ?
 
 Il reste independant de la maniere dont le son est produit et de la maniere dont l'utilisateur manipule visuellement les objets.
 
@@ -111,16 +118,18 @@ Attributs possibles :
 - `id`
 - `name`
 - `duration`
-- `tempo`
-- `timeSignature`
 - `isBypassed`
 - `loop`
 - `notes`
+- `tempoChanges`
+- `timeSignatureChanges`
 
 Responsabilites :
 
 - contenir et ordonner des notes selon leur position locale ;
-- definir la duree et le contexte rythmique d'une section ;
+- definir sa duree canonique en ticks ;
+- contenir et ordonner les changements locaux de tempo et de metrique ;
+- fournir le contexte rythmique actif a n'importe quelle position ;
 - conserver son etat de bypass dans la sauvegarde ;
 - permettre l'edition locale d'un motif, d'une phrase ou d'une section musicale ;
 - permettre a plusieurs instruments de coexister dans une meme section par l'intermediaire des notes.
@@ -147,6 +156,44 @@ Responsabilites :
 - porter des parametres d'interpretation simples ;
 - identifier l'instrument charge de l'interpreter ;
 - conserver son identite au fil de ses modifications.
+
+#### TempoChange
+
+Represente un changement de tempo place sur la chronologie locale d'un clip.
+
+Attributs possibles :
+
+- `id`
+- `position`
+- `tempo`
+
+Regles possibles :
+
+- le premier changement est obligatoirement place au tick `0` ;
+- un changement peut etre place sur n'importe quel tick compris dans le clip ;
+- un seul changement de tempo peut exister a une meme position ;
+- le nouveau tempo s'applique a partir du tick du changement, inclus ;
+- la position et le tempo peuvent etre modifies sans changer l'identite du changement.
+
+#### TimeSignatureChange
+
+Represente un changement de metrique place sur la chronologie locale d'un clip.
+
+Attributs possibles :
+
+- `id`
+- `position`
+- `timeSignature`
+
+Regles possibles :
+
+- le premier changement est obligatoirement place au tick `0` ;
+- un nouveau changement est insere sur une frontiere de mesure ;
+- un seul changement de metrique peut exister a une meme position ;
+- la nouvelle metrique s'applique a partir du tick du changement, inclus ;
+- un changement ferme la section metrique precedente et commence la suivante.
+
+Les marqueurs visibles dans l'editeur sont la representation des `TempoChange` et des `TimeSignatureChange`. Un changement de chaque type peut exister au meme tick.
 
 ### Value Objects de la composition
 
@@ -182,7 +229,7 @@ Responsabilites :
 - accepter toute position en ticks, y compris lorsqu'elle n'est pas alignee sur la grille d'edition ;
 - rester independant du temps reel.
 
-Les battements et les secondes sont des representations derivees. Les secondes sont calculees par le service de lecture a partir du tempo du clip courant.
+Les battements, les mesures et les secondes sont des representations derivees. Les secondes sont calculees par le service de lecture en integrant les changements de tempo rencontres dans le clip.
 
 #### Duration
 
@@ -239,7 +286,7 @@ Regles possibles :
 
 #### Tempo
 
-Represente la vitesse propre a un clip.
+Represente une valeur de vitesse musicale.
 
 Attributs possibles :
 
@@ -248,12 +295,12 @@ Attributs possibles :
 Regles possibles :
 
 - le BPM doit rester dans une plage musicalement exploitable ;
-- le tempo permet au service de lecture de convertir le temps musical local du clip en temps reel ;
-- un changement de tempo intervient uniquement a la frontiere entre deux clips.
+- le tempo permet au service de lecture de convertir un intervalle de temps musical en temps reel ;
+- sa periode de validite est determinee par les `TempoChange` du clip.
 
 #### TimeSignature
 
-Represente la metrique propre a un clip.
+Represente une valeur de metrique.
 
 Attributs possibles :
 
@@ -268,9 +315,36 @@ Exemples :
 
 Responsabilites :
 
-- organiser les reperes en mesures a l'interieur du clip ;
+- organiser les reperes en mesures a l'interieur d'une section metrique ;
 - influencer les reperes temporels proposes par l'editeur ;
-- permettre un changement de metrique a la frontiere entre deux clips.
+- permettre de calculer la longueur d'une mesure en ticks.
+
+Avec une resolution de 960 ticks par noire :
+
+```text
+ticksPerMeasure = beatsPerMeasure * (4 / beatUnit) * 960
+```
+
+#### MetricSection
+
+Represente une vue derivee de l'intervalle compris entre un `TimeSignatureChange` et le changement suivant, ou la fin du clip.
+
+Attributs derives possibles :
+
+- `start`
+- `end`
+- `timeSignature`
+- `fullMeasureCount`
+- `trailingMeasureDuration`
+
+La section n'est pas sauvegardee comme un objet autonome. Sa duree est imposee par ses bornes en ticks, puis son decoupage est calcule :
+
+```text
+fullMeasureCount = floor(sectionDuration / ticksPerMeasure)
+trailingMeasureDuration = sectionDuration % ticksPerMeasure
+```
+
+Une valeur non nulle de `trailingMeasureDuration` represente une derniere mesure incomplete. Le changement suivant constitue alors une frontiere explicite et commence une nouvelle mesure.
 
 #### Loop
 
@@ -305,7 +379,7 @@ Regles possibles :
 - reordonner un clip modifie la structure de la sequence ;
 - un clip contourne reste present a sa place dans la sequence et son etat est sauvegarde ;
 - pendant la lecture, un clip contourne est ignore et le clip suivant commence immediatement ;
-- le contexte de tempo et de metrique change aux frontieres entre clips.
+- chaque clip recommence avec ses changements initiaux de tempo et de metrique au tick `0`.
 
 #### Clip comme aggregate secondaire
 
@@ -320,6 +394,10 @@ Regles possibles :
 - une note reference exactement un instrument ;
 - plusieurs notes d'un meme clip peuvent referencer des instruments differents ;
 - les positions et durees peuvent rester continues dans le modele ;
+- les changements de tempo et de metrique sont ordonnes par position ;
+- chaque chronologie contient exactement un changement initial au tick `0` ;
+- un changement s'applique a partir de sa position, incluse, jusqu'au changement suivant ;
+- modifier une metrique en conservant la duree ne deplace ni les notes, ni les marqueurs, ni la fin du clip ;
 - la quantification est appliquee par les operations d'edition ;
 - selon le choix musical, les chevauchements sur une meme hauteur peuvent etre autorises ou interdits.
 
@@ -381,9 +459,18 @@ Exemples :
 
 - deplacer des notes ;
 - redimensionner un clip ;
+- ajouter, deplacer ou supprimer un changement de tempo ou de metrique ;
+- modifier une metrique en indiquant explicitement s'il faut conserver la duree ou le nombre de mesures ;
 - reordonner ou bypasser un clip ;
 - transposer plusieurs notes ;
 - associer un instrument disponible a une ou plusieurs notes.
+
+Le changement de metrique utilise une politique explicite, par exemple `PRESERVE_DURATION` ou `PRESERVE_MEASURE_COUNT`.
+
+- `PRESERVE_DURATION` conserve les ticks des notes, des marqueurs et de la fin du clip. Le nombre de mesures est recalcule et la section peut se terminer par une mesure incomplete.
+- `PRESERVE_MEASURE_COUNT` recalcule la borne de fin de la section selon la nouvelle longueur de mesure. Dans le premier perimetre, ce mode est utilise pour un clip vide ou une section terminale vide, afin de ne pas imposer de deplacement en cascade aux sections suivantes.
+
+Lors de la creation d'un clip, le cas d'usage recoit un nombre de mesures, une metrique et un tempo, puis calcule immediatement la duree canonique en ticks. Pour un nouveau clip vide, modifier la metrique conserve par defaut le nombre de mesures. Des que la section contient des notes ou que d'autres sections la suivent, l'editeur propose par defaut de conserver la duree.
 
 Aucun `EditorService` generique n'est introduit. Les futurs services d'edition seront nommes et ajoutes dans `application/use-cases/` lorsque leurs responsabilites precises seront etablies.
 
@@ -395,7 +482,8 @@ Responsabilites :
 
 - parcourir la sequence de clips dans son ordre ;
 - ignorer les clips contournes ;
-- convertir le temps musical de chaque clip en temps reel selon son propre tempo ;
+- parcourir les changements de tempo de chaque clip ;
+- convertir chaque segment de temps musical en temps reel selon le tempo actif ;
 - transformer les notes en commandes audio ;
 - transmettre ces commandes a un `AudioEngine` abstrait.
 
@@ -531,6 +619,8 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | --- | --- | --- |
 | `Project.clips` | `Clip` | Le projet conserve l'ordre persistant des sections musicales. |
 | `NoteEvent.instrumentId` | `InstrumentId` | Chaque note conserve l'identifiant opaque de l'instrument qui doit l'interpreter. |
+| `Clip.tempoChanges` | `TempoChange` | La chronologie locale determine le tempo actif a chaque tick. |
+| `Clip.timeSignatureChanges` | `TimeSignatureChange` | Les changements delimitent les sections metriques derivees du clip. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes a travers un port abstrait. |
 | `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
@@ -548,6 +638,8 @@ src/
 │   ├── Project.ts
 │   ├── Clip.ts
 │   ├── NoteEvent.ts
+│   ├── TempoChange.ts
+│   ├── TimeSignatureChange.ts
 │   ├── Pitch.ts
 │   ├── TimePosition.ts
 │   ├── Duration.ts
@@ -556,6 +648,7 @@ src/
 │   ├── Velocity.ts
 │   ├── Tempo.ts
 │   ├── TimeSignature.ts
+│   ├── MetricSection.ts
 │   └── Loop.ts
 ├── application/
 │   ├── editor/
