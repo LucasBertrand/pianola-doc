@@ -188,6 +188,33 @@ Un clip `Nappe` possede une duree structurelle de deux secondes, mais son instru
 
 La fin structurelle, calculee a partir des ticks et du tempo, determine le depart de `Conclusion`. Le tail ne rallonge donc pas le groupe et peut se superposer au clip suivant. Le contexte de `Nappe` refuse toute nouvelle attaque apres deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'a une duree maximale de securite.
 
+## Cas 9 - Lecture depuis un noeud et preecoute bornee
+
+Le groupe racine est sequentiel. Son deuxieme enfant, `Ensemble`, est un groupe simultane.
+
+```mermaid
+flowchart TD
+    Root["RootGroup - SEQUENTIAL"] --> Intro["Introduction"]
+    Root --> Ensemble["Ensemble - SIMULTANEOUS"]
+    Root --> Conclusion["Conclusion"]
+    Ensemble --> Piano["Piano"]
+    Ensemble --> Basse["Basse"]
+```
+
+Les commandes suivantes expriment des intentions differentes :
+
+| Commande | Resultat |
+| --- | --- |
+| `play()` | `Introduction`, puis `Piano` et `Basse` ensemble, puis `Conclusion`. |
+| `play(ensemble.id)` | `Piano` et `Basse` ensemble, puis `Conclusion`. |
+| `preview(ensemble.id)` | `Piano` et `Basse` ensemble, puis arret a la fin du groupe. |
+| `preview(piano.id)` | `Piano` seul, puis arret a la fin du clip. |
+| `play(piano.id)` | Commande invalide : `Piano` ne constitue pas un point d'entree structurel isole dans son groupe simultane. |
+
+Dans l'interface, les enfants d'un groupe sequentiel peuvent donc proposer un bouton de lecture structurelle. Un groupe simultane propose ce bouton pour l'ensemble du groupe, tandis que chacun de ses descendants reste accessible par une action de preecoute.
+
+Le point de depart optionnel de `play` ne change pas la racine de la session : il s'agit toujours d'une session `PROJECT`, capable de poursuivre jusqu'a la fin du projet. A l'inverse, `preview` cree une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` dont la racine est une frontiere infranchissable.
+
 ## Consequences pour le PlaybackService
 
 Le calcul structurel peut etre interprete par une operation recursive :
@@ -202,6 +229,9 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - un groupe `SEQUENTIAL` transmet la fin de chaque enfant comme debut du suivant ;
 - un groupe `SIMULTANEOUS` transmet le meme debut a tous ses enfants et retourne la fin la plus tardive ;
 - une duree `infinite` se propage aux groupes ancetres selon les memes regles ;
+- `play()` commence au debut du `rootGroup`, tandis que `play(fromItemId)` utilise un point d'entree structurel valide et poursuit ensuite jusqu'a la fin du projet ;
+- un enfant isole d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, car ses freres devraient commencer au meme instant ;
+- `preview(itemId)` borne le parcours au clip ou au groupe cible et ne rejoint jamais le noeud suivant hors de cette racine ;
 - chaque operation globale ouvre une `PlaybackSession` transitoire ;
 - chaque activation de clip recoit un `ClipPlaybackId` distinct de son `ClipId` ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
