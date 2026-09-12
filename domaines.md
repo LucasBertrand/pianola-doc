@@ -143,7 +143,9 @@ Responsabilites :
 
 ### NoteEvent
 
-Represente une note placee dans un clip.
+Represente une note placee dans un clip. Elle possede une identite propre afin de pouvoir etre selectionnee et modifiee individuellement tout en restant la meme note.
+
+Une `NoteEvent` n'est toutefois pas une racine d'agregat : elle appartient a un `Clip`, qui controle sa creation, sa modification et sa suppression.
 
 Attributs possibles :
 
@@ -157,7 +159,8 @@ Responsabilites :
 - definir une hauteur ;
 - definir une position temporelle relative au clip ;
 - definir une duree ;
-- porter des parametres d'interpretation simples.
+- porter des parametres d'interpretation simples ;
+- conserver son identite lors d'un deplacement, d'un redimensionnement ou d'une transposition.
 
 ### AutomationEvent
 
@@ -546,7 +549,9 @@ Regles possibles :
 
 Regles possibles :
 
-- un evenement appartient a un seul clip ;
+- un evenement appartient a un seul clip et ne possede pas de cycle de vie autonome ;
+- une note modifiee conserve son identite ;
+- une note copiee ou dupliquee recoit une nouvelle identite ;
 - les evenements sont positionnes relativement au debut du clip ;
 - les notes peuvent etre triees par position ;
 - les positions et durees peuvent rester continues dans le modele ;
@@ -567,7 +572,6 @@ Regles possibles :
 ## Questions ouvertes
 
 - Le terme `Arrangement` convient-il pour nommer le domaine temporel, ou faut-il preferer `Composition`, `Timeline`, `Score` ou `Session` ?
-- Une `NoteEvent` doit-elle etre une entity, ou un value object contenu dans un clip ?
 - Les clips doivent-ils etre uniquement des conteneurs de notes, ou peuvent-ils contenir d'autres types d'evenements comme des automations et des controles ?
 - La selection appartient-elle vraiment au domaine, ou plutot a l'etat applicatif de l'editeur ?
 - Le domaine audio doit-il modeliser seulement la definition des instruments, ou aussi leur etat d'execution pendant la lecture ?
