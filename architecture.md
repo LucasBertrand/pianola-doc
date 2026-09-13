@@ -560,9 +560,9 @@ Une transformation portant simultanément sur des notes et des changements est p
 
 La réconciliation des occurrences déjà audibles s'effectue à la borne de replanification :
 
-- une note inchangée conserve son occurrence et son éventuel `NOTE_OFF` futur est replanifié ;
-- une note supprimée ou qui ne couvre plus la tête de lecture reçoit un `NOTE_OFF` ;
-- une note modifiée est relâchée, puis réattaquée avec une nouvelle occurrence si sa nouvelle étendue couvre encore la tête de lecture.
+- une occurrence dont les propriétés d'attaque restent inchangées est conservée ; si seule la fin de la note est avancée ou retardée tout en restant après la tête de lecture, son `NOTE_OFF` est simplement replanifié ;
+- une note supprimée, ou dont la nouvelle fin atteint ou précède la tête de lecture, reçoit un `NOTE_OFF` à la borne de replanification ;
+- une modification du début, de la hauteur, de l'instrument, de la vélocité ou de toute autre donnée déterminant l'attaque relâche l'occurrence existante, puis crée une nouvelle occurrence si la note modifiée couvre encore la tête de lecture.
 
 Cette replanification est une conséquence applicative du geste d'édition, pas une nouvelle commande publique de la présentation.
 
