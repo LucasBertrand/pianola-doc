@@ -411,6 +411,45 @@ La tête de lecture est un état applicatif transitoire exprimé par une `Projec
 
 Sa position initiale est le début du projet. Elle peut être déplacée directement par l'utilisateur sur la timeline globale ou résolue à partir d'un repère structurel : le début global d'un `Group`, ou n'importe quelle `TimePosition` locale d'un `Clip`, convertie en `ProjectTime`.
 
+#### Projet transitoire
+
+L'application distingue le projet courant validé d'un éventuel projet transitoire produit pendant une manipulation.
+
+```ts
+interface ProjectState {
+  project: Project;
+  transientProject?: Project;
+}
+
+const effectiveProject =
+  state.transientProject ?? state.project;
+```
+
+`project` est la version courante faisant autorité dans l'éditeur. Elle peut comporter des modifications validées qui n'ont pas encore été sauvegardées. Le terme ne doit donc pas être remplacé par `persistedProject`.
+
+`transientProject` est le résultat provisoire de la manipulation en cours. Il remplace temporairement `project` pour tous les usages interactifs, sans le modifier. Il reste un `Project` ordinaire soumis aux mêmes invariants : aucun type `TransientProject` n'est introduit dans le domaine.
+
+`effectiveProject` est une valeur dérivée, jamais un troisième projet stocké :
+
+- il vaut `transientProject` lorsqu'il existe ;
+- il vaut sinon `project` ;
+- il constitue la source commune de la présentation et de la lecture audio ;
+- il n'est jamais transmis tel quel à la persistance.
+
+Un seul projet transitoire peut exister à la fois. Chaque actualisation est recalculée depuis `project`, et non depuis la version transitoire précédente, afin d'éviter l'accumulation d'arrondis au cours d'un geste continu.
+
+Le cycle de substitution expose conceptuellement trois opérations :
+
+```ts
+setTransientProject(project: Project): void;
+applyTransientProject(): void;
+discardTransientProject(): void;
+```
+
+`setTransientProject` crée ou remplace le résultat provisoire. `applyTransientProject` en fait atomiquement le nouveau `project`, puis supprime l'état transitoire. `discardTransientProject` l'abandonne et rétablit immédiatement le projet précédent comme projet effectif.
+
+Appliquer un projet transitoire ne le sauvegarde pas. L'application définit l'état courant de la session d'édition ; la persistance enregistre ensuite ce `project` à travers un port dédié. Une application du projet transitoire formera également une seule unité dans un futur historique d'annulation, quels que soient le nombre de mises à jour produites pendant le geste.
+
 ### Cas d'usage d'édition
 
 Les cas d'usage d'édition :
@@ -424,15 +463,34 @@ Les cas d'usage d'édition :
 
 Exemples :
 
-- déplacer ou transposer des notes ;
-- redimensionner un clip ;
+- déplacer ensemble des notes et des changements appartenant à un même clip ;
+- transposer ou redimensionner des notes ;
 - ajouter, déplacer ou supprimer un changement ;
+- redimensionner un clip ;
 - créer, imbriquer, déplacer, réordonner ou supprimer un groupe ;
 - changer le `PlaybackMode` d'un groupe ;
 - modifier le `repeatCount` ou le bypass d'un clip ;
 - associer un instrument disponible à une ou plusieurs notes.
 
-Aucun `EditorService` générique n'est introduit. Les services seront nommés et ajoutés dans `application/use-cases/` lorsque leurs responsabilités précises seront établies.
+La substitution du projet transitoire est commune à tous les gestes d'édition. Chaque geste reste porté par un cas d'usage explicite, qui peut transformer atomiquement plusieurs types d'éléments lorsqu'ils participent à une même intention utilisateur. Cette organisation ne requiert pas un `EditorService` regroupant indistinctement toutes les opérations.
+
+Par exemple, un déplacement temporel du contenu sélectionné peut recevoir une commande applicative unique :
+
+```ts
+interface MoveClipContentCommand {
+  clipId: ClipId;
+  items: readonly ClipContentRef[];
+  deltaTicks: number;
+}
+```
+
+Les références peuvent désigner simultanément des notes, des changements de tempo, de métrique et de contexte de hauteurs. Le cas d'usage résout chaque référence, applique le même déplacement à partir du `project` et ne publie qu'un unique `transientProject` complet.
+
+La transformation est atomique : si un élément ne peut pas atteindre la position proposée sans violer un invariant, aucun résultat partiel n'est publié. La présentation peut conserver le dernier projet transitoire valide et représenter séparément la position brute ou invalide du geste.
+
+Les identifiants des entités déplacées sont conservés. Lorsqu'une transformation provisoire crée des entités, leurs identifiants sont générés une seule fois pour le geste, restent stables pendant ses actualisations et sont conservés si le projet transitoire est appliqué.
+
+Les services seront nommés et ajoutés dans `application/use-cases/` lorsque leurs responsabilités précises seront établies.
 
 #### Modification de la métrique
 
@@ -450,6 +508,18 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures, une
 ### PlaybackService
 
 `PlaybackService` est le cas d'usage qui interprète l'arbre de composition, construit sa timeline dérivée et produit les commandes nécessaires à sa lecture.
+
+#### Projet effectif et modification en temps réel
+
+Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe.
+
+Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service la recalcule depuis le nouvel `effectiveProject` et transmet les changements au moteur lors du prochain cycle de planification sûr. L'audio et la présentation observent ainsi une même version cohérente du projet.
+
+Appliquer le projet transitoire ne change pas le contenu de `effectiveProject` et ne doit donc provoquer ni nouvelle planification ni rupture sonore. L'abandonner fait au contraire revenir `effectiveProject` à `project` et entraîne la même réconciliation que toute autre modification transitoire.
+
+Une transformation portant simultanément sur des notes et des changements est publiée en une seule fois. Le service ne doit jamais observer un état intermédiaire dans lequel une partie seulement du geste aurait été appliquée.
+
+La politique applicable aux occurrences déjà audibles lorsqu'une modification touche leur note reste distincte de cette sélection du projet effectif.
 
 #### Interface publique
 
@@ -700,7 +770,7 @@ La timeline applique directement la sémantique du transport :
 
 Le bypass modifie la géométrie temporelle dérivée : un clip bypassé n'y apparaît pas et les éléments séquentiels suivants sont avancés. Le mute et le solo modifient uniquement l'apparence et l'audibilité des notes concernées ; les blocs conservent leurs positions et leurs dimensions.
 
-La présentation consomme cette projection depuis la couche applicative. Toute interaction structurelle réalisée depuis la timeline est traduite en opération sur le graphe, puis la projection est recalculée. Aucune coordonnée horizontale ou verticale n'est sauvegardée dans le domaine.
+La présentation consomme cette projection depuis la couche applicative et la calcule toujours à partir d'`effectiveProject`. Toute création ou actualisation de `transientProject` est donc visible immédiatement. Toute interaction structurelle réalisée depuis la timeline est traduite en opération sur le graphe, puis la projection est recalculée. Aucune coordonnée horizontale ou verticale n'est sauvegardée dans le domaine.
 
 ---
 
@@ -837,6 +907,8 @@ Tout cet état est transitoire et n'est jamais sauvegardé dans le `Project`.
 
 L'infrastructure de persistance chargera et sauvegardera l'agrégat `Project` complet à travers les futurs ports applicatifs dédiés.
 
+Seul le `project` courant validé peut être sauvegardé. `transientProject` et `effectiveProject` appartiennent à l'orchestration applicative et ne traversent jamais le port de persistance. Une demande de sauvegarde effectuée pendant une manipulation enregistre donc le dernier `project` validé, sans adopter implicitement le projet transitoire.
+
 La stratégie applicable lorsqu'un `InstrumentId` sauvegardé ne peut plus être résolu n'est pas encore définie. Elle sera traitée avec la conception de la persistance.
 
 ---
@@ -858,6 +930,9 @@ Quelques relations structurantes :
 - `Group.items` ordonne des `Clip` ou d'autres `Group` ;
 - `Note.instrumentId` référence un instrument sans importer sa définition technique ;
 - `Project.mutedInstrumentIds` et `Project.soloedInstrumentIds` conservent les intentions d'audibilité par instrument ;
+- `transientProject` remplace provisoirement `project` sans constituer un type du domaine ;
+- `effectiveProject` résout cette substitution pour la présentation et le `PlaybackService` ;
+- seule la valeur `project` est proposée à la persistance ;
 - `PlaybackService` dérive la timeline du graphe puis transforme la portion lue en commandes pour `AudioEngine` ;
 - `InstrumentCatalog` expose les instruments disponibles à l'application ;
 - `StaticInstrumentCatalog` implémente ce port et fournit les définitions au moteur concret ;
@@ -867,6 +942,8 @@ Quelques relations structurantes :
 ## Questions ouvertes
 
 - Lorsqu'une lecture commence au milieu d'une note déjà engagée dans la timeline, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
+- Lorsqu'une modification transitoire déplace, transpose, raccourcit ou supprime une note dont une occurrence est déjà audible, faut-il relâcher l'occurrence, la remplacer immédiatement ou la laisser se terminer ?
+- Quel mécanisme de replanification ciblée doit permettre au transport actif d'appliquer les changements de `effectiveProject` sans remplacer inutilement toute la session ni accumuler des contextes en drainage ?
 - Lorsqu'un mute ou un solo change pendant que des occurrences de l'instrument concerné sont actives ou déjà planifiées, faut-il les relâcher, les laisser se terminer ou replanifier la fenêtre courante ?
 - Que devient exactement la tête de lecture après une fin naturelle, un `stop` gracieux ou un `stop` immédiat ?
 - Si la structure ou les tempos sont modifiés alors que la tête est positionnée, faut-il préserver son temps global, son repère structurel ou sa position locale dans un clip ?
@@ -902,6 +979,7 @@ src/
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
+│   │   ├── ProjectState.ts
 │   │   ├── Selection.ts
 │   │   └── GridResolution.ts
 │   ├── use-cases/
@@ -937,6 +1015,8 @@ Les objets centraux restent à la racine de `domain/`. Les concepts temporels so
 `Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`.
 
 `ClipContentSelection`, `GraphContentSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
+
+`ProjectState` conserve le `project` validé et son éventuel `transientProject`. `effectiveProject` est une résolution dérivée de cet état et ne nécessite ni fichier ni type autonome.
 
 `ProjectTime` et l'état de la tête de lecture appartiennent à l'application. `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
 
