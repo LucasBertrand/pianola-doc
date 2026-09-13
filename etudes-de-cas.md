@@ -12,6 +12,8 @@ durationSeconds = (durationTicks / 960) * (60 / bpm)
 
 Lorsque le tempo change dans le clip, sa duree reelle correspond a la somme des durees de ses `TempoSection`.
 
+Chaque cas présente une projection chronologique Mermaid. Les diagrammes utilisent des intervalles proportionnels lorsque les durées sont connues. Lorsqu'un scénario décrit surtout des états d'exécution sans fournir de durée, le diagramme représente leur ordre sans imposer d'échelle temporelle.
+
 La duree de lecture d'un element suit les regles suivantes :
 
 ```text
@@ -50,6 +52,17 @@ La lecture obtenue est la suivante :
 
 Le clip `Transition` reste dans l'arbre. Son `repeatCount` est conserve, mais il ne produit aucun son et ne retarde pas le clip suivant tant qu'il est contourne.
 
+
+### Chronologie dérivée
+
+```mermaid
+flowchart LR
+    Ouverture["0–2 s · Ouverture"] --> Transition["2 s · Transition bypassée · 0 s"]
+    Transition --> Motif1["2–3 s · Motif 1"]
+    Motif1 --> Motif2["3–4 s · Motif 2"]
+    Motif2 --> Motif3["4–5 s · Motif 3"]
+```
+
 ## Cas 2 - Deux clips simultanes aux horloges independantes
 
 Le groupe racine utilise le mode `SIMULTANEOUS`.
@@ -68,6 +81,17 @@ flowchart TD
 Les deux clips commencent a l'instant zero. `Rythme` se termine apres deux secondes, tandis que `Ligne de basse` continue jusqu'a quatre secondes. Le groupe dure donc quatre secondes.
 
 La metrique 3/4 et le tempo de 90 BPM de la basse ne modifient ni les reperes ni la chronologie du rythme en 4/4 a 120 BPM. Les clips partagent uniquement leur instant de depart reel.
+
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 2
+    t0["0–2 s"] t1["2–4 s"]
+    rythme["Rythme"] space
+    basse["Ligne de basse"]:2
+```
 
 ## Cas 3 - Imbrication d'une sequence dans une superposition
 
@@ -114,6 +138,17 @@ Le groupe `Rythme` dure quatre secondes, car il additionne deux clips de deux se
 
 Le debut de `Conclusion` a six secondes est entierement derive du parcours de l'arbre : deux secondes pour l'introduction, puis quatre secondes pour l'enfant le plus long du groupe simultane.
 
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 4
+    t0["0–2 s"] t1["2–4 s"] t2["4–6 s"] t3["6–8 s"]
+    intro["Introduction"] grooveA["Groove A"] grooveB["Groove B"] conclusion["Conclusion"]
+    space basse["Ligne de basse"]:2 space
+```
+
 ## Cas 4 - Mute et solo par instrument
 
 Deux clips simultanes utilisent plusieurs instruments. Des notes de piano apparaissent dans les deux clips.
@@ -133,6 +168,19 @@ Lorsque `piano` est mute, ses notes sont silencieuses dans les deux clips. Les n
 Dans les deux cas, les clips conservent leurs positions, leurs durees et leurs contextes. Le groupe se termine donc au meme instant qu'en l'absence de mute ou de solo. Ces reglages appartiennent au projet et ciblent l'`InstrumentId`, non un clip ou une instance particuliere.
 
 Si `piano` est a la fois mute et solo, le mute est prioritaire. Une preecoute de note utilisant cet instrument applique la meme regle d'audibilite.
+
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 1
+    periode["Début → fin structurelle inchangée"]
+    clipA["Clip A · rythme audible · piano filtré"]
+    clipB["Clip B · basse audible · piano filtré"]
+```
+
+Cette projection illustre le cas où `piano` est muté. Un solo utilise exactement la même géométrie et change seulement les instruments audibles.
 
 ## Cas 5 - Deux clips utilisent le meme instrument
 
@@ -159,6 +207,17 @@ Les deux notes ne sont jamais fusionnees implicitement. Chaque activation de cli
 
 Meme si le piano est monophonique, la note du clip B n'interrompt pas celle du clip A. La monophonie limite les notes concurrentes a l'interieur d'un meme contexte ; elle n'est pas globale a tous les clips utilisant le meme `InstrumentId`.
 
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 4
+    t0["0–1 s"] t1["1–2 s"] t2["2–3 s"] t3["3–4 s"]
+    noteA["Note A · piano"]:4
+    space noteB["Note B · piano"] space:2
+```
+
 ## Cas 6 - Remplacement du transport et preecoute concurrente
 
 Le clip `Motif` est actif dans une session `PROJECT` lorsque l'utilisateur relance la lecture avec `play(motif.id)`.
@@ -181,6 +240,18 @@ const notePreviewSession = preview(noteId);
 
 Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `project-session-b`, puis lui rattache un contexte possedant son propre `PlaybackContextId`. La commande `NOTE_ON` porte ce `contextId` ainsi que l'`InstrumentId` resolu par le `PlaybackService`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs preecoutes de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif. Le mute et le solo de l'instrument restent applicables.
 
+
+### Chronologie dérivée
+
+```mermaid
+flowchart LR
+    A["project-session-a · ACTIVE"] --> Commande["play(motif.id)"]
+    Commande --> Remplacement["session-a · DRAINING · session-b · ACTIVE"]
+    Remplacement --> Fin["session-a · DISPOSED · session-b poursuit"]
+```
+
+Les sessions `NOTE_PREVIEW` peuvent apparaître pendant la troisième phase sans modifier cette succession du transport.
+
 ## Cas 7 - Repetitions et occurrences de notes
 
 Un clip contient une note `note-a` et possede `repeatCount = 3`. Les trois lectures reutilisent le meme `PlaybackContextId` et la meme `InstrumentInstance`, mais elles produisent trois occurrences distinctes.
@@ -195,6 +266,17 @@ Chaque `NoteOff` cible son `NoteOccurrenceId`. Une release de la premiere repeti
 
 Si une voix a deja ete volee, le `NoteOff` programme pour son ancienne occurrence devient une operation sans effet. Le moteur doit donc traiter les relachements comme des commandes idempotentes.
 
+
+### Chronologie dérivée
+
+```mermaid
+flowchart LR
+    R1["Répétition 1 · occurrence-a-1"] --> R2["Répétition 2 · occurrence-a-2"]
+    R2 --> R3["Répétition 3 · occurrence-a-3"]
+```
+
+Les trois phases utilisent le même `PlaybackContextId`, mais chaque attaque reçoit son propre `NoteOccurrenceId`.
+
 ## Cas 8 - Fin structurelle et tail audio
 
 Un clip `Nappe` possede une duree structurelle de deux secondes, mais son instrument produit une release et une reverberation qui restent audibles une seconde supplementaire. `Nappe` est suivi du clip `Conclusion` dans un groupe sequentiel.
@@ -206,6 +288,15 @@ Un clip `Nappe` possede une duree structurelle de deux secondes, mais son instru
 | 3 s | aucune modification de la structure | `DISPOSED` apres extinction du tail |
 
 La fin structurelle, calculee a partir des ticks et du tempo, determine le depart de `Conclusion`. Le tail ne rallonge donc pas le groupe et peut se superposer au clip suivant. Le contexte de `Nappe` refuse toute nouvelle attaque apres deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'a une duree maximale de securite.
+
+
+### Chronologie dérivée
+
+```mermaid
+flowchart LR
+    Debut["0 s · Nappe ACTIVE"] --> Passage["2 s · Conclusion démarre · Nappe DRAINING"]
+    Passage --> Drainage["3 s · Nappe DISPOSED · Conclusion indépendante"]
+```
 
 ## Cas 9 - Lecture globale depuis un noeud
 
@@ -236,6 +327,19 @@ Dans l'interface, chaque `Group` et chaque `Clip` peut donc presenter un bouton 
 L'identifiant passe a `play` sert uniquement a resoudre une position. La racine de la session reste toujours le projet et aucune frontiere de preecoute structurelle n'est creee.
 
 Dans une structure simultanee plus complexe, un element peut commencer alors qu'une autre branche est deja en cours. Demarrer depuis cet element reprend toutes les branches actives a cette position globale. Le traitement des notes commencees avant cette position est laisse ouvert.
+
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 3
+    phase1["Phase initiale"] phase2["Position partagée"] phase3["Phase finale"]
+    intro["Introduction"] piano["Piano"] conclusion["Conclusion"]
+    space basse["Basse"] space
+```
+
+`play(piano.id)`, `play(basse.id)` et `play(ensemble.id)` placent tous la tête dans la colonne centrale.
 
 ## Consequences pour le PlaybackService
 
