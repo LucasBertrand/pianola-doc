@@ -1,6 +1,6 @@
 # Architecture
 
-Ce document décrit l'architecture de Pianola, une application de piano roll avec instruments modulaires.
+Ce document décrit l'architecture de Pianola, une application de piano roll avec rendu audio intégré.
 
 Il fixe le vocabulaire courant, les responsabilités des trois couches principales et leurs dépendances. Les études de cas détaillées sont regroupées dans [etudes-de-cas.md](etudes-de-cas.md).
 
@@ -55,13 +55,13 @@ Le premier périmètre comprend :
 - la lecture du projet depuis la tête de lecture ou depuis la position dérivée d'un groupe ou d'un clip ;
 - la préécoute ponctuelle d'une note ;
 - le mute et le solo persistants des instruments ;
-- des instruments modulaires intégrés et non éditables.
+- un catalogue d'instruments échantillonnés intégrés et non éditables, rendus par `smplr`.
 
 Il ne comprend pas :
 
 - une vue d'arrangement multipiste où les clips seraient placés librement sur des pistes instrumentales ;
 - les automations et événements de contrôle ;
-- la création ou l'édition des patchs par l'utilisateur ;
+- la création, l'import ou l'édition d'instruments par l'utilisateur ;
 - un état audio transitoire sauvegardé dans le projet.
 
 Les `Note` sont donc le seul contenu musical des clips. Les changements de tempo, de métrique et de contexte de hauteurs sont des données structurelles, et non des automations.
@@ -242,7 +242,7 @@ Attributs possibles :
 
 Une `Note` sauvegarde uniquement cet identifiant, et non une référence directe vers l'objet `Instrument`. Plusieurs instruments peuvent coexister dans un même clip, et plusieurs clips peuvent référencer le même instrument.
 
-`Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni patch, ni politique d'allocation des voix, ni état du moteur audio.
+`Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni configuration d'échantillons, ni état de voix, ni objet du moteur audio.
 
 Les instruments sont définis avant la compilation et ne sont pas éditables par l'utilisateur. La politique de chargement d'un `InstrumentId` devenu indisponible sera définie avec la persistance.
 
@@ -344,7 +344,7 @@ Les `Instrument` sont extérieurs à cet agrégat et sont fournis par un catalog
 
 La couche applicative traduit les intentions de l'utilisateur en opérations sur le domaine et orchestre les interactions avec l'extérieur à travers des ports.
 
-Elle possède l'état transitoire de l'éditeur et les états d'orchestration nécessaires à la lecture. Elle ne contient ni patch audio, ni `AudioNode`, ni détail de stockage.
+Elle possède l'état transitoire de l'éditeur et les états d'orchestration nécessaires à la lecture. Elle ne contient ni configuration `smplr`, ni banque d'échantillons, ni `AudioNode`, ni détail de stockage.
 
 ### État de l'éditeur
 
@@ -670,7 +670,7 @@ Les ports décrivent les capacités extérieures attendues par l'application san
 
 #### AudioEngine
 
-`AudioEngine` accepte des identités d'exécution et des commandes audio sans exposer les patchs, les instances d'instrument ou les objets Web Audio.
+`AudioEngine` accepte des identités d'exécution et des commandes audio sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio.
 
 ```ts
 type AudioCommand = {
@@ -724,7 +724,7 @@ Cette commande reste autonome lorsqu'elle est mise en file, triée ou transmise 
 - d'obtenir un `Instrument` à partir de son `InstrumentId` ;
 - de vérifier si un identifiant peut être résolu.
 
-Il retourne directement les objets `Instrument` du domaine. Aucun modèle de sortie intermédiaire, patch, paramètre audio ou détail d'allocation des voix ne traverse ce port.
+Il retourne directement les objets `Instrument` du domaine. Aucune configuration `smplr`, banque d'échantillons, instance technique ou donnée de chargement ne traverse ce port.
 
 Les futurs ports de persistance seront définis avec les cas d'usage correspondants. Aucun dossier générique `application/contracts/` n'est nécessaire : les ports possèdent leurs modèles d'échange et les types métier restent dans le domaine.
 
@@ -783,7 +783,8 @@ L'infrastructure contient les implémentations techniques des ports applicatifs.
 L'infrastructure audio possède :
 
 - le catalogue concret des instruments intégrés ;
-- leurs définitions techniques et leurs patchs ;
+- leurs définitions techniques et leurs sources `smplr` ;
+- le chargeur et les échantillons partagés ;
 - les sessions et contextes d'exécution ;
 - les instances d'instrument ;
 - le moteur Web Audio concret.
@@ -803,24 +804,16 @@ Cette résolution interne à l'infrastructure ne nécessite pas de second port n
 
 ### InstrumentDefinition
 
-`InstrumentDefinition` est la définition technique complète, immuable et partagée d'un instrument intégré.
+`InstrumentDefinition` est la définition technique immuable d'un instrument intégré.
 
 Attributs possibles :
 
 - `instrument` ;
-- `patch` ;
-- `voiceAllocation`.
+- `createInstance`.
 
-Elle associe l'`Instrument` public à son patch, définit l'allocation de ses voix et peut fournir les informations nécessaires pour borner ses tails.
+`createInstance` est une factory interne à l'infrastructure. Elle reçoit l'`AudioContext` global, le bus de sortie du `PlaybackContext` et le chargeur d'échantillons partagé, puis crée une `InstrumentInstance` fondée sur [`smplr`](https://github.com/danigb/smplr).
 
-`voiceAllocation` peut préciser :
-
-- un mode `MONOPHONIC` ou `POLYPHONIC` ;
-- un nombre maximal de voix ;
-- une politique de vol de voix ;
-- une priorité ou une politique de retrigger pour un instrument monophonique.
-
-Ces politiques s'appliquent par `InstrumentInstance`. Une limite globale du moteur peut protéger les ressources, mais ne constitue pas la politique musicale de l'instrument.
+La définition choisit l'instrument ou le preset `smplr` employé. Elle ne décrit aucun graphe de traitement ni aucune politique d'allocation des voix propre à Pianola. Ces détails ne traversent jamais le port `InstrumentCatalog`.
 
 ### PlaybackSession
 
@@ -850,58 +843,39 @@ Les groupes ne possèdent pas de contexte audio dans le premier périmètre, pui
 
 ### InstrumentInstance
 
-`InstrumentInstance` est l'état audio mutable créé à partir d'une `InstrumentDefinition`.
+`InstrumentInstance` adapte une instance `smplr` au cycle de vie audio de Pianola.
 
-Une instance appartient exclusivement à un `PlaybackContext` et possède ses voix, phases, enveloppes, filtres, effets et son allocateur de voix.
+Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Pour un contexte, une seule instance est créée paresseusement par `InstrumentId`. Deux contextes utilisant le même instrument possèdent donc des instances indépendantes.
 
-Pour un contexte, une seule instance est créée paresseusement par `InstrumentId`. Deux contextes utilisant le même instrument possèdent des instances indépendantes, mais partagent sa définition et ses ressources statiques immuables.
+Lors d'un `NOTE_ON`, l'instance déclenche la note à l'instant `at`. Le contrôle d'arrêt retourné par `smplr` est associé au `NoteOccurrenceId` par le contexte, afin qu'un `NOTE_OFF` puisse relâcher exactement la bonne occurrence.
 
-### Patch modulaire
+`smplr` prend en charge la lecture et le cycle de vie interne de ses voix. Pianola ne modélise ni oscillateurs, ni enveloppes, ni allocation de voix propre à l'instrument.
 
-| Concept | Rôle | Attributs possibles |
-| --- | --- | --- |
-| `ModularPatch` | Décrire le graphe statique d'un instrument | `modules`, `connections`, `outputModuleId` |
-| `AudioModule` | Décrire un module audio ou de contrôle | `id`, `type`, `parameters`, `inputs`, `outputs` |
-| `ModuleConnection` | Relier deux ports | `sourcePort`, `targetPort` |
-| `ModulePort` | Identifier un point de connexion | `moduleId`, `portName`, `signalType` |
+### Ressources d'échantillons partagées
 
-`ModularPatch` garantit la cohérence technique des connexions et décrit le parcours du signal et des modulations.
+Le moteur possède un chargeur `smplr` partagé. Les échantillons téléchargés et décodés sont ainsi mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
 
-Les types de signal initiaux sont `audio`, `control`, `gate` et `trigger`.
-
-### Ressources audio partagées
-
-Les données immuables coûteuses sont mutualisées entre les instances :
-
-- échantillons décodés ;
-- tables d'ondes ;
-- réponses impulsionnelles ;
-- descriptions de patch ;
-- code des processeurs audio.
-
-Les objets qui possèdent un état temporel restent propres à chaque instance : enveloppes, filtres, oscillateurs, effets et allocateurs de voix.
-
-La création des instances est paresseuse, mais peut être anticipée dans la fenêtre de planification avant le premier `NOTE_ON`. Une instance peut rejoindre un pool uniquement si elle est entièrement réinitialisable et n'est plus utilisée par aucun contexte.
+Le chargement est paresseux et peut être anticipé dans la fenêtre de planification avant le premier `NOTE_ON`. Le premier périmètre n'ajoute aucun effet nécessitant un `AudioWorklet`.
 
 ### WebAudioEngine
 
-Le moteur audio concret implémente `AudioEngine`, instancie les sous-graphes propres aux contextes et produit leur mixage dans l'`AudioContext` global.
+Le moteur audio concret implémente `AudioEngine`, crée les instances `smplr` propres aux contextes et produit leur mixage dans l'`AudioContext` global.
 
 Il assure :
 
 - la gestion des sessions et contextes ;
 - la résolution des instruments auprès de `StaticInstrumentCatalog` ;
 - la création d'une instance par couple `(PlaybackContext, InstrumentId)` ;
-- l'exécution des patchs modulaires ;
-- la planification temporelle des commandes ;
-- la création et le relâchement ciblé des occurrences ;
-- l'application des politiques de voix par instance ;
+- la planification des commandes sur l'horloge de l'`AudioContext` ;
+- l'association de chaque `NoteOccurrenceId` au contrôle d'arrêt de sa voix ;
 - l'annulation des commandes d'un contexte ou d'une session ;
 - le drainage puis la destruction des contextes ;
-- la mutualisation des ressources statiques ;
+- la mutualisation du chargement et du décodage des échantillons ;
 - les limites globales de sécurité et la sortie audio.
 
-Tout cet état est transitoire et n'est jamais sauvegardé dans le `Project`.
+`smplr` est utilisé uniquement comme moteur d'instrument. Son séquenceur n'est pas utilisé : le `PlaybackService` reste l'unique autorité qui dérive la chronologie du projet et le `WebAudioEngine` exécute les commandes horodatées qu'il reçoit.
+
+Le premier périmètre repose sur les nœuds Web Audio natifs employés par `smplr` et ne nécessite aucun `AudioWorklet`. Tout l'état du moteur est transitoire et n'est jamais sauvegardé dans le `Project`.
 
 ### Persistance
 
@@ -920,7 +894,7 @@ Les frontières suivantes sont obligatoires :
 | Depuis | Dépend de | Ne connaît pas |
 | --- | --- | --- |
 | Domaine | Aucun élément extérieur | sélection, grille, cas d'usage, ports, Web Audio, stockage |
-| Application | Domaine et ports qu'elle définit | implémentations concrètes, patchs, `AudioNode` |
+| Application | Domaine et ports qu'elle définit | implémentations concrètes, `smplr`, banques d'échantillons, `AudioNode` |
 | Infrastructure | Domaine et ports applicatifs | composants et état de présentation |
 | Présentation | API applicative et modèles d'affichage | définitions et instances audio internes |
 
@@ -935,12 +909,14 @@ Quelques relations structurantes :
 - seule la valeur `project` est proposée à la persistance ;
 - `PlaybackService` dérive la timeline du graphe puis transforme la portion lue en commandes pour `AudioEngine` ;
 - `InstrumentCatalog` expose les instruments disponibles à l'application ;
-- `StaticInstrumentCatalog` implémente ce port et fournit les définitions au moteur concret ;
+- `StaticInstrumentCatalog` implémente ce port et fournit au moteur les définitions capables de créer les instances `smplr` ;
 - `PlaybackSession` possède des `PlaybackContext` ;
 - chaque contexte possède au plus une `InstrumentInstance` par `InstrumentId`.
 
 ## Questions ouvertes
 
+- Quelle politique appliquer lorsqu'un instrument `smplr` requis n'est pas encore chargé : attendre tous les instruments nécessaires avant de démarrer le transport, ou les précharger dès l'ouverture et chaque modification du projet ?
+- Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
 - Lorsqu'une lecture commence au milieu d'une note déjà engagée dans la timeline, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
 - Lorsqu'une modification transitoire déplace, transpose, raccourcit ou supprime une note dont une occurrence est déjà audible, faut-il relâcher l'occurrence, la remplacer immédiatement ou la laisser se terminer ?
 - Quel mécanisme de replanification ciblée doit permettre au transport actif d'appliquer les changements de `effectiveProject` sans remplacer inutilement toute la session ni accumuler des contextes en drainage ?
@@ -992,18 +968,11 @@ src/
 │   │   ├── catalog/
 │   │   │   ├── StaticInstrumentCatalog.ts
 │   │   │   └── InstrumentDefinition.ts
-│   │   ├── modular/
-│   │   │   ├── ModularPatch.ts
-│   │   │   ├── AudioModule.ts
-│   │   │   ├── ModuleConnection.ts
-│   │   │   └── ModulePort.ts
 │   │   └── engine/
 │   │       ├── WebAudioEngine.ts
 │   │       ├── PlaybackSession.ts
 │   │       ├── PlaybackContext.ts
-│   │       ├── InstrumentInstance.ts
-│   │       ├── InstrumentInstanceFactory.ts
-│   │       └── SharedAudioResources.ts
+│   │       └── InstrumentInstance.ts
 │   └── persistence/
 └── presentation/
     ├── components/
