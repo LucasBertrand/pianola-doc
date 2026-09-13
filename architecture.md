@@ -50,7 +50,7 @@ Le premier périmètre comprend :
 - une composition structurée en groupes et clips imbriqués ;
 - des groupes lus en séquence ou simultanément ;
 - des notes associées individuellement à un instrument ;
-- des chronologies locales de tempo, de métrique et de contexte de hauteurs ;
+- des chronologies locales de tempo, de métrique, de contexte de hauteurs et de tonalité ;
 - l'édition dans un piano roll ;
 - la lecture du projet depuis la tête de lecture ou depuis la position dérivée d'un groupe ou d'un clip ;
 - la préécoute ponctuelle d'une note ;
@@ -64,7 +64,7 @@ Il ne comprend pas :
 - la création, l'import ou l'édition d'instruments par l'utilisateur ;
 - un état audio transitoire sauvegardé dans le projet.
 
-Les `Note` sont donc le seul contenu musical des clips. Les changements de tempo, de métrique et de contexte de hauteurs sont des données structurelles, et non des automations.
+Les `Note` sont donc le seul contenu musical des clips. Les changements de tempo, de métrique, de contexte de hauteurs et de tonalité sont des données structurelles, et non des automations.
 
 ---
 
@@ -85,7 +85,7 @@ flowchart TD
     Group --> NestedClip["Clip"]
 ```
 
-Chaque groupe ordonne ses enfants et définit leur mode de lecture. Chaque clip possède sa propre chronologie, son tempo, sa métrique, ses contextes de hauteurs et ses notes.
+Chaque groupe ordonne ses enfants et définit leur mode de lecture. Chaque clip possède ses propres chronologies locales de tempo, de métrique, de contexte de hauteurs et de tonalité, ainsi que ses notes.
 
 Les clips n'ont pas de position dans une timeline globale. Leur départ est dérivé de leur place dans l'arbre et du mode de lecture de leurs groupes ancêtres.
 
@@ -101,6 +101,7 @@ Les clips n'ont pas de position dans une timeline globale. Leur départ est dér
 | `TempoChange` | Entity interne | Placer un tempo sur la chronologie d'un clip |
 | `MeterChange` | Entity interne | Placer une métrique sur la chronologie d'un clip |
 | `PitchContextChange` | Entity interne | Placer un contexte de hauteurs sur la chronologie d'un clip |
+| `KeyChange` | Entity interne | Placer une tonalité sur la chronologie d'un clip |
 
 ### Project
 
@@ -182,14 +183,15 @@ Attributs possibles :
 - `notes` ;
 - `tempoChanges` ;
 - `meterChanges` ;
-- `pitchContextChanges`.
+- `pitchContextChanges` ;
+- `keyChanges`.
 
 Responsabilités et invariants :
 
 - définir sa durée canonique en ticks ;
 - contenir des notes positionnées relativement à son début ;
-- contenir et ordonner ses trois chronologies locales ;
-- fournir le tempo, la métrique et le contexte de hauteurs actifs à une position ;
+- contenir et ordonner ses quatre chronologies locales ;
+- fournir le tempo, la métrique, le contexte de hauteurs et la tonalité actifs à une position ;
 - conserver son bypass et son nombre de lectures dans la sauvegarde ;
 - garantir la cohérence locale de ses notes et changements.
 
@@ -267,6 +269,8 @@ Les battements, mesures et secondes sont des représentations dérivées. La gri
 | `Meter` | `beatsPerMeasure`, `beatUnit` | Permet de calculer les frontières de mesure |
 | `Pitch` | `midiNumber` | Le nom et l'octave peuvent être dérivés |
 | `PitchContext` | `label`, `pitchClasses` | Ensemble descriptif de classes de hauteurs |
+| `Tonic` | `letter`, `accidental` | Centre tonal orthographié sans octave |
+| `Key` | `tonic`, `mode` | Tonalité active |
 
 Avec une résolution de 960 ticks par noire :
 
@@ -278,15 +282,20 @@ ticksPerMeasure = beatsPerMeasure * (4 / beatUnit) * 960
 
 `PitchContext` peut représenter une gamme, un mode, un accord ou un ensemble arbitraire de classes de hauteurs. Il permet à l'éditeur de mettre en évidence les hauteurs intérieures et extérieures, sans valider ni refuser les notes.
 
+`Tonic` conserve l'orthographe du centre tonal sous la forme d'une lettre et d'une altération, sans octave. Sa classe de hauteur chromatique est dérivée et n'est pas sauvegardée séparément : `C_SHARP` et `D_FLAT` sont enharmoniquement équivalents, mais restent deux valeurs distinctes. `Key` associe une `Tonic` à un mode tonal. Elle fournit un contexte d'analyse et de présentation sans déplacer ni invalider les notes.
+
+La chronologie de tonalité est indépendante des chronologies de tempo, de métrique et de contexte de hauteurs. Aucun changement de l'une ne crée, ne déplace ou ne modifie automatiquement un changement d'une autre.
+
 ### Chronologies du clip
 
-Un clip possède trois collections ordonnées de changements :
+Un clip possède quatre collections ordonnées de changements :
 
 | Changement | Valeur | Changement initial au tick `0` | Positions suivantes |
 | --- | --- | --- | --- |
 | `TempoChange` | `Tempo` | Obligatoire | N'importe quel tick du clip |
 | `MeterChange` | `Meter` | Obligatoire | Frontière de mesure |
 | `PitchContextChange` | `PitchContext` | Facultatif | N'importe quel tick du clip |
+| `KeyChange` | `Key` | Facultatif | N'importe quel tick du clip |
 
 Chaque changement possède une identité, une position et sa nouvelle valeur. Les règles communes sont :
 
@@ -296,13 +305,13 @@ Chaque changement possède une identité, une position et sa nouvelle valeur. Le
 - un changement ferme la section précédente et commence la suivante ;
 - un changement reste compris dans les bornes du clip.
 
-Avant le premier `PitchContextChange`, aucun contexte de hauteurs n'est actif. Un changement de chaque type peut exister au même tick.
+Avant le premier `PitchContextChange`, aucun contexte de hauteurs n'est actif. Avant le premier `KeyChange`, aucune tonalité n'est active. Un changement de chaque type peut exister au même tick.
 
 Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
 
 ### Sections dérivées
 
-`TempoSection`, `MeterSection` et `PitchContextSection` sont des vues dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du clip.
+`TempoSection`, `MeterSection`, `PitchContextSection` et `KeySection` sont des vues dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du clip.
 
 Elles ne sont pas sauvegardées comme des objets autonomes.
 
@@ -311,6 +320,7 @@ Elles ne sont pas sauvegardées comme des objets autonomes.
 | `TempoSection` | `start`, `end`, `tempo` | Conversion des ticks en temps réel |
 | `MeterSection` | `start`, `end`, `meter`, découpage en mesures | Repères métriques et frontières de mesure |
 | `PitchContextSection` | `start`, `end`, `context` | Recherche du contexte actif |
+| `KeySection` | `start`, `end`, `key` | Recherche de la tonalité active |
 
 Pour une `MeterSection` :
 
@@ -362,7 +372,8 @@ type ClipContentRef =
   | {
       kind: "PITCH_CONTEXT_CHANGE";
       pitchContextChangeId: PitchContextChangeId;
-    };
+    }
+  | { kind: "KEY_CHANGE"; keyChangeId: KeyChangeId };
 
 interface ClipContentSelection {
   items: readonly ClipContentRef[];
@@ -484,7 +495,7 @@ interface MoveClipContentCommand {
 }
 ```
 
-Les références peuvent désigner simultanément des notes, des changements de tempo, de métrique et de contexte de hauteurs. Le cas d'usage résout chaque référence, applique le même déplacement à partir du `project` et ne publie qu'un unique `transientProject` complet.
+Les références peuvent désigner simultanément des notes, des changements de tempo, de métrique, de contexte de hauteurs et de tonalité. Le cas d'usage résout chaque référence, applique le même déplacement à partir du `project` et ne publie qu'un unique `transientProject` complet.
 
 La transformation est atomique : si un élément ne peut pas atteindre la position proposée sans violer un invariant, aucun résultat partiel n'est publié. La présentation peut conserver le dernier projet transitoire valide et représenter séparément la position brute ou invalide du geste.
 
@@ -915,6 +926,7 @@ Quelques relations structurantes :
 
 ## Questions ouvertes
 
+- Une tonalité active doit-elle pouvoir être interrompue sans être remplacée, et faut-il alors qu'un `KeyChange` porte explicitement un état sans tonalité ?
 - Quelle politique appliquer lorsqu'un instrument `smplr` requis n'est pas encore chargé : attendre tous les instruments nécessaires avant de démarrer le transport, ou les précharger dès l'ouverture et chaque modification du projet ?
 - Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
 - Lorsqu'une lecture commence au milieu d'une note déjà engagée dans la timeline, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
@@ -949,6 +961,10 @@ src/
 │   │   └── MeterSection.ts
 │   └── pitch/
 │       ├── Pitch.ts
+│       ├── Tonic.ts
+│       ├── Key.ts
+│       ├── KeyChange.ts
+│       ├── KeySection.ts
 │       ├── PitchContext.ts
 │       ├── PitchContextChange.ts
 │       └── PitchContextSection.ts
@@ -981,7 +997,7 @@ src/
 
 Les objets centraux restent à la racine de `domain/`. Les concepts temporels sont regroupés dans `time/` et les concepts de hauteurs dans `pitch/`. Ces sous-ensembles restent indépendants de l'agrégat : `Clip` peut connaître `MeterChange`, mais `MeterChange` ne connaît pas `Clip`.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`.
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`. `Tonic` conserve son propre type dans `domain/pitch/Tonic.ts` afin que son orthographe enharmonique ne soit pas réduite à une classe de hauteur numérique.
 
 `ClipContentSelection`, `GraphContentSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
 
