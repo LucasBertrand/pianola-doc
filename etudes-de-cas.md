@@ -16,8 +16,7 @@ La duree de lecture d'un element suit les regles suivantes :
 
 ```text
 clip contourne                    = 0
-clip fini                         = duree d'une lecture * repeatCount
-clip avec repeatCount = infinite  = infinite
+clip                              = duree d'une lecture * repeatCount
 groupe SEQUENTIAL                 = somme des durees de ses enfants
 groupe SIMULTANEOUS               = maximum des durees de ses enfants
 groupe vide                       = 0
@@ -106,23 +105,25 @@ Le groupe `Rythme` dure quatre secondes, car il additionne deux clips de deux se
 
 Le debut de `Conclusion` a six secondes est entierement derive du parcours de l'arbre : deux secondes pour l'introduction, puis quatre secondes pour l'enfant le plus long du groupe simultane.
 
-## Cas 4 - Repetition infinie dans une branche simultanee
+## Cas 4 - Mute et solo par instrument
 
-Une nappe repetee indefiniment joue en meme temps qu'une sequence rythmique finie. Une conclusion est placee apres leur groupe parent.
+Deux clips simultanes utilisent plusieurs instruments. Des notes de piano apparaissent dans les deux clips.
 
 ```mermaid
 flowchart TD
-    Root["RootGroup - SEQUENTIAL"] --> Intro["Introduction"]
-    Root --> Ensemble["Ensemble - SIMULTANEOUS"]
-    Root --> Conclusion["Conclusion"]
-    Ensemble --> Nappe["Nappe - repeatCount infinite"]
-    Ensemble --> Rythme["Rythme fini"]
+    Root["RootGroup - SIMULTANEOUS"] --> A["Clip A"]
+    Root --> B["Clip B"]
+    A --> AP["Piano"]
+    A --> AR["Rythme"]
+    B --> BP["Piano"]
+    B --> BB["Basse"]
 ```
 
-Apres l'introduction, la nappe et le rythme commencent ensemble. Le rythme peut se terminer, mais la branche de la nappe n'a jamais d'instant de fin. La duree du groupe `Ensemble` est donc `infinite` et la `Conclusion` est inaccessible par progression automatique.
+Lorsque `piano` est mute, ses notes sont silencieuses dans les deux clips. Les notes de rythme et de basse restent audibles. Lorsque `piano` est le seul instrument solo, ses notes restent audibles dans les deux clips et les autres instruments sont silencieux.
 
-Si la nappe est deja contournee lorsqu'elle devrait etre activee, sa contribution est nulle. Si `isBypassed` passe a `true` pendant une iteration, cette iteration atteint sa fin structurelle, mais aucune repetition supplementaire n'est lancee. Le groupe peut alors se terminer avec le rythme fini et la lecture atteindre la conclusion. Arreter la lecture permet egalement de quitter la repetition infinie.
+Dans les deux cas, les clips conservent leurs positions, leurs durees et leurs contextes. Le groupe se termine donc au meme instant qu'en l'absence de mute ou de solo. Ces reglages appartiennent au projet et ciblent l'`InstrumentId`, non un clip ou une instance particuliere.
 
+Si `piano` est a la fois mute et solo, le mute est prioritaire. Une preecoute de note utilisant cet instrument applique la meme regle d'audibilite.
 
 ## Cas 5 - Deux clips utilisent le meme instrument
 
@@ -149,27 +150,27 @@ Les deux notes ne sont jamais fusionnees implicitement. Chaque activation de cli
 
 Meme si le piano est monophonique, la note du clip B n'interrompt pas celle du clip A. La monophonie limite les notes concurrentes a l'interieur d'un meme contexte ; elle n'est pas globale a tous les clips utilisant le meme `InstrumentId`.
 
-## Cas 6 - Remplacement du transport et audition concurrente
+## Cas 6 - Remplacement du transport et preecoute concurrente
 
-Le clip `Motif` est actif dans une session `PROJECT` lorsque l'utilisateur lance la preecoute de ce meme clip.
+Le clip `Motif` est actif dans une session `PROJECT` lorsque l'utilisateur relance la lecture avec `play(motif.id)`.
 
-La preecoute de clip est une nouvelle session de transport. Le `PlaybackService` retire donc immediatement ce role a `project-session`, annule ses attaques futures, relache ses occurrences actives selon le mode `GRACEFUL` et ouvre `clip-preview-session`. Il n'existe jamais deux transports actifs.
+Le nouvel appel place la tete au debut global derive de `Motif` et ouvre une nouvelle session `PROJECT`. Le `PlaybackService` retire immediatement le role de transport a `project-session-a`, annule ses attaques futures, relache ses occurrences actives selon le mode `GRACEFUL` et ouvre `project-session-b`. Il n'existe jamais deux transports actifs.
 
 | Etape | Session | Type | Etat |
 | --- | --- | --- | --- |
-| Lecture initiale | `project-session` | `PROJECT` | transport actif |
-| Lancement de la preecoute | `project-session` | `PROJECT` | inactive ; contextes eventuellement `DRAINING` |
-| Lancement de la preecoute | `clip-preview-session` | `CLIP_PREVIEW` | nouveau transport actif |
+| Lecture initiale | `project-session-a` | `PROJECT` | transport actif |
+| Nouvel appel a `play` | `project-session-a` | `PROJECT` | inactive ; contextes eventuellement `DRAINING` |
+| Nouvel appel a `play` | `project-session-b` | `PROJECT` | nouveau transport actif |
 
-Les deux activations successives du meme `ClipId` recoivent des `PlaybackContextId` differents. L'ancienne session reste inactive tandis que ses contextes passent eventuellement en `DRAINING` : leurs releases peuvent rester audibles pendant le debut de la nouvelle session, mais aucune nouvelle attaque n'est planifiee et le parcours du projet ne progresse plus. La session est detruite lorsque tous ses contextes sont `DISPOSED`. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
+Les deux activations successives du meme `ClipId` recoivent des `PlaybackContextId` differents. L'ancienne session reste inactive tandis que ses contextes passent eventuellement en `DRAINING` : leurs releases peuvent rester audibles pendant le debut de la nouvelle session, mais aucune nouvelle attaque n'est planifiee. La session est detruite lorsque tous ses contextes sont `DISPOSED`. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
 
-Pendant la preecoute du clip, une note peut etre auditionnee independamment :
+Pendant ce transport, une note peut etre preecoutee independamment :
 
 ```ts
-const notePreviewSession = preview({ kind: "NOTE", id: noteId });
+const notePreviewSession = preview(noteId);
 ```
 
-Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `clip-preview-session`, puis lui rattache un contexte possedant son propre `PlaybackContextId`. La commande `NOTE_ON` porte ce `contextId` ainsi que l'`InstrumentId` resolu par le `PlaybackService`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs auditions de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif.
+Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `project-session-b`, puis lui rattache un contexte possedant son propre `PlaybackContextId`. La commande `NOTE_ON` porte ce `contextId` ainsi que l'`InstrumentId` resolu par le `PlaybackService`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs preecoutes de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif. Le mute et le solo de l'instrument restent applicables.
 
 ## Cas 7 - Repetitions et occurrences de notes
 
@@ -197,7 +198,7 @@ Un clip `Nappe` possede une duree structurelle de deux secondes, mais son instru
 
 La fin structurelle, calculee a partir des ticks et du tempo, determine le depart de `Conclusion`. Le tail ne rallonge donc pas le groupe et peut se superposer au clip suivant. Le contexte de `Nappe` refuse toute nouvelle attaque apres deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'a une duree maximale de securite.
 
-## Cas 9 - Lecture depuis un noeud et preecoute bornee
+## Cas 9 - Lecture globale depuis un noeud
 
 Le groupe racine est sequentiel. Son deuxieme enfant, `Ensemble`, est un groupe simultane.
 
@@ -210,21 +211,22 @@ flowchart TD
     Ensemble --> Basse["Basse"]
 ```
 
-Les commandes suivantes expriment des intentions differentes :
+`Piano`, `Basse` et leur groupe parent possedent le meme instant de depart global derive. Les commandes suivantes expriment les positions choisies sans changer la portee du transport :
 
 | Commande | Resultat |
 | --- | --- |
-| `play()` | `Introduction`, puis `Piano` et `Basse` ensemble, puis `Conclusion`. |
-| `play(ensemble.id)` | `Piano` et `Basse` ensemble, puis `Conclusion`. |
-| `preview({ kind: "GROUP", id: ensemble.id })` | `Piano` et `Basse` ensemble, puis arret a la fin du groupe. |
-| `preview({ kind: "CLIP", id: piano.id })` | `Piano` seul, puis arret a la fin du clip. |
-| `play(piano.id)` | Commande invalide : `Piano` possede un groupe `SIMULTANEOUS` parmi ses ancetres. La commande ne remonte pas implicitement vers `Ensemble`. |
+| `play()`, tete au debut | `Introduction`, puis `Piano` et `Basse` ensemble, puis `Conclusion`. |
+| `play(rootGroup.id)` | Replace la tete au debut et produit le meme parcours complet. |
+| `play(ensemble.id)` | Place la tete au debut d'`Ensemble`, lit `Piano` et `Basse` ensemble, puis `Conclusion`. |
+| `play(piano.id)` | Meme position globale et meme resultat que `play(ensemble.id)`. |
+| `play(basse.id)` | Meme position globale et meme resultat que `play(ensemble.id)`. |
+| `play(conclusion.id)` | Place la tete au debut de `Conclusion` et lit la fin du projet. |
 
-Dans l'interface, le bouton `play` apparait pour `Introduction`, `Ensemble` et `Conclusion`. Il n'apparait pas pour `Piano` ni `Basse`, tandis que chacun reste accessible par une action de preecoute. L'interface obtient cette decision par `getPlaybackCapabilities(target)` ; elle ne reproduit pas elle-meme les regles de parcours.
+Dans l'interface, chaque `Group` et chaque `Clip` peut donc presenter un bouton `play`. Une note possede uniquement une action `preview(noteId)`, qui ne deplace pas la tete et ne modifie pas le transport.
 
-La validite est examinee sur toute la chaine d'ancetres. Ainsi, un clip dont le parent direct est `SEQUENTIAL` reste invalide si ce parent se trouve lui-meme dans un groupe `SIMULTANEOUS`. Le `PlaybackService` refuse egalement toute commande invalide recue par un autre chemin que l'interface.
+L'identifiant passe a `play` sert uniquement a resoudre une position. La racine de la session reste toujours le projet et aucune frontiere de preecoute structurelle n'est creee.
 
-Le point de depart optionnel de `play` ne change pas la racine de la session : il s'agit toujours d'une session `PROJECT`, capable de poursuivre jusqu'a la fin du projet. Une preecoute de groupe ou de clip cree une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` dont la racine est une frontiere infranchissable et remplace le transport courant. Une preecoute de note cree au contraire une session `NOTE_PREVIEW` concurrente qui ne remplace pas le transport.
+Dans une structure simultanee plus complexe, un element peut commencer alors qu'une autre branche est deja en cours. Demarrer depuis cet element reprend toutes les branches actives a cette position globale. Le traitement des notes commencees avant cette position est laisse ouvert.
 
 ## Consequences pour le PlaybackService
 
@@ -234,26 +236,27 @@ Le calcul structurel peut etre interprete par une operation recursive :
 calculateDuration(item: GroupItem): number
 ```
 
-Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. La planification effective utilise une fenetre d'anticipation bornee afin de ne jamais tenter de developper entierement une repetition infinie.
+La projection temporelle associe ensuite chaque element a un intervalle global derive et chaque clip actif a une activation. Elle peut etre planifiee par fenetres pour limiter le volume de commandes preparees, meme si toutes les durees sont finies.
 
 - un `Clip` calcule ses evenements depuis son instant de depart en utilisant ses propres `TempoSection` et possede une fin structurelle ;
 - un groupe `SEQUENTIAL` transmet la fin de chaque enfant comme debut du suivant ;
 - un groupe `SIMULTANEOUS` transmet le meme debut a tous ses enfants et retourne la fin la plus tardive ;
-- une duree `infinite` se propage aux groupes ancetres selon les memes regles ;
-- `play()` commence au debut du `rootGroup`, tandis que `play(itemId)` utilise un point d'entree structurel valide et poursuit ensuite jusqu'a la fin du projet ;
-- un element n'est un point d'entree valide que si tous ses groupes ancetres sont `SEQUENTIAL` ;
-- un descendant d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, meme si son parent direct est `SEQUENTIAL`, car les branches de cet ancetre devraient commencer ensemble ;
-- `getPlaybackCapabilities(target)` permet a l'interface de masquer le bouton `play` sans dupliquer cette validation ;
-- `preview(target)` borne le parcours au groupe, au clip ou a la note cible et ne rejoint jamais un noeud exterieur a cette racine ;
-- chaque operation globale ouvre une `PlaybackSession` transitoire ;
-- une seule session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW` peut constituer le transport actif ; une nouvelle lecture structurelle remplace la precedente, qui ne subsiste que comme proprietaire de contextes eventuellement `DRAINING` ;
+- `repeatCount` est toujours un entier strictement positif, de sorte que toutes les positions et durees derivees sont finies ;
+- `play()` commence a la position actuelle de la tete de lecture ;
+- `play(itemId)` place la tete au debut global derive du groupe ou du clip, puis lit le projet depuis cette position ;
+- `play(rootGroup.id)` constitue le redemarrage explicite depuis le debut ;
+- tout groupe ou clip peut servir de repere, y compris sous un ancetre `SIMULTANEOUS` ;
+- toutes les branches actives a la position choisie participent au transport ;
+- `preview(noteId)` auditionne uniquement une note, sans deplacer la tete ni remplacer le transport ;
+- chaque lecture globale ouvre une session `PROJECT` transitoire ;
+- une seule session `PROJECT` peut constituer le transport actif ; une nouvelle lecture remplace la precedente, qui ne subsiste que comme proprietaire de contextes eventuellement `DRAINING` ;
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
+- les mute et solo persistants filtrent les notes par `InstrumentId` dans tous les contextes, sans modifier la timeline ;
+- un clip bypassé avant son activation ne contribue pas a la duree ; s'il est bypassé pendant une iteration, celle-ci se termine et aucune repetition supplementaire n'est lancee ;
 - `stop(sessionId, mode)` arrete une session precise, tandis que `stopTransport(mode)` n'arrete que le transport actif ;
 - un arret `GRACEFUL` relache les occurrences actives et conserve leurs tails, tandis qu'un arret `IMMEDIATE` detruit les contextes sans delai ;
-- `preview(GROUP)` respecte le bypass de ses descendants, tandis que `preview(CLIP)` et `preview(NOTE)` ignorent le bypass de leur cible ;
-- lorsque `isBypassed` passe a `true` pendant une iteration, celle-ci se termine, aucune repetition supplementaire n'est lancee et le parcours continue si l'arbre le permet ;
 - chaque activation de clip et chaque preecoute de note recoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistree qu'une fois, a l'ouverture du contexte ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
 - la fin structurelle permet au parcours de continuer pendant que l'infrastructure conserve eventuellement le contexte en `DRAINING` ;
-- aucun de ces calculs ni identifiants d'execution n'ajoute de position temporelle globale ou d'etat audio au modele sauvegarde.
+- aucune position globale ni aucun identifiant d'execution n'est ajoute au modele sauvegarde.
