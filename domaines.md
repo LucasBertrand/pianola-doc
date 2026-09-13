@@ -57,7 +57,9 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - En mode `SEQUENTIAL`, chaque enfant commence a la fin du precedent. En mode `SIMULTANEOUS`, tous les enfants commencent au meme instant.
 - Le `playbackMode` gouverne la lecture structurelle du groupe, mais ne limite jamais la preecoute individuelle de ses descendants.
 - `play(itemId?)` lance une lecture structurelle du projet. Sans identifiant, la lecture commence au debut du `rootGroup`. Avec un identifiant, elle commence au point d'entree indique puis poursuit le parcours du projet jusqu'a la fin.
-- Dans un groupe `SEQUENTIAL`, chacun de ses enfants constitue un point d'entree structurel possible. Dans un groupe `SIMULTANEOUS`, seul le groupe complet constitue un point d'entree structurel : lancer un seul de ses enfants romprait la relation de simultaneite.
+- Dans un groupe `SEQUENTIAL`, chacun de ses enfants constitue un point d'entree local possible. Un element n'est toutefois un point d'entree global valide que si tous ses groupes ancetres, de son parent jusqu'au `rootGroup`, utilisent le mode `SEQUENTIAL`.
+- Dans un groupe `SIMULTANEOUS`, aucun enfant ni descendant ne peut etre lance comme point d'entree isole : ses branches doivent commencer ensemble. Le groupe simultane lui-meme peut constituer un point d'entree si tous ses propres ancetres sont `SEQUENTIAL`.
+- L'interface n'affiche le bouton `play` que pour les points d'entree valides. Elle obtient cette information du `PlaybackService`, qui applique egalement la validation lors de l'execution de la commande. `preview(target)` reste disponible pour auditionner individuellement un element invalide pour `play`.
 - `preview(target)` accepte une cible strictement typee `GROUP`, `CLIP` ou `NOTE`. Une preecoute de groupe ou de clip est bornee au sous-arbre choisi et ne passe jamais au noeud suivant situe hors de cette racine. Une preecoute de note est bornee a la note cible.
 - Les clips ne possedent pas de position dans une timeline globale. Leur instant de depart est derive de leur place dans l'arbre et des modes de lecture de leurs groupes ancetres.
 - `isBypassed` permet de contourner un clip sans le retirer de son groupe. Cet etat est sauvegarde et reste independant de `repeatCount`.
@@ -166,10 +168,10 @@ Modes initialement pris en charge :
 
 | Mode | Planification | Points d'entree structurels | Fin du groupe |
 | --- | --- | --- | --- |
-| `SEQUENTIAL` | Les enfants sont lus dans leur ordre. | Chaque enfant. | Fin du dernier enfant lu. |
-| `SIMULTANEOUS` | Tous les enfants commencent au meme instant. | Le groupe complet. | Fin de l'enfant le plus long. |
+| `SEQUENTIAL` | Les enfants sont lus dans leur ordre. | Chaque enfant constitue un candidat local. | Fin du dernier enfant lu. |
+| `SIMULTANEOUS` | Tous les enfants commencent au meme instant. | Aucun enfant isole ; seul le groupe complet peut etre cible. | Fin de l'enfant le plus long. |
 
-`PlaybackMode` est un vocabulaire metier extensible. Ajouter un mode impose de definir explicitement ces trois comportements dans le `PlaybackService`. La preecoute reste independante de cette politique : tout `Group`, `Clip` ou `Note` peut toujours etre cible individuellement par `preview(target)`.
+`PlaybackMode` est un vocabulaire metier extensible. Ajouter un mode impose de definir explicitement ces trois comportements dans le `PlaybackService`. La validite globale d'un point d'entree est calculee sur toute sa chaine d'ancetres, et non uniquement a partir de son parent direct. La preecoute reste independante de cette politique : tout `Group`, `Clip` ou `Note` peut toujours etre cible individuellement par `preview(target)`.
 
 Responsabilites :
 
@@ -644,7 +646,9 @@ Responsabilites :
 
 - exposer `play(itemId?)` pour la lecture structurelle du projet et `preview(target)` pour l'audition bornee d'un groupe, d'un clip ou d'une note ;
 - faire de `play()` et de `play(rootGroup.id)` deux expressions equivalentes d'une lecture depuis le debut du projet ;
-- valider qu'un `itemId` est un point d'entree structurel : un enfant d'un groupe sequentiel peut l'etre, tandis qu'un enfant isole d'un groupe simultane ne le peut pas ;
+- valider qu'un `itemId` est un point d'entree structurel en examinant toute sa chaine d'ancetres : chacun de ses groupes ancetres doit etre `SEQUENTIAL` ;
+- refuser la commande si un groupe `SIMULTANEOUS` apparait parmi ces ancetres, meme lorsque le parent direct de l'element est `SEQUENTIAL` ;
+- exposer les capacites de lecture d'une cible afin que l'interface n'affiche le bouton `play` que lorsque cette commande est valide ;
 - poursuivre, apres la fin du point de depart, vers les freres suivants et les groupes sequentiels englobants jusqu'a la fin du projet ;
 - arreter une preecoute a la fin structurelle du `Group`, du `Clip` ou de la `Note` cible sans remonter vers son parent ;
 - parcourir recursivement l'arbre a partir du `rootGroup` ;
@@ -679,11 +683,19 @@ type PreviewTarget =
   | { kind: "CLIP"; id: ClipId }
   | { kind: "NOTE"; id: NoteId };
 
+type PlaybackCapabilities = {
+  canPlay: boolean;
+  canPreview: boolean;
+};
+
+getPlaybackCapabilities(target: PreviewTarget): PlaybackCapabilities;
 play(itemId?: GroupId | ClipId): PlaybackSessionId;
 preview(target: PreviewTarget): PlaybackSessionId;
 ```
 
-`play` ouvre toujours une session `PROJECT`. Le parametre `itemId` est un curseur initial conserve par le `PlaybackService` ; il ne transforme pas l'element en racine de preecoute et n'a pas a traverser le port `AudioEngine`.
+`play` ouvre toujours une session `PROJECT`. Le parametre `itemId` est un curseur initial conserve par le `PlaybackService` ; il ne transforme pas l'element en racine de preecoute et n'a pas a traverser le port `AudioEngine`. Un `itemId` invalide est refuse, et n'est jamais remonte implicitement vers un groupe simultane ancetre.
+
+`getPlaybackCapabilities` applique exactement la meme regle que `play`. Pour une `Note`, `canPlay` vaut toujours `false`; pour un `Group` ou un `Clip`, il vaut `true` uniquement lorsque tous les groupes ancetres sont `SEQUENTIAL`. `canPreview` vaut `true` pour les trois types de cible dans le perimetre actuel.
 
 `preview` ouvre une session `GROUP_PREVIEW`, `CLIP_PREVIEW` ou `NOTE_PREVIEW` selon le discriminant de la cible. Pour un groupe ou un clip, la racine de cette preecoute constitue une frontiere : le planificateur peut parcourir tout son sous-arbre, mais ne peut pas atteindre ses freres ni ses ancetres. Ces deux preecoutes sont des lectures structurelles et remplacent donc la session de transport courante. Pour une note, le `PlaybackService` resout la note persistante et son instrument, puis cree un contexte `NOTE_PREVIEW` sans transmettre le `NoteId` au moteur audio. Cette audition s'ajoute au transport existant sans le remplacer.
 
@@ -936,7 +948,8 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
-| `PlaybackService.play(itemId?)` | `Project.rootGroup` et `GroupItem` | Le service commence au debut du projet ou a un point d'entree valide, puis poursuit le parcours structurel. |
+| `PlaybackService.getPlaybackCapabilities(target)` | `PreviewTarget` | Le service fournit a l'interface les actions valides sans lui faire dupliquer les regles de parcours. |
+| `PlaybackService.play(itemId?)` | `Project.rootGroup` et `GroupItem` | Le service commence au debut du projet ou a un point d'entree dont tous les ancetres sont `SEQUENTIAL`, puis poursuit le parcours structurel. |
 | `PlaybackService.preview(target)` | `PreviewTarget` | Le service borne la lecture au groupe, au clip ou a la note cible sans atteindre les noeuds exterieurs. |
 | `PlaybackService` | Session de transport active | Le service conserve au plus un transport actif et le remplace lors d'une nouvelle lecture structurelle. |
 | `PlaybackService` | Sessions `NOTE_PREVIEW` | Les auditions de notes peuvent coexister entre elles et avec le transport actif. |
@@ -1018,7 +1031,7 @@ Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `
 
 `Instrument` et `InstrumentId` sont declares ensemble dans `domain/Instrument.ts`. Le premier constitue la representation publique minimale de l'instrument ; le second reste l'identifiant sauvegarde par les notes et partage avec les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
-`PreviewTarget` appartient a l'interface du cas d'usage et peut etre declare avec `application/use-cases/PlaybackService.ts`. Les types `PlaybackSessionId`, `ClipPlaybackId`, `NotePreviewPlaybackId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `PlaybackContextDescriptor`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
+`PreviewTarget` et `PlaybackCapabilities` appartiennent a l'interface du cas d'usage et peuvent etre declares avec `application/use-cases/PlaybackService.ts`. Les types `PlaybackSessionId`, `ClipPlaybackId`, `NotePreviewPlaybackId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `PlaybackContextDescriptor`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
