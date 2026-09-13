@@ -82,7 +82,7 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Plusieurs clips lus simultanement peuvent utiliser le meme instrument, y compris a la meme hauteur et au meme instant. Leurs notes restent des intentions distinctes et ne sont jamais fusionnees implicitement.
 - Le contexte de hauteurs est descriptif : il met en evidence l'appartenance des notes a un ensemble de hauteurs sans interdire les notes exterieures.
 - La quantification et les selections appartiennent a l'experience d'edition. Elles guident les actions de l'utilisateur sans transformer le modele musical en grille rigide ni devenir des donnees de composition.
-- La selection du contenu du clip edite et la selection structurelle des clips et groupes sont deux etats applicatifs distincts. Elles peuvent coexister et ne sont jamais fusionnees implicitement.
+- La selection du contenu du clip edite et la selection du contenu du graphe de composition sont deux etats applicatifs distincts. Elles peuvent coexister et ne sont jamais fusionnees implicitement.
 
 ### Perimetre audio
 
@@ -595,21 +595,21 @@ Les marqueurs visibles dans l'editeur ne forment donc pas un type metier generiq
 
 Tous les objets de `ClipContentSelection` appartiennent au clip designe par `editedClipId`. Lorsque le clip edite change ou est ferme, cette selection est videe.
 
-#### StructureSelection
+#### GraphContentSelection
 
-Represente les elements de l'arbre de composition selectionnes dans l'inspecteur de structure :
+Represente les clips et groupes selectionnes dans le graphe de composition affiche par l'inspecteur :
 
 ```ts
-type StructureItemRef =
+type GraphContentRef =
   | { kind: "CLIP"; clipId: ClipId }
   | { kind: "GROUP"; groupId: GroupId };
 
-interface StructureSelection {
-  items: readonly StructureItemRef[];
+interface GraphContentSelection {
+  items: readonly GraphContentRef[];
 }
 ```
 
-Cette selection sert aux operations structurelles comme le regroupement, le deplacement, la duplication ou la suppression de clips et de groupes.
+Cette selection sert aux operations sur le graphe comme le regroupement, le deplacement, la duplication ou la suppression de clips et de groupes.
 
 `EditorState` distingue ainsi explicitement les trois informations suivantes :
 
@@ -617,11 +617,11 @@ Cette selection sert aux operations structurelles comme le regroupement, le depl
 interface EditorState {
   editedClipId?: ClipId;
   clipContentSelection: ClipContentSelection;
-  structureSelection: StructureSelection;
+  graphContentSelection: GraphContentSelection;
 }
 ```
 
-Le clip edite et la selection structurelle de l'inspecteur representent des faits differents. Un meme geste d'interface peut les mettre a jour ensemble, mais aucun lien implicite n'est impose entre eux.
+Le clip edite et la selection du contenu du graphe representent des faits differents. Un meme geste d'interface peut les mettre a jour ensemble, mais aucun lien implicite n'est impose entre eux.
 
 Responsabilites communes :
 
@@ -656,7 +656,7 @@ La couche applicative orchestre les actions de l'utilisateur et la lecture sans 
 Responsabilites :
 
 - traduire les gestes de l'editeur en commandes explicites ;
-- choisir la selection locale ou structurelle selon la portee de l'action ;
+- choisir la selection du contenu du clip ou du graphe selon la portee de l'action ;
 - resoudre ses references vers les identifiants des objets concernes ;
 - appliquer si necessaire la quantification avant d'appeler le domaine ;
 - charger et sauvegarder le projet a travers des ports.
@@ -1017,7 +1017,7 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
 | `ClipContentSelection` | Cas d'usage d'edition locale | Les references aux notes et changements du clip edite sont transformees en commandes explicites. |
-| `StructureSelection` | Cas d'usage structurels | Les references aux clips et groupes de l'inspecteur sont transformees en commandes explicites. |
+| `GraphContentSelection` | Cas d'usage du graphe | Les references aux clips et groupes du graphe de composition sont transformees en commandes explicites. |
 | `GridResolution` | Cas d'usage d'edition locale | La grille transforme un geste en position ou duree quantifiee avant l'appel au domaine. |
 | `PlaybackService.getPlaybackCapabilities(target)` | `PreviewTarget` | Le service fournit a l'interface les actions valides sans lui faire dupliquer les regles de parcours. |
 | `PlaybackService.play(itemId?)` | `Project.rootGroup` et `GroupItem` | Le service commence au debut du projet ou a un point d'entree dont tous les ancetres sont `SEQUENTIAL`, puis poursuit le parcours structurel. |
@@ -1105,7 +1105,7 @@ Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `
 
 `PreviewTarget` et `PlaybackCapabilities` appartiennent a l'interface du cas d'usage et peuvent etre declares avec `application/use-cases/PlaybackService.ts`. Les types `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
 
-Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module. `Selection.ts` peut ainsi declarer ensemble `ClipContentSelection`, `StructureSelection` et leurs unions de references typees.
+Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module. `Selection.ts` peut ainsi declarer ensemble `ClipContentSelection`, `GraphContentSelection` et leurs unions de references typees.
 
 ## Principes directeurs
 
