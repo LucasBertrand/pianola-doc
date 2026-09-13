@@ -456,11 +456,10 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures, une
 ```ts
 type StopMode = "GRACEFUL" | "IMMEDIATE";
 
-play(): PlaybackSessionId;
-play(itemId: GroupId | ClipId): PlaybackSessionId;
-preview(noteId: NoteId): PlaybackSessionId;
-stop(sessionId: PlaybackSessionId, mode?: StopMode): void;
-stopTransport(mode?: StopMode): void;
+play(): void;
+play(itemId: GroupId | ClipId): void;
+preview(noteId: NoteId): void;
+stop(mode?: StopMode): void;
 ```
 
 #### Lecture du projet
@@ -581,7 +580,7 @@ Démarrer une nouvelle lecture avec `play` retire immédiatement son rôle au tr
 
 `preview(noteId)` ne remplace jamais le transport.
 
-`stop(sessionId, mode)` cible exactement la session indiquée. `stopTransport(mode)` cible uniquement le transport actif et n'affecte aucune préécoute de note.
+`stop(mode)` arrête uniquement le transport actif et n'affecte aucune préécoute de note. Le service transmet au moteur l'identifiant de la session correspondante. S'il n'existe aucun transport actif, l'opération est sans effet.
 
 Le mode par défaut est `GRACEFUL` :
 
