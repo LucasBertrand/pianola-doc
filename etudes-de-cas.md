@@ -342,6 +342,96 @@ block-beta
 
 `play(piano.id)`, `play(basse.id)` et `play(ensemble.id)` placent tous la tête dans la colonne centrale.
 
+## Cas 10 - Accord `ROOT` et changement de tonalité
+
+Un clip de 7680 ticks contient un unique `HarmonyChange` au tick `0`. Son `Harmony` est un accord défini par `ROOT D` et `MINOR_SEVENTH`. La `Key` est do majeur au tick `0`, puis fa majeur au tick `3840`.
+
+| Intervalle | `Key` active | `Harmony` persistante | Accord résolu |
+| --- | --- | --- | --- |
+| 0 à 3840 | do majeur | `CHORD · ROOT D · MINOR_SEVENTH` | `Dm7` |
+| 3840 à 7680 | fa majeur | `CHORD · ROOT D · MINOR_SEVENTH` | `Dm7` |
+
+La référence `ROOT` conserve la fondamentale orthographiée. Le `KeyChange` ne modifie donc ni l'accord sauvegardé ni l'accord résolu. Il modifie seulement leur relation : `Dm7` est le deuxième degré diatonique de do majeur, puis le sixième degré diatonique de fa majeur.
+
+Cette différence affecte également l'analyse des hauteurs qui ne constituent pas l'accord. Par exemple, `B` appartient à do majeur mais pas à fa majeur, tandis que les notes `D`, `F`, `A` et `C` restent les notes constitutives de `Dm7` dans les deux intervalles.
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 2
+    c["0–3840 · Key C majeur"] f["3840–7680 · Key F majeur"]
+    dm1["Harmony ROOT · Dm7"] dm2["Harmony ROOT · Dm7"]
+```
+
+## Cas 11 - Accord `DEGREE` résolu par la tonalité
+
+Le clip possède la même chronologie de tonalité que le cas précédent, mais son unique `Harmony` est définie par `DEGREE II` et `MINOR_SEVENTH`.
+
+| Intervalle | `Key` active | Intention persistante | Accord résolu |
+| --- | --- | --- | --- |
+| 0 à 3840 | do majeur | `CHORD · DEGREE II · MINOR_SEVENTH` | `Dm7` |
+| 3840 à 7680 | fa majeur | `CHORD · DEGREE II · MINOR_SEVENTH` | `Gm7` |
+
+`Dm7` n'est jamais sauvegardé dans cette `Harmony`. L'intention persistante est le deuxième degré mineur septième. Au tick `3840`, le `KeyChange` suffit donc à faire évoluer l'accord résolu et le marqueur visible de `Dm7` vers `Gm7`, sans créer de nouvel `HarmonyChange`.
+
+Le `ChordTypeId` reste inchangé. La tonalité détermine uniquement la fondamentale correspondant au degré ; elle ne déduit ni ne remplace automatiquement la qualité choisie.
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 2
+    c["0–3840 · Key C majeur"] f["3840–7680 · Key F majeur"]
+    dm["DEGREE II · Dm7"] gm["DEGREE II · Gm7"]
+```
+
+## Cas 12 - Gammes modales et pentatoniques
+
+Deux clips indépendants illustrent les deux références possibles d'une `Harmony` de variante `SCALE`. Leur `Key` passe de do majeur à fa majeur au tick `3840`.
+
+| Clip | `Harmony` persistante | Sous do majeur | Sous fa majeur |
+| --- | --- | --- | --- |
+| `Modal fixe` | `SCALE · ROOT D · DORIAN` | ré dorien | ré dorien |
+| `Pentatonique relative` | `SCALE · DEGREE VI · MINOR_PENTATONIC` | la pentatonique mineure | ré pentatonique mineure |
+
+Dans `Modal fixe`, la collection `D–E–F–G–A–B–C` reste inchangée. Le passage à fa majeur peut modifier son analyse contextuelle, notamment parce que `B` est extérieur à la nouvelle tonalité, mais il ne transforme pas la gamme.
+
+Dans `Pentatonique relative`, aucune tonique de gamme n'est sauvegardée. Le sixième degré de do majeur produit `A–C–D–E–G`, puis le sixième degré de fa majeur produit `D–F–G–A–C`. Cette nouvelle résolution apparaît sans `HarmonyChange` supplémentaire.
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 2
+    c["0–3840 · Key C majeur"] f["3840–7680 · Key F majeur"]
+    dorian1["ROOT D · D dorien"] dorian2["ROOT D · D dorien"]
+    pentaA["DEGREE VI · A min. pent."] pentaD["DEGREE VI · D min. pent."]
+```
+
+## Cas 13 - Note tenue à travers `KeyChange` et `HarmonyChange`
+
+Une note `E4` commence au tick `960` et se termine au tick `5280`. Elle traverse un changement d'harmonie au tick `1920`, puis un changement simultané de tonalité et d'harmonie au tick `3840`.
+
+| Intervalle analysé | `Key` active | `Harmony` active | Résolution | Rôle de `E4` |
+| --- | --- | --- | --- | --- |
+| 960 à 1920 | do majeur | `CHORD · ROOT C · MAJOR_TRIAD` | `C` majeur | tierce de l'accord |
+| 1920 à 3840 | do majeur | `SCALE · DEGREE II · DORIAN` | ré dorien | deuxième degré de la gamme |
+| 3840 à 5280 | fa majeur | `CHORD · DEGREE V · DOMINANT_SEVENTH` | `C7` | tierce de l'accord |
+
+Au tick `3840`, les nouvelles valeurs de `Key` et d'`Harmony` s'appliquent ensemble. L'accord `DEGREE V` est donc résolu dans la nouvelle tonalité de fa majeur, ce qui produit `C7` ; il n'est jamais résolu temporairement dans l'ancienne tonalité de do majeur.
+
+La note persistante conserve un seul `TimeRange`. Les trois intervalles ci-dessus sont uniquement des vues d'analyse dérivées de l'union de ses bornes, des `HarmonyChange` et des `KeyChange`. Aucun changement ne découpe, ne déplace ou n'invalide `E4`.
+
+### Chronologie dérivée
+
+```mermaid
+block-beta
+    columns 3
+    a["960–1920"] b["1920–3840"] c["3840–5280"]
+    ca["C majeur · accord C majeur"] db["C majeur · D dorien"] cc["F majeur · accord C7"]
+    e1["E4 · tierce"] e2["E4 · degré II"] e3["E4 · tierce"]
+```
 ## Consequences pour le PlaybackService
 
 Le calcul structurel peut etre interprete par une operation recursive :
