@@ -17,7 +17,7 @@ Chaque cas présente une projection chronologique Mermaid. Les diagrammes utilis
 La duree de lecture d'un element suit les regles suivantes :
 
 ```text
-clip contourne                    = 0
+clip contourne                    = absent de la projection, contribution 0
 clip                              = duree d'une lecture * repeatCount
 groupe SEQUENTIAL                 = somme des durees de ses enfants
 groupe SIMULTANEOUS               = maximum des durees de ses enfants
@@ -57,11 +57,12 @@ Le clip `Transition` reste dans l'arbre. Son `repeatCount` est conserve, mais il
 
 ```mermaid
 flowchart LR
-    Ouverture["0–2 s · Ouverture"] --> Transition["2 s · Transition bypassée · 0 s"]
-    Transition --> Motif1["2–3 s · Motif 1"]
+    Ouverture["0–2 s · Ouverture"] --> Motif1["2–3 s · Motif 1"]
     Motif1 --> Motif2["3–4 s · Motif 2"]
     Motif2 --> Motif3["4–5 s · Motif 3"]
 ```
+
+`Transition` reste visible dans le graphe structurel présenté plus haut, mais n'apparaît pas dans cette chronologie dérivée.
 
 ## Cas 2 - Deux clips simultanes aux horloges independantes
 
@@ -365,7 +366,7 @@ La projection temporelle associe ensuite chaque element a un intervalle global d
 - une seule session `PROJECT` peut constituer le transport actif ; une nouvelle lecture remplace la precedente, qui ne subsiste que comme proprietaire de contextes eventuellement `DRAINING` ;
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
 - les mute et solo persistants filtrent les notes par `InstrumentId` dans tous les contextes, sans modifier la timeline ;
-- un clip bypassé avant son activation ne contribue pas a la duree ; s'il est bypassé pendant une iteration, celle-ci se termine et aucune repetition supplementaire n'est lancee ;
+- un clip bypassé avant son activation n'apparaît pas dans la projection et ne contribue pas a la duree ; s'il est bypassé pendant une iteration, celle-ci se termine et aucune repetition supplementaire n'est lancee ;
 - `stop(sessionId, mode)` arrete une session precise, tandis que `stopTransport(mode)` n'arrete que le transport actif ;
 - un arret `GRACEFUL` relache les occurrences actives et conserve leurs tails, tandis qu'un arret `IMMEDIATE` detruit les contextes sans delai ;
 - chaque activation de clip et chaque preecoute de note recoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
