@@ -160,7 +160,13 @@ Le clip `Motif` est deja actif dans la lecture du projet lorsque l'utilisateur e
 
 Le `PlaybackService` sait que les deux operations planifient le meme `ClipId`, mais il transmet a l'`AudioEngine` deux descripteurs de type `CLIP` portant uniquement des `ClipPlaybackId` differents. Chaque contexte cree ainsi ses propres instances. Arreter la preecoute detruit seulement `clip-playback-b` et ne relache aucune voix de `clip-playback-a`.
 
-Une preecoute de note isolee utilise au contraire un descripteur de type `NOTE_PREVIEW`, portant un `NotePreviewPlaybackId` et un `InstrumentId`. Aucun identifiant de source persistante ne traverse le port audio.
+Une preecoute de note peut etre lancee pendant cette lecture du projet, pendant la preecoute du clip ou pendant celle d'un groupe :
+
+```ts
+const notePreviewSession = preview({ kind: "NOTE", id: noteId });
+```
+
+Cette operation ouvre une session `NOTE_PREVIEW` independante et utilise un descripteur portant un `NotePreviewPlaybackId` et un `InstrumentId`. Le `PlaybackService` resout le `NoteId`, mais aucun identifiant de source persistante ne traverse le port audio. Arreter `notePreviewSession` n'affecte ni `project-session`, ni `preview-session`, ni une autre preecoute active.
 
 ## Cas 7 - Repetitions et occurrences de notes
 
@@ -207,8 +213,8 @@ Les commandes suivantes expriment des intentions differentes :
 | --- | --- |
 | `play()` | `Introduction`, puis `Piano` et `Basse` ensemble, puis `Conclusion`. |
 | `play(ensemble.id)` | `Piano` et `Basse` ensemble, puis `Conclusion`. |
-| `preview(ensemble.id)` | `Piano` et `Basse` ensemble, puis arret a la fin du groupe. |
-| `preview(piano.id)` | `Piano` seul, puis arret a la fin du clip. |
+| `preview({ kind: "GROUP", id: ensemble.id })` | `Piano` et `Basse` ensemble, puis arret a la fin du groupe. |
+| `preview({ kind: "CLIP", id: piano.id })` | `Piano` seul, puis arret a la fin du clip. |
 | `play(piano.id)` | Commande invalide : `Piano` ne constitue pas un point d'entree structurel isole dans son groupe simultane. |
 
 Dans l'interface, les enfants d'un groupe sequentiel peuvent donc proposer un bouton de lecture structurelle. Un groupe simultane propose ce bouton pour l'ensemble du groupe, tandis que chacun de ses descendants reste accessible par une action de preecoute.
@@ -231,7 +237,7 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - une duree `infinite` se propage aux groupes ancetres selon les memes regles ;
 - `play()` commence au debut du `rootGroup`, tandis que `play(itemId)` utilise un point d'entree structurel valide et poursuit ensuite jusqu'a la fin du projet ;
 - un enfant isole d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, car ses freres devraient commencer au meme instant ;
-- `preview(itemId)` borne le parcours au clip ou au groupe cible et ne rejoint jamais le noeud suivant hors de cette racine ;
+- `preview(target)` borne le parcours au groupe, au clip ou a la note cible et ne rejoint jamais un noeud exterieur a cette racine ;
 - chaque operation globale ouvre une `PlaybackSession` transitoire ;
 - chaque activation de clip recoit un `ClipPlaybackId` distinct de son `ClipId` ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
