@@ -703,7 +703,7 @@ stopTransport(mode?: StopMode): void;
 
 `play` ouvre toujours une session `PROJECT`. Le parametre `itemId` est un curseur initial conserve par le `PlaybackService` ; il ne transforme pas l'element en racine de preecoute et n'a pas a traverser le port `AudioEngine`. Un `itemId` invalide est refuse, et n'est jamais remonte implicitement vers un groupe simultane ancetre.
 
-`getPlaybackCapabilities` applique exactement la meme regle structurelle que `play`. Pour une `Note`, `canPlay` vaut toujours `false`; pour un `Group` ou un `Clip`, il vaut `true` uniquement lorsque tous les groupes ancetres sont `SEQUENTIAL`. `canPreview` indique que les trois types de cible sont structurellement preecoutables. La politique a appliquer lorsqu'un instrument sauvegarde n'est plus disponible reste a definir.
+`getPlaybackCapabilities` applique exactement la meme regle structurelle que `play`. Pour une `Note`, `canPlay` vaut toujours `false`; pour un `Group` ou un `Clip`, il vaut `true` uniquement lorsque tous les groupes ancetres sont `SEQUENTIAL`. `canPreview` indique que les trois types de cible sont structurellement preecoutables.
 
 `preview` ouvre une session `GROUP_PREVIEW`, `CLIP_PREVIEW` ou `NOTE_PREVIEW` selon le discriminant de la cible. Pour un groupe ou un clip, la racine de cette preecoute constitue une frontiere : le planificateur peut parcourir tout son sous-arbre, mais ne peut pas atteindre ses freres ni ses ancetres. Une preecoute de groupe respecte le bypass des clips descendants, tandis qu'une preecoute de clip ignore le bypass de sa cible. Ces deux preecoutes sont des lectures structurelles et remplacent donc la session de transport courante. Pour une note, le `PlaybackService` resout la note persistante et son instrument, ignore le bypass eventuel de son clip parent, puis cree un contexte `NOTE_PREVIEW` sans transmettre le `NoteId` au moteur audio. Cette audition s'ajoute au transport existant sans le remplacer.
 
@@ -1062,9 +1062,7 @@ Cette structure exprime des responsabilites plutot qu'un decoupage definitif fic
 
 ## Questions ouvertes
 
-- Quelle politique appliquer lorsqu'un `InstrumentId` sauvegarde ne peut plus etre resolu par le catalogue : refuser le chargement, utiliser un instrument de remplacement ou conserver une reference indisponible affichee par l'editeur ?
 - Les `Group` doivent-ils devenir selectionnables dans l'editeur et, dans ce cas, faut-il ajouter `selectedGroupIds` a `Selection` ?
-- Le rendu hors ligne appartient-il au premier perimetre fonctionnel ? S'il est retenu plus tard, il faudra definir son cas d'usage, son contexte d'execution et sa relation avec les sessions temps reel avant d'ajouter `OFFLINE_RENDER` a `PlaybackSessionKind`.
 
 ## Principes directeurs
 
