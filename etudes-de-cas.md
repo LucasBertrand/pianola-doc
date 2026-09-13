@@ -92,6 +92,15 @@ flowchart TD
 | `Ligne de basse` | 5760 ticks | 3/4 | 90 BPM | 4 s |
 | `Conclusion` | 2880 ticks | 3/4 | 90 BPM | 2 s |
 
+Les nombres de ticks ne sont comparables qu'apres conversion par le tempo propre a chaque clip. Les deux grooves totalisent bien davantage de ticks que la basse, mais leur tempo plus rapide compense exactement cette difference :
+
+```text
+dureeRythme = ((3840 + 3840) / 960) * (60 / 120) = 4 s
+dureeBasse  = (5760 / 960) * (60 / 90)            = 4 s
+```
+
+Les deux branches de l'ensemble ont donc la meme duree reelle, malgre leurs nombres de ticks differents.
+
 La lecture se deroule comme suit :
 
 | Temps reel | Lecture |
