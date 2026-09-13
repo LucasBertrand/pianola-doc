@@ -910,6 +910,41 @@ Il possède notamment :
 
 `DRAINING` appartient exclusivement au cycle de vie du contexte. Il commence après la fin structurelle ou un arrêt gracieux, lorsque des releases ou tails restent audibles.
 
+
+#### Propriétaire et transitions d'état
+
+La machine d'état de `PlaybackContext` appartient au moteur audio concret. Le `PlaybackService` reste l'autorité temporelle : il décide de la fin structurelle, de la replanification et des arrêts, puis les exprime à travers `AudioEngine`. Il ne modifie ni ne déduit directement l'état interne d'un contexte.
+
+```mermaid
+stateDiagram-v2
+    [*] --> SCHEDULED: openContext
+    SCHEDULED --> ACTIVE: première commande exécutée
+    ACTIVE --> DRAINING: achèvement ou arrêt gracieux avec résidu sonore
+    SCHEDULED --> DISPOSED: achèvement ou arrêt
+    ACTIVE --> DISPOSED: achèvement ou arrêt sans résidu
+    DRAINING --> DISPOSED: silence ou délai maximal
+    SCHEDULED --> DISPOSED: arrêt immédiat
+    ACTIVE --> DISPOSED: arrêt immédiat
+    DRAINING --> DISPOSED: arrêt immédiat
+```
+
+Les transitions ont la signification suivante :
+
+| État | Signification | Nouvelles commandes |
+| --- | --- | --- |
+| `SCHEDULED` | Le contexte est ouvert, mais aucune de ses commandes n'a encore été exécutée. | Acceptées. |
+| `ACTIVE` | Au moins une commande a été exécutée et la lecture structurelle peut encore produire des attaques. | Acceptées. |
+| `DRAINING` | La lecture structurelle est terminée ; seules les occurrences relâchées et les tails subsistent. | Toute nouvelle attaque est refusée. |
+| `DISPOSED` | Le sous-graphe, les instances et les références du contexte ont été libérés. | Toute commande devient sans effet. |
+
+`completeContext` exprime la fin structurelle décidée par le `PlaybackService`. Le moteur annule les commandes encore futures du contexte, relâche ses occurrences actives et passe à `DRAINING` si un signal peut encore être produit ; sinon il passe directement à `DISPOSED`.
+
+Un arrêt `GRACEFUL` suit la même sortie vers `DRAINING`, mais peut survenir avant la fin structurelle. Un arrêt `IMMEDIATE` annule les commandes futures, coupe la sortie et conduit directement à `DISPOSED` depuis tout état non détruit.
+
+Le moteur réalise seul la transition `DRAINING -> DISPOSED`, lorsqu'aucune voix ni aucun tail ne peut encore produire de signal, ou lorsque la durée maximale de sécurité est atteinte. Il notifie alors la session propriétaire, qui est elle-même détruite dès que tous ses contextes sont `DISPOSED`.
+
+Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peut pas redevenir `ACTIVE` : si une replanification exige de nouvelles attaques après son achèvement, le `PlaybackService` doit ouvrir un nouveau contexte. `replaceScheduledCommands` ne change en revanche pas l'état d'un contexte encore `SCHEDULED` ou `ACTIVE`.
+
 Un contexte de clip correspond à une activation audio du clip. Le `ClipId` d'origine et la correspondance entre le clip et son contexte restent une connaissance du `PlaybackService`.
 
 Une préécoute de note utilise le même type de contexte. Sa session `NOTE_PREVIEW` indique déjà la nature de l'opération, tandis que sa commande `NOTE_ON` porte l'`InstrumentId`. Le `PlaybackService` conserve l'association interne entre le `NotePreviewHandle`, la session, le contexte et l'occurrence correspondants ; aucun descripteur de contexte supplémentaire n'est nécessaire.
