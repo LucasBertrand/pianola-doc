@@ -197,7 +197,7 @@ Responsabilités et invariants :
 
 `isBypassed` permet de contourner un clip sans le retirer de l'arbre. Il reste indépendant de `repeatCount`, afin qu'un clip puisse être désactivé puis réactivé sans perdre son nombre de lectures.
 
-Un clip ne possède pas de position globale. Lorsqu'il est bypassé avant son activation, il ne contribue pas à la durée de lecture de son groupe parent.
+Un clip ne possède pas de position globale. Lorsqu'il est bypassé avant son activation, il ne contribue pas à la durée de lecture de son groupe parent et n'apparaît pas dans la timeline dérivée.
 
 ### Note
 
@@ -494,13 +494,13 @@ Il n'existe aucune préécoute bornée de groupe ou de clip. Leur bouton de lect
 
 #### Timeline dérivée, parcours et durée
 
-Les clips et groupes ne sauvegardent aucune position globale. Le service projette récursivement l'arbre vers une timeline d'exécution contenant notamment le début et la fin de chaque élément ainsi que les activations de clips qui peuvent se chevaucher.
+Les clips et groupes ne sauvegardent aucune position globale. Le service projette récursivement les éléments actifs de l'arbre vers une timeline d'exécution contenant notamment leur début, leur fin et les activations de clips qui peuvent se chevaucher. Les éléments bypassés restent dans le graphe, mais sont exclus de cette projection.
 
 Le calcul suit les règles suivantes :
 
 - un groupe `SEQUENTIAL` transmet la fin de chaque enfant comme départ du suivant ;
 - un groupe `SIMULTANEOUS` transmet le même départ à tous ses enfants et se termine avec le plus long ;
-- un clip bypassé avant son activation est ignoré et possède une contribution temporelle nulle ;
+- un clip bypassé avant son activation est ignoré, ne produit aucune activation et n'apparaît pas dans la timeline dérivée ;
 - chaque répétition recommence au tick `0` avec les chronologies initiales du clip ;
 - `repeatCount` étant fini, chaque élément possède une durée et une position globale finies.
 
@@ -527,7 +527,7 @@ Le mute et le solo :
 - empêchent seulement la production des commandes correspondant aux notes inaudibles ;
 - s'appliquent également à `preview(noteId)`.
 
-Le bypass reste distinct : il cible un clip et modifie sa contribution à la structure temporelle.
+Le bypass reste distinct : il cible un clip, supprime son activation de la timeline dérivée et modifie la position des éléments suivants lorsque la structure est séquentielle.
 
 #### Modification du bypass pendant la lecture
 
@@ -699,7 +699,7 @@ La timeline applique directement la sémantique du transport :
 - plusieurs clips traversés par la tête peuvent appartenir au même instant de lecture ;
 - `preview(noteId)` ne déplace ni la tête ni la timeline.
 
-Le bypass peut modifier la géométrie temporelle dérivée, puisqu'un clip bypassé possède une contribution nulle. Le mute et le solo modifient uniquement l'apparence et l'audibilité des notes concernées ; les blocs conservent leurs positions et leurs dimensions.
+Le bypass modifie la géométrie temporelle dérivée : un clip bypassé n'y apparaît pas et les éléments séquentiels suivants sont avancés. Le mute et le solo modifient uniquement l'apparence et l'audibilité des notes concernées ; les blocs conservent leurs positions et leurs dimensions.
 
 La présentation consomme cette projection depuis la couche applicative. Toute interaction structurelle réalisée depuis la timeline est traduite en opération sur le graphe, puis la projection est recalculée. Aucune coordonnée horizontale ou verticale n'est sauvegardée dans le domaine.
 
