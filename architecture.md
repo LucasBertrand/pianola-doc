@@ -954,17 +954,11 @@ src/
 │   │   ├── Duration.ts
 │   │   ├── TimeRange.ts
 │   │   ├── Tempo.ts
-│   │   ├── TempoChange.ts
-│   │   ├── TempoSection.ts
-│   │   ├── Meter.ts
-│   │   ├── MeterChange.ts
-│   │   └── MeterSection.ts
+│   │   └── Meter.ts
 │   └── pitch/
 │       ├── Pitch.ts
 │       ├── Tonic.ts
 │       ├── Key.ts
-│       ├── KeyChange.ts
-│       ├── KeySection.ts
 │       ├── PitchContext.ts
 │       ├── PitchContextChange.ts
 │       └── PitchContextSection.ts
@@ -994,6 +988,8 @@ src/
     ├── components/
     └── stores/
 ```
+
+`Tempo.ts` déclare ensemble `Tempo`, `TempoChange` et `TempoSection`. `Meter.ts` déclare `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Key`, `KeyChange` et `KeySection`. Cette colocalisation est uniquement modulaire : les valeurs, les changements persistants et les sections dérivées restent des concepts distincts. Les modules `PitchContext.ts`, `PitchContextChange.ts` et `PitchContextSection.ts` restent séparés jusqu'à leur étude dédiée.
 
 Les objets centraux restent à la racine de `domain/`. Les concepts temporels sont regroupés dans `time/` et les concepts de hauteurs dans `pitch/`. Ces sous-ensembles restent indépendants de l'agrégat : `Clip` peut connaître `MeterChange`, mais `MeterChange` ne connaît pas `Clip`.
 
