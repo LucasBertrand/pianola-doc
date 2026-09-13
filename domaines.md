@@ -97,8 +97,9 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Une session `GROUP_PREVIEW`, `CLIP_PREVIEW` ou `NOTE_PREVIEW` provient de `preview(target)` selon le type de la cible et reste bornee a cet element.
 - Demarrer une nouvelle session de transport remplace la precedente. L'ancienne cesse immediatement de planifier de nouvelles attaques, mais ses contextes peuvent subsister en `DRAINING` jusqu'a l'extinction de leurs tails.
 - Les sessions `NOTE_PREVIEW` sont des sessions d'audition independantes. Plusieurs peuvent coexister entre elles et avec l'unique session de transport active ; leur arret n'affecte aucune autre session.
-- Chaque unite de lecture audio isolee possede un descripteur strict `PlaybackContextDescriptor`. Une source `CLIP` porte obligatoirement un `ClipPlaybackId` ; une source `NOTE_PREVIEW` porte obligatoirement un `NotePreviewPlaybackId` et un `InstrumentId`.
-- Un `ClipPlaybackId` identifie une activation transitoire d'un clip et reste distinct du `ClipId` persistant. Deux activations du meme clip ne partagent donc jamais leurs instances audio.
+- Chaque unite de lecture audio isolee est identifiee par un `PlaybackContextId` opaque et transitoire. Un nouvel identifiant est attribue a chaque activation d'un clip et a chaque preecoute de note.
+- Lors de l'ouverture d'un contexte, l'`AudioEngine` rattache une fois son `PlaybackContextId` a la `PlaybackSession` qui le possede.
+- Chaque `AudioCommand` porte le `contextId` auquel elle appartient. Elle ne repete pas le `PlaybackSessionId`, que le moteur retrouve par l'intermediaire du contexte.
 - Pour chaque `InstrumentId` effectivement utilise dans un contexte de clip, l'infrastructure cree une `InstrumentInstance` exclusive a partir de l'`InstrumentDefinition` partagee.
 - Les repetitions d'une meme activation reutilisent le meme contexte et les memes instances, mais produisent de nouvelles occurrences de notes.
 - Le moteur et son `AudioContext` Web Audio restent globaux : un `PlaybackContext` est un perimetre logique et un sous-graphe audio, non un `AudioContext` natif supplementaire.
@@ -668,8 +669,8 @@ Responsabilites :
 - ouvrir une `PlaybackSession` pour chaque operation globale de lecture ;
 - conserver au plus une session de transport active parmi `PROJECT`, `GROUP_PREVIEW` et `CLIP_PREVIEW` ;
 - remplacer la session de transport courante lorsqu'une nouvelle lecture structurelle commence, en empechant immediatement toute nouvelle attaque de l'ancienne session ;
-- attribuer un nouveau `ClipPlaybackId` a chaque activation d'un clip, y compris lorsque la nouvelle activation remplace une session dont certains contextes sont encore en `DRAINING` ;
-- attribuer un nouveau `NotePreviewPlaybackId` a chaque preecoute de note et l'isoler dans sa propre session ;
+- attribuer un nouveau `PlaybackContextId` a chaque activation d'un clip, y compris lorsque la nouvelle activation remplace une session dont certains contextes sont encore en `DRAINING` ;
+- attribuer egalement un nouveau `PlaybackContextId` a chaque preecoute de note et isoler celle-ci dans sa propre session ;
 - permettre a plusieurs sessions `NOTE_PREVIEW` de coexister entre elles et avec l'unique session de transport active ;
 - attribuer un nouveau `NoteOccurrenceId` a chaque attaque, y compris a chaque repetition d'une meme `Note` ;
 - distinguer la fin structurelle d'un clip de la fin audible de ses releases et de ses effets ;
@@ -730,7 +731,8 @@ Port minimal permettant notamment :
 - de transmettre un `InstrumentId` sans connaitre le patch correspondant ;
 - d'associer chaque attaque a une identite d'occurrence ;
 - de relacher une occurrence precise sans interrompre les autres voix du meme instrument ;
-- d'ouvrir une session et un contexte de lecture a partir d'un descripteur strict ;
+- d'ouvrir une session, puis de lui rattacher un contexte identifie par un `PlaybackContextId` ;
+- de router chaque `AudioCommand` vers son contexte grace au `contextId` qu'elle porte ;
 - d'annuler les attaques futures d'un contexte ou d'une session sans perdre le suivi des occurrences deja actives ;
 - de terminer un contexte a sa fin structurelle, puis de laisser l'infrastructure gerer son drainage sonore ;
 - de demander un arret `GRACEFUL` ou `IMMEDIATE` sans exposer la maniere dont les noeuds audio sont relaches.
@@ -744,34 +746,48 @@ type PlaybackSessionKind =
   | "CLIP_PREVIEW"
   | "NOTE_PREVIEW";
 
-type PlaybackContextDescriptor =
-  | {
-      kind: "CLIP";
-      playbackId: ClipPlaybackId;
-    }
-  | {
-      kind: "NOTE_PREVIEW";
-      playbackId: NotePreviewPlaybackId;
-      instrumentId: InstrumentId;
-    };
-
-type AudioCommand =
+type AudioCommand = {
+  contextId: PlaybackContextId;
+  at: number;
+} & (
   | {
       kind: "NOTE_ON";
       occurrenceId: NoteOccurrenceId;
       instrumentId: InstrumentId;
       pitch: Pitch;
       velocity: Velocity;
-      at: number;
     }
   | {
       kind: "NOTE_OFF";
       occurrenceId: NoteOccurrenceId;
-      at: number;
-    };
+    }
+);
+
+interface AudioEngine {
+  openSession(
+    sessionId: PlaybackSessionId,
+    kind: PlaybackSessionKind
+  ): void;
+
+  openContext(
+    sessionId: PlaybackSessionId,
+    contextId: PlaybackContextId
+  ): void;
+
+  schedule(commands: readonly AudioCommand[]): void;
+  completeContext(contextId: PlaybackContextId): void;
+  stopContext(contextId: PlaybackContextId, mode: StopMode): void;
+  stopSession(sessionId: PlaybackSessionId, mode: StopMode): void;
+}
 ```
 
-Les identifiants d'execution sont opaques et transitoires. Le `ClipId` persistant reste connu du domaine et du `PlaybackService`, qui cree le `ClipPlaybackId` correspondant, mais il ne traverse pas le port `AudioEngine`. `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais non plus ce port.
+Les identifiants d'execution sont opaques et transitoires. Ils forment trois niveaux sans se recouvrir : `PlaybackSessionId` identifie l'operation globale, `PlaybackContextId` une unite audio isolee de cette operation et `NoteOccurrenceId` une attaque precise dans ce contexte.
+
+La relation entre session et contexte est enregistree une seule fois par `openContext`. Une commande transporte donc uniquement le `contextId` necessaire a son routage. Ce champ est declare dans la partie commune d'`AudioCommand`, plutot que repete dans chacune de ses variantes. La commande reste ainsi autonome lorsqu'elle est mise en file, triee ou transmise a un processeur audio.
+
+`completeContext` signale une fin structurelle et autorise le drainage naturel des releases et des tails. `stopContext` ou `stopSession` interrompent la planification selon le `StopMode` demande. Le moteur peut retrouver la session proprietaire de toute commande en remontant depuis son contexte ; repeter le `PlaybackSessionId` dans chaque commande serait donc inutile.
+
+Le `ClipId` et le `NoteId` persistants restent connus du domaine et du `PlaybackService`, mais ne traversent pas le port `AudioEngine`. La correspondance entre un clip et son contexte appartient a l'orchestration applicative. `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais non plus ce port.
 
 #### InstrumentCatalog
 
@@ -811,7 +827,7 @@ Les sessions `NOTE_PREVIEW` n'utilisent pas ce transport exclusif. Une note peut
 
 ### PlaybackContext
 
-Represente une unite de lecture audio isolee dans une session. Il est construit a partir d'un `PlaybackContextDescriptor` strict et possede notamment :
+Represente une unite de lecture audio isolee dans une session. Il est cree avec un `PlaybackContextId`, que le moteur rattache a sa session proprietaire lors de `openContext`, et possede notamment :
 
 - un bus de sortie propre ;
 - une table `InstrumentId -> InstrumentInstance` ;
@@ -819,7 +835,7 @@ Represente une unite de lecture audio isolee dans une session. Il est construit 
 - les commandes programmees qui doivent pouvoir etre annulees ;
 - un etat de cycle de vie : `SCHEDULED`, `ACTIVE`, `DRAINING` ou `DISPOSED`.
 
-Un contexte de type `CLIP` correspond a une seule activation audio identifiee par son `ClipPlaybackId`. Son clip persistant d'origine reste une connaissance du `PlaybackService`. Un contexte de type `NOTE_PREVIEW` est identifie par un `NotePreviewPlaybackId` et limite a l'`InstrumentId` indique par son descripteur.
+Un contexte ouvert pour un clip correspond a une seule activation audio. Son clip persistant d'origine reste une connaissance du `PlaybackService`. Une preecoute de note utilise le meme type de contexte technique ; sa session `NOTE_PREVIEW` exprime deja la nature de l'operation, et l'`InstrumentId` necessaire est porte par sa commande `NOTE_ON`. Aucun descripteur de contexte supplementaire n'est donc necessaire.
 
 Les groupes ne possedent pas de contexte audio dans le premier perimetre : ils organisent la lecture sans gain, bus ni effet propre. Une session `GROUP_PREVIEW` contient donc les `PlaybackContext` des clips effectivement actives dans son sous-arbre, et non un `PlaybackContext` du groupe. Un tel contexte de groupe ne deviendrait pertinent que si les groupes acqueraient plus tard un comportement audio.
 
@@ -1040,13 +1056,12 @@ Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `
 
 `Instrument` et `InstrumentId` sont declares ensemble dans `domain/Instrument.ts`. Le premier constitue la representation publique minimale de l'instrument ; le second reste l'identifiant sauvegarde par les notes et partage avec les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
-`PreviewTarget` et `PlaybackCapabilities` appartiennent a l'interface du cas d'usage et peuvent etre declares avec `application/use-cases/PlaybackService.ts`. Les types `PlaybackSessionId`, `ClipPlaybackId`, `NotePreviewPlaybackId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `PlaybackContextDescriptor`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
+`PreviewTarget` et `PlaybackCapabilities` appartiennent a l'interface du cas d'usage et peuvent etre declares avec `application/use-cases/PlaybackService.ts`. Les types `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
 
 Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
 
 ## Questions ouvertes
 
-- Comment le port `AudioEngine` rattache-t-il explicitement chaque `AudioCommand` a son `PlaybackContext` : argument de methode, identifiant de contexte dans la commande ou handle de contexte retourne a son ouverture ?
 - Quelle politique appliquer lorsqu'un `InstrumentId` sauvegarde ne peut plus etre resolu par le catalogue : refuser le chargement, utiliser un instrument de remplacement ou conserver une reference indisponible affichee par l'editeur ?
 - Les `Group` doivent-ils devenir selectionnables dans l'editeur et, dans ce cas, faut-il ajouter `selectedGroupIds` a `Selection` ?
 - Le rendu hors ligne appartient-il au premier perimetre fonctionnel ? S'il est retenu plus tard, il faudra definir son cas d'usage, son contexte d'execution et sa relation avec les sessions temps reel avant d'ajouter `OFFLINE_RENDER` a `PlaybackSessionKind`.
