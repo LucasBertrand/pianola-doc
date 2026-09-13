@@ -957,7 +957,6 @@ src/
 │   │   └── Meter.ts
 │   └── pitch/
 │       ├── Pitch.ts
-│       ├── Tonic.ts
 │       ├── Key.ts
 │       ├── PitchContext.ts
 │       ├── PitchContextChange.ts
@@ -989,11 +988,11 @@ src/
     └── stores/
 ```
 
-`Tempo.ts` déclare ensemble `Tempo`, `TempoChange` et `TempoSection`. `Meter.ts` déclare `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Key`, `KeyChange` et `KeySection`. Cette colocalisation est uniquement modulaire : les valeurs, les changements persistants et les sections dérivées restent des concepts distincts. Les modules `PitchContext.ts`, `PitchContextChange.ts` et `PitchContextSection.ts` restent séparés jusqu'à leur étude dédiée.
+`Tempo.ts` déclare ensemble `Tempo`, `TempoChange` et `TempoSection`. `Meter.ts` déclare `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Tonic`, `Key`, `KeyChange` et `KeySection`. Cette colocalisation est uniquement modulaire : les valeurs, les changements persistants et les sections dérivées restent des concepts distincts. Les modules `PitchContext.ts`, `PitchContextChange.ts` et `PitchContextSection.ts` restent séparés jusqu'à leur étude dédiée.
 
 Les objets centraux restent à la racine de `domain/`. Les concepts temporels sont regroupés dans `time/` et les concepts de hauteurs dans `pitch/`. Ces sous-ensembles restent indépendants de l'agrégat : `Clip` peut connaître `MeterChange`, mais `MeterChange` ne connaît pas `Clip`.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`. `Tonic` conserve son propre type dans `domain/pitch/Tonic.ts` afin que son orthographe enharmonique ne soit pas réduite à une classe de hauteur numérique.
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`. `Tonic` reste un value object distinct, déclaré dans `domain/pitch/Key.ts` afin de rester colocalisé avec son unique consommateur sans être réduit à une classe de hauteur numérique.
 
 `ClipContentSelection`, `GraphContentSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
 
