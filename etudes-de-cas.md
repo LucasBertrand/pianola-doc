@@ -233,13 +233,20 @@ Le nouvel appel place la tete au debut global derive de `Motif` et ouvre une nou
 
 Les deux activations successives du meme `ClipId` recoivent des `PlaybackContextId` differents. L'ancienne session reste inactive tandis que ses contextes passent eventuellement en `DRAINING` : leurs releases peuvent rester audibles pendant le debut de la nouvelle session, mais aucune nouvelle attaque n'est planifiee. La session est detruite lorsque tous ses contextes sont `DISPOSED`. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
 
-Pendant ce transport, une note peut etre preecoutee independamment :
+Pendant ce transport, l'utilisateur maintient une touche du piano roll pour preecouter une note independamment :
 
 ```ts
-const notePreviewSession = preview(noteId);
+const notePreview = preview(noteId);
+
+// A la fin du geste : pointerup ou pointercancel
+notePreview.release();
 ```
 
-Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `project-session-b`, puis lui rattache un contexte possedant son propre `PlaybackContextId`. La commande `NOTE_ON` porte ce `contextId` ainsi que l'`InstrumentId` resolu par le `PlaybackService`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs preecoutes de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif. Le mute et le solo de l'instrument restent applicables.
+`preview(noteId)` ouvre en interne une session `NOTE_PREVIEW` sans remplacer `project-session-b`, puis lui rattache un contexte possedant son propre `PlaybackContextId`. La presentation recoit seulement un `NotePreviewHandle` : aucun `PlaybackSessionId`, `PlaybackContextId` ou `NoteOccurrenceId` ne lui est expose.
+
+La commande `NOTE_ON` porte le `contextId` ainsi que l'`InstrumentId` resolu par le `PlaybackService`. `release()` produit le `NOTE_OFF` de l'occurrence correspondante, termine structurellement son contexte et laisse sa release et son tail se drainer sans affecter le transport actif.
+
+Si la fin du geste n'est pas recue, une duree maximale de securite applique automatiquement le meme relachement. `release()` est idempotente et reste donc sans effet apres cet arret automatique. Chaque appel possede son propre handle : plusieurs preecoutes, y compris plusieurs occurrences de la meme note, peuvent se chevaucher et etre relachees independamment. Le mute et le solo de l'instrument restent applicables.
 
 
 ### Chronologie dérivée
@@ -251,7 +258,7 @@ flowchart LR
     Remplacement --> Fin["session-a · DISPOSED · session-b poursuit"]
 ```
 
-Les sessions `NOTE_PREVIEW` peuvent apparaître pendant la troisième phase sans modifier cette succession du transport.
+Des sessions `NOTE_PREVIEW` internes peuvent apparaître pendant la troisième phase sans modifier cette succession du transport. La présentation ne conserve que leurs `NotePreviewHandle` respectifs.
 
 ## Cas 7 - Repetitions et occurrences de notes
 
