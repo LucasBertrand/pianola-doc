@@ -149,24 +149,27 @@ Les deux notes ne sont jamais fusionnees implicitement. Chaque activation de cli
 
 Meme si le piano est monophonique, la note du clip B n'interrompt pas celle du clip A. La monophonie limite les notes concurrentes a l'interieur d'un meme contexte ; elle n'est pas globale a tous les clips utilisant le meme `InstrumentId`.
 
-## Cas 6 - Lecture et preecoute simultanees du meme clip
+## Cas 6 - Remplacement du transport et audition concurrente
 
-Le clip `Motif` est deja actif dans la lecture du projet lorsque l'utilisateur en lance une preecoute.
+Le clip `Motif` est actif dans une session `PROJECT` lorsque l'utilisateur lance la preecoute de ce meme clip.
 
-| Operation | Session | Contexte | Source persistante |
+La preecoute de clip est une nouvelle session de transport. Le `PlaybackService` retire donc immediatement ce role a `project-session`, annule ses commandes futures et ouvre `clip-preview-session`. Il n'existe jamais deux transports actifs.
+
+| Etape | Session | Type | Etat |
 | --- | --- | --- | --- |
-| Lecture du projet | `project-session` | `clip-playback-a` | `ClipId = motif` |
-| Preecoute | `preview-session` | `clip-playback-b` | `ClipId = motif` |
+| Lecture initiale | `project-session` | `PROJECT` | transport actif |
+| Lancement de la preecoute | `project-session` | `PROJECT` | remplacee, puis eventuellement `DRAINING` |
+| Lancement de la preecoute | `clip-preview-session` | `CLIP_PREVIEW` | nouveau transport actif |
 
-Le `PlaybackService` sait que les deux operations planifient le meme `ClipId`, mais il transmet a l'`AudioEngine` deux descripteurs de type `CLIP` portant uniquement des `ClipPlaybackId` differents. Chaque contexte cree ainsi ses propres instances. Arreter la preecoute detruit seulement `clip-playback-b` et ne relache aucune voix de `clip-playback-a`.
+Les deux activations successives du meme `ClipId` recoivent des `ClipPlaybackId` differents. Si l'ancienne session passe en `DRAINING`, ses releases peuvent rester audibles pendant le debut de la nouvelle session, mais elle ne planifie plus aucune attaque et ne fait plus progresser le parcours du projet. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
 
-Une preecoute de note peut etre lancee pendant cette lecture du projet, pendant la preecoute du clip ou pendant celle d'un groupe :
+Pendant la preecoute du clip, une note peut etre auditionnee independamment :
 
 ```ts
 const notePreviewSession = preview({ kind: "NOTE", id: noteId });
 ```
 
-Cette operation ouvre une session `NOTE_PREVIEW` independante et utilise un descripteur portant un `NotePreviewPlaybackId` et un `InstrumentId`. Le `PlaybackService` resout le `NoteId`, mais aucun identifiant de source persistante ne traverse le port audio. Arreter `notePreviewSession` n'affecte ni `project-session`, ni `preview-session`, ni une autre preecoute active.
+Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `clip-preview-session`. Elle utilise un descripteur portant un `NotePreviewPlaybackId` et un `InstrumentId`. Le `PlaybackService` resout le `NoteId`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs auditions de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif.
 
 ## Cas 7 - Repetitions et occurrences de notes
 
@@ -219,7 +222,7 @@ Les commandes suivantes expriment des intentions differentes :
 
 Dans l'interface, les enfants d'un groupe sequentiel peuvent donc proposer un bouton de lecture structurelle. Un groupe simultane propose ce bouton pour l'ensemble du groupe, tandis que chacun de ses descendants reste accessible par une action de preecoute.
 
-Le point de depart optionnel de `play` ne change pas la racine de la session : il s'agit toujours d'une session `PROJECT`, capable de poursuivre jusqu'a la fin du projet. A l'inverse, `preview` cree une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` dont la racine est une frontiere infranchissable.
+Le point de depart optionnel de `play` ne change pas la racine de la session : il s'agit toujours d'une session `PROJECT`, capable de poursuivre jusqu'a la fin du projet. Une preecoute de groupe ou de clip cree une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` dont la racine est une frontiere infranchissable et remplace le transport courant. Une preecoute de note cree au contraire une session `NOTE_PREVIEW` concurrente qui ne remplace pas le transport.
 
 ## Consequences pour le PlaybackService
 
@@ -239,6 +242,8 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - un enfant isole d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, car ses freres devraient commencer au meme instant ;
 - `preview(target)` borne le parcours au groupe, au clip ou a la note cible et ne rejoint jamais un noeud exterieur a cette racine ;
 - chaque operation globale ouvre une `PlaybackSession` transitoire ;
+- une seule session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW` peut constituer le transport actif ; une nouvelle lecture structurelle remplace la precedente ;
+- les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
 - chaque activation de clip recoit un `ClipPlaybackId` distinct de son `ClipId` ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
 - la fin structurelle permet au parcours de continuer pendant que l'infrastructure conserve eventuellement le contexte en `DRAINING` ;
