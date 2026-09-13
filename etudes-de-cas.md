@@ -204,9 +204,9 @@ La note A commence a zero seconde et se termine a quatre secondes. La note B com
 
 A deux secondes, le moteur relache uniquement `occurrence-b`. La voix correspondant a `occurrence-a` continue jusqu'a quatre secondes. Une commande de relachement identifiee seulement par l'instrument et la hauteur serait insuffisante, car elle risquerait d'interrompre les deux voix.
 
-Les deux notes ne sont jamais fusionnees implicitement. Chaque activation de clip possede son propre `PlaybackContext` et sa propre `InstrumentInstance` du piano. La politique `InstrumentDefinition.voiceAllocation` s'applique donc separement dans chaque instance.
+Les deux notes ne sont jamais fusionnees implicitement. Chaque activation de clip possede son propre `PlaybackContext` et sa propre `InstrumentInstance` `smplr` du piano.
 
-Meme si le piano est monophonique, la note du clip B n'interrompt pas celle du clip A. La monophonie limite les notes concurrentes a l'interieur d'un meme contexte ; elle n'est pas globale a tous les clips utilisant le meme `InstrumentId`.
+Lors de chaque `NOTE_ON`, le moteur associe au `NoteOccurrenceId` le contrôle d'arrêt retourné par l'instance concernée. Les occurrences restent donc indépendantes même lorsqu'elles possèdent le même `InstrumentId` et la même hauteur. Aucune politique de voix globale aux différents clips n'est introduite.
 
 
 ### Chronologie dérivée
