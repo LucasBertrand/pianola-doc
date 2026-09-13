@@ -10,6 +10,7 @@ Il fixe le vocabulaire courant, les responsabilités des trois couches principal
 - [Périmètre fonctionnel](#périmètre-fonctionnel)
 - [Domaine](#domaine)
 - [Application](#application)
+- [Présentation](#présentation)
 - [Infrastructure](#infrastructure)
 - [Dépendances architecturales](#dépendances-architecturales)
 - [Questions ouvertes](#questions-ouvertes)
@@ -657,6 +658,55 @@ Cette commande reste autonome lorsqu'elle est mise en file, triée ou transmise 
 Il retourne directement les objets `Instrument` du domaine. Aucun modèle de sortie intermédiaire, patch, paramètre audio ou détail d'allocation des voix ne traverse ce port.
 
 Les futurs ports de persistance seront définis avec les cas d'usage correspondants. Aucun dossier générique `application/contracts/` n'est nécessaire : les ports possèdent leurs modèles d'échange et les types métier restent dans le domaine.
+
+---
+
+## Présentation
+
+La présentation offre une vue temporelle du graphe de composition. Elle projette les `Group` et les `Clip` sur une timeline globale sans créer un second modèle de composition.
+
+### Timeline globale
+
+L'axe horizontal représente la `ProjectTime` dérivée depuis le début du projet. L'axe vertical empile les clips afin que les séquences, les superpositions et leurs durées relatives restent visibles simultanément.
+
+La structure du cas 3 peut ainsi être représentée de manière conceptuelle :
+
+```mermaid
+gantt
+    title Timeline globale dérivée du graphe
+    dateFormat X
+    axisFormat %S s
+    section Clips empilés
+    Introduction    :intro, 0, 2s
+    Groove A        :groove-a, 2, 2s
+    Groove B        :groove-b, 4, 2s
+    Ligne de basse  :basse, 2, 4s
+    Conclusion      :conclusion, 6, 2s
+```
+
+Dans cette projection :
+
+| Élément visuel | Signification |
+| --- | --- |
+| Position horizontale | Instant global de début dérivé du graphe |
+| Longueur d'un bloc | Durée réelle du clip, répétitions comprises |
+| Ligne verticale | Emplacement d'un clip dans l'empilement |
+| Blocs alignés ou chevauchants | Branches actives simultanément |
+| Tête de lecture verticale | Position utilisée par `play()` |
+| Mise en sourdine visuelle | État mute ou solo, sans changement de géométrie |
+
+Les clips restent ordonnés verticalement selon une règle de présentation stable issue du parcours du graphe. Les groupes peuvent être matérialisés par des bandes, des accolades ou des niveaux de regroupement, mais ils ne deviennent pas des pistes persistantes.
+
+La timeline applique directement la sémantique du transport :
+
+- `play()` commence à la tête de lecture affichée ;
+- `play(itemId)` déplace la tête au début horizontal dérivé de l'élément puis démarre la lecture globale ;
+- plusieurs clips traversés par la tête peuvent appartenir au même instant de lecture ;
+- `preview(noteId)` ne déplace ni la tête ni la timeline.
+
+Le bypass peut modifier la géométrie temporelle dérivée, puisqu'un clip bypassé possède une contribution nulle. Le mute et le solo modifient uniquement l'apparence et l'audibilité des notes concernées ; les blocs conservent leurs positions et leurs dimensions.
+
+La présentation consomme cette projection depuis la couche applicative. Toute interaction structurelle réalisée depuis la timeline est traduite en opération sur le graphe, puis la projection est recalculée. Aucune coordonnée horizontale ou verticale n'est sauvegardée dans le domaine.
 
 ---
 
