@@ -1,6 +1,6 @@
 # Etudes de cas
 
-Ce document illustre les regles de composition et de lecture definies dans [domaines.md](domaines.md). Les exemples ne decrivent aucune position globale sauvegardee : tous les instants de depart et de fin sont derives de l'arbre de `Group` et de `Clip`.
+Ce document illustre les règles de composition et de lecture définies dans [architecture.md](architecture.md). Les exemples ne décrivent aucune position globale sauvegardée : tous les instants de départ et de fin sont dérivés de l'arbre de `Group` et de `Clip`.
 
 ## Conventions de calcul
 
