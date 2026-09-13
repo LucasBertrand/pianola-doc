@@ -12,6 +12,7 @@ Il fixe le vocabulaire courant, les responsabilités des trois couches principal
 - [Application](#application)
 - [Infrastructure](#infrastructure)
 - [Dépendances architecturales](#dépendances-architecturales)
+- [Questions ouvertes](#questions-ouvertes)
 - [Arborescence cible](#arborescence-cible)
 
 ## Vue d'ensemble
@@ -50,7 +51,9 @@ Le premier périmètre comprend :
 - des notes associées individuellement à un instrument ;
 - des chronologies locales de tempo, de métrique et de contexte de hauteurs ;
 - l'édition dans un piano roll ;
-- la lecture du projet et la préécoute d'un groupe, d'un clip ou d'une note ;
+- la lecture du projet depuis la tête de lecture ou depuis la position dérivée d'un groupe ou d'un clip ;
+- la préécoute ponctuelle d'une note ;
+- le mute et le solo persistants des instruments ;
 - des instruments modulaires intégrés et non éditables.
 
 Il ne comprend pas :
@@ -107,6 +110,8 @@ Attributs possibles :
 - `id` ;
 - `name` ;
 - `rootGroup` ;
+- `mutedInstrumentIds` ;
+- `soloedInstrumentIds` ;
 - `createdAt` ;
 - `updatedAt`.
 
@@ -117,11 +122,14 @@ Responsabilités et invariants :
 - garantir la cohérence globale de l'arbre ;
 - garantir qu'un élément non racine appartient à un seul groupe parent ;
 - interdire les cycles ;
-- permettre l'ajout, le déplacement, le regroupement et la suppression des éléments de l'arbre.
+- permettre l'ajout, le déplacement, le regroupement et la suppression des éléments de l'arbre ;
+- conserver les intentions de mute et de solo associées aux instruments.
 
 Le groupe racine est un `Group` ordinaire et peut utiliser n'importe quel `PlaybackMode` pris en charge. Un groupe vide est valide.
 
 Le projet ne porte ni tempo ni métrique globaux. Ces propriétés appartiennent à chaque clip.
+
+Les ensembles `mutedInstrumentIds` et `soloedInstrumentIds` sont des données persistantes du projet. Ils référencent les instruments sans modifier les objets partagés du catalogue.
 
 ### Group
 
@@ -184,7 +192,7 @@ Responsabilités et invariants :
 - conserver son bypass et son nombre de lectures dans la sauvegarde ;
 - garantir la cohérence locale de ses notes et changements.
 
-`repeatCount` vaut `1` par défaut. Il accepte un entier strictement positif ou `infinite` et indique le nombre total de lectures du clip.
+`repeatCount` vaut `1` par défaut. Il accepte uniquement un entier strictement positif et indique le nombre total de lectures du clip. Toute branche possède ainsi une durée structurelle finie.
 
 `isBypassed` permet de contourner un clip sans le retirer de l'arbre. Il reste indépendant de `repeatCount`, afin qu'un clip puisse être désactivé puis réactivé sans perdre son nombre de lectures.
 
@@ -236,6 +244,12 @@ Une `Note` sauvegarde uniquement cet identifiant, et non une référence directe
 `Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni patch, ni politique d'allocation des voix, ni état du moteur audio.
 
 Les instruments sont définis avant la compilation et ne sont pas éditables par l'utilisateur. La politique de chargement d'un `InstrumentId` devenu indisponible sera définie avec la persistance.
+
+Le mute et le solo ne sont pas des propriétés de l'`Instrument` partagé. Le `Project` conserve les `InstrumentId` concernés afin d'exprimer une intention de lecture propre au document.
+
+Un instrument est audible lorsqu'il n'est pas muté et qu'aucun solo n'est actif, ou lorsqu'il appartient lui-même à l'ensemble des instruments solo. Si un identifiant est simultanément muté et solo, le mute est prioritaire.
+
+Cette règle s'applique à toutes les notes portant cet `InstrumentId`, quels que soient leur clip, leur répétition ou leur `PlaybackContext`. Elle filtre la production sonore sans modifier les positions ni les durées de la composition.
 
 ### Temps musical
 
@@ -390,6 +404,12 @@ Elle permet de convertir un geste en position ou durée quantifiée avant l'appe
 
 Les sélections et la résolution de grille ne sont pas sauvegardées comme des données musicales. Leur persistance éventuelle relève des préférences ou de la restauration de session.
 
+#### Tête de lecture
+
+La tête de lecture est un état applicatif transitoire exprimé par une `ProjectTime`, distincte des `TimePosition` locales aux clips. Sa position appartient à la timeline globale dérivée du projet et n'est pas sauvegardée dans l'agrégat.
+
+Sa position initiale est le début du projet. Elle peut être déplacée directement par l'utilisateur ou résolue à partir du début global d'un `Group` ou d'un `Clip`.
+
 ### Cas d'usage d'édition
 
 Les cas d'usage d'édition :
@@ -428,86 +448,85 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures, une
 
 ### PlaybackService
 
-`PlaybackService` est le cas d'usage qui interprète l'arbre de composition et produit les commandes nécessaires à sa lecture.
+`PlaybackService` est le cas d'usage qui interprète l'arbre de composition, construit sa timeline dérivée et produit les commandes nécessaires à sa lecture.
 
 #### Interface publique
 
 ```ts
-type PreviewTarget =
-  | { kind: "GROUP"; id: GroupId }
-  | { kind: "CLIP"; id: ClipId }
-  | { kind: "NOTE"; id: NoteId };
-
-type PlaybackCapabilities = {
-  canPlay: boolean;
-  canPreview: boolean;
-};
-
 type StopMode = "GRACEFUL" | "IMMEDIATE";
 
-getPlaybackCapabilities(target: PreviewTarget): PlaybackCapabilities;
-play(itemId?: GroupId | ClipId): PlaybackSessionId;
-preview(target: PreviewTarget): PlaybackSessionId;
+play(): PlaybackSessionId;
+play(itemId: GroupId | ClipId): PlaybackSessionId;
+preview(noteId: NoteId): PlaybackSessionId;
 stop(sessionId: PlaybackSessionId, mode?: StopMode): void;
 stopTransport(mode?: StopMode): void;
 ```
 
-#### Lecture structurelle
+#### Lecture du projet
 
-`play(itemId?)` ouvre toujours une session `PROJECT` :
+Toute opération `play` ouvre une session `PROJECT` et conserve le projet entier comme portée de lecture.
 
-- sans identifiant, la lecture commence au début du `rootGroup` ;
-- `play(rootGroup.id)` est équivalent à `play()` ;
-- avec un identifiant valide, la lecture commence à cet endroit puis poursuit le parcours du projet jusqu'à sa fin.
+`play()` commence à la position actuelle de la tête de lecture. Cette position vaut le début du projet tant qu'elle n'a pas été déplacée.
 
-Dans un groupe `SEQUENTIAL`, chacun de ses enfants est un candidat local au rôle de point d'entrée. Un élément n'est toutefois un point d'entrée global valide que si tous ses groupes ancêtres, de son parent au `rootGroup`, sont `SEQUENTIAL`.
+`play(itemId)` utilise le groupe ou le clip comme repère temporel :
 
-Dans un groupe `SIMULTANEOUS`, aucun enfant ou descendant ne peut être lancé isolément par `play`. Le groupe lui-même peut être un point d'entrée si tous ses propres ancêtres sont `SEQUENTIAL`.
+- le service résout son instant de début dans la timeline globale dérivée ;
+- il place la tête de lecture à cet instant ;
+- il lit le projet depuis cette position, et non le seul sous-arbre ciblé ;
+- `play(rootGroup.id)` replace donc la tête au début et redémarre le projet.
 
-Un identifiant invalide est refusé et n'est jamais remonté implicitement vers un groupe simultané ancêtre.
+Tout `Group` ou `Clip` est un repère valide. Un descendant d'un groupe `SIMULTANEOUS` partage éventuellement son instant de départ avec d'autres branches : celles qui sont actives à la position obtenue participent également à la lecture.
 
-`getPlaybackCapabilities` applique exactement les mêmes règles que `play` :
+L'identifiant transmis à `play` ne devient ni la racine de la session ni une frontière de parcours. Il sert uniquement à déterminer la position de départ.
 
-- `canPlay` vaut toujours `false` pour une `Note` ;
-- pour un `Group` ou un `Clip`, `canPlay` est vrai lorsque tous ses ancêtres sont `SEQUENTIAL` ;
-- `canPreview` est vrai pour les trois types de cible structurellement préécoutables.
+#### Préécoute d'une note
 
-L'interface utilise ces capacités pour ne présenter le bouton `play` que sur les points d'entrée valides.
+`preview(noteId)` auditionne uniquement la note ciblée. Cette opération :
 
-#### Préécoute
+- ne déplace pas la tête de lecture ;
+- ne parcourt aucun groupe ou clip ;
+- ouvre une session `NOTE_PREVIEW` indépendante ;
+- peut coexister avec le transport et avec d'autres préécoutes de notes ;
+- respecte le mute et le solo de son `InstrumentId`, comme dans tout autre contexte.
 
-`preview(target)` borne la lecture à sa cible :
+Il n'existe aucune préécoute bornée de groupe ou de clip. Leur bouton de lecture déclenche toujours une lecture globale avec `play(itemId)`.
 
-| Cible | Portée | Politique de bypass |
-| --- | --- | --- |
-| `GROUP` | Tout le sous-arbre du groupe, sans poursuivre vers son parent ou ses frères | Respecte le bypass des clips descendants |
-| `CLIP` | Le clip seul | Ignore le bypass du clip ciblé |
-| `NOTE` | La note seule | Ignore le bypass de son clip parent |
+#### Timeline dérivée, parcours et durée
 
-Une préécoute de groupe ou de clip est une lecture structurelle et remplace le transport courant. Une préécoute de note est une audition indépendante qui peut s'ajouter au transport actif.
+Les clips et groupes ne sauvegardent aucune position globale. Le service projette récursivement l'arbre vers une timeline d'exécution contenant notamment le début et la fin de chaque élément ainsi que les activations de clips qui peuvent se chevaucher.
 
-Le `playbackMode` d'un groupe ne limite donc jamais la préécoute individuelle de ses descendants.
-
-#### Parcours et durée
-
-Le service parcourt récursivement l'arbre :
+Le calcul suit les règles suivantes :
 
 - un groupe `SEQUENTIAL` transmet la fin de chaque enfant comme départ du suivant ;
 - un groupe `SIMULTANEOUS` transmet le même départ à tous ses enfants et se termine avec le plus long ;
-- un clip bypassé avant son activation est ignoré ;
+- un clip bypassé avant son activation est ignoré et possède une contribution temporelle nulle ;
 - chaque répétition recommence au tick `0` avec les chronologies initiales du clip ;
-- un `repeatCount` infini rend infinie la branche qui le contient ;
-- dans un groupe séquentiel, les éléments placés après une branche infinie ne sont jamais atteints par progression automatique.
+- `repeatCount` étant fini, chaque élément possède une durée et une position globale finies.
 
-Pour une portion finie, le calcul peut être décrit par :
+Le calcul structurel peut être décrit par :
 
 ```text
 schedule(item, startTime) -> endTime
 ```
 
-La planification réelle reste glissante et utilise une fenêtre d'anticipation bornée, car l'arbre peut contenir une répétition infinie.
+La timeline aplatie n'est pas une simple liste séquentielle : elle représente des intervalles et des activations susceptibles de se chevaucher. La planification peut rester glissante et bornée pour limiter le volume de commandes préparées.
 
-Chaque clip convertit indépendamment sa chronologie en ticks vers le temps réel en intégrant ses propres `TempoSection`.
+Chaque clip convertit indépendamment ses ticks vers le temps réel en intégrant ses propres `TempoSection`.
+
+Lorsqu'une lecture commence à une position où plusieurs branches sont actives, le service doit reprendre chacune à sa position locale correspondante. La politique applicable aux notes ayant commencé avant cette position reste une question ouverte.
+
+#### Audibilité des instruments
+
+Le `PlaybackService` consulte les ensembles persistants `mutedInstrumentIds` et `soloedInstrumentIds` du projet avant de produire les commandes audio.
+
+Le mute et le solo :
+
+- s'appliquent par `InstrumentId`, indépendamment des clips et contextes ;
+- ne changent ni le parcours, ni les positions, ni les durées de la timeline ;
+- empêchent seulement la production des commandes correspondant aux notes inaudibles ;
+- s'appliquent également à `preview(noteId)`.
+
+Le bypass reste distinct : il cible un clip et modifie sa contribution à la structure temporelle.
 
 #### Modification du bypass pendant la lecture
 
@@ -527,7 +546,7 @@ La lecture utilise trois niveaux d'identité opaques et transitoires :
 
 | Identité | Portée |
 | --- | --- |
-| `PlaybackSessionId` | Une opération globale de lecture ou de préécoute |
+| `PlaybackSessionId` | Une opération globale de lecture ou une préécoute de note |
 | `PlaybackContextId` | Une unité audio isolée appartenant à une session |
 | `NoteOccurrenceId` | Une attaque précise dans un contexte |
 
@@ -545,23 +564,21 @@ Les identifiants persistants `ClipId` et `NoteId` restent connus du domaine et d
 #### Sessions et concurrence
 
 ```ts
-type PlaybackSessionKind =
-  | "PROJECT"
-  | "GROUP_PREVIEW"
-  | "CLIP_PREVIEW"
-  | "NOTE_PREVIEW";
+type PlaybackSessionKind = "PROJECT" | "NOTE_PREVIEW";
 ```
 
 Les sessions se répartissent en deux catégories :
 
-| Catégorie | Kinds | Règle de concurrence |
+| Catégorie | Kind | Règle de concurrence |
 | --- | --- | --- |
-| Transport | `PROJECT`, `GROUP_PREVIEW`, `CLIP_PREVIEW` | Une seule session peut planifier de nouvelles commandes |
+| Transport | `PROJECT` | Une seule session peut planifier de nouvelles commandes |
 | Audition | `NOTE_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
 
 Le service conserve un `activeTransportSessionId` optionnel et un ensemble de `notePreviewSessionIds`.
 
-Démarrer un nouveau transport retire immédiatement ce rôle au précédent et annule ses attaques futures. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas une seconde session de transport active.
+Démarrer une nouvelle lecture avec `play` retire immédiatement son rôle au transport précédent et annule ses attaques futures. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif.
+
+`preview(noteId)` ne remplace jamais le transport.
 
 `stop(sessionId, mode)` cible exactement la session indiquée. `stopTransport(mode)` cible uniquement le transport actif et n'affecte aucune préécoute de note.
 
@@ -796,11 +813,20 @@ Quelques relations structurantes :
 - `Project.rootGroup` possède la racine de l'arbre sauvegardé ;
 - `Group.items` ordonne des `Clip` ou d'autres `Group` ;
 - `Note.instrumentId` référence un instrument sans importer sa définition technique ;
-- `PlaybackService` transforme la composition en commandes pour `AudioEngine` ;
+- `Project.mutedInstrumentIds` et `Project.soloedInstrumentIds` conservent les intentions d'audibilité par instrument ;
+- `PlaybackService` dérive la timeline du graphe puis transforme la portion lue en commandes pour `AudioEngine` ;
 - `InstrumentCatalog` expose les instruments disponibles à l'application ;
 - `StaticInstrumentCatalog` implémente ce port et fournit les définitions au moteur concret ;
 - `PlaybackSession` possède des `PlaybackContext` ;
 - chaque contexte possède au plus une `InstrumentInstance` par `InstrumentId`.
+
+## Questions ouvertes
+
+- Lorsqu'une lecture commence au milieu d'une note déjà engagée dans la timeline, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
+- Lorsqu'un mute ou un solo change pendant que des occurrences de l'instrument concerné sont actives ou déjà planifiées, faut-il les relâcher, les laisser se terminer ou replanifier la fenêtre courante ?
+- Que devient exactement la tête de lecture après une fin naturelle, un `stop` gracieux ou un `stop` immédiat ?
+- Si la structure ou les tempos sont modifiés alors que la tête est positionnée, faut-il préserver son temps global, son repère structurel ou sa position locale dans un clip ?
+- Déplacer la tête pendant un transport actif doit-il provoquer immédiatement une nouvelle session `PROJECT`, ou seulement fixer le point de départ du prochain appel à `play()` ?
 
 ## Arborescence cible
 
@@ -868,6 +894,6 @@ Les objets centraux restent à la racine de `domain/`. Les concepts temporels so
 
 `ClipContentSelection`, `GraphContentSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
 
-`PreviewTarget` et `PlaybackCapabilities` appartiennent à l'interface de `PlaybackService`. `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
+`ProjectTime` et l'état de la tête de lecture appartiennent à l'application. `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
 
 Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou des comportements indépendants.
