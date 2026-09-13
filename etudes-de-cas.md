@@ -449,9 +449,9 @@ Le `PlaybackService` recalcule le transport depuis cette borne sans ouvrir une n
 replaceScheduledCommands(transportSessionId, 5, replacementCommands);
 ```
 
-Le moteur retire les anciennes commandes non exécutées dont `at >= 5` et installe atomiquement `replacementCommands`. Dans cet exemple, le déplacement modifie le début de la note : l'occurrence existante reçoit donc un `NOTE_OFF` à `5 s` et, puisque la note couvre toujours la tête de lecture dans son nouvel état, une nouvelle occurrence reçoit un `NOTE_ON` à la même borne. Le déplacement du marqueur est intégré au même recalcul.
+Le moteur retire les anciennes commandes non exécutées dont `at >= 5` et installe atomiquement `replacementCommands`. Dans cet exemple, l'ancien et le nouveau début de la note restent tous deux avant la tête de lecture, tandis que sa fin reste après : l'occurrence déjà audible est donc conservée et seul son `NOTE_OFF` est replanifié. Le déplacement du marqueur est intégré au même recalcul.
 
-Si le geste avait seulement retardé la fin de la note, l'occurrence déjà audible aurait été conservée et seul son `NOTE_OFF` aurait été replanifié. Avancer sa fin tout en la laissant après la tête produit le même comportement ; si sa nouvelle fin atteint ou précède la tête, l'occurrence est relâchée à la borne de replanification.
+Si le nouveau début passait après la tête, l'occurrence recevrait un `NOTE_OFF` à `5 s` et sa future attaque serait replanifiée. À l'inverse, une note auparavant inactive qui couvrirait désormais la tête recevrait un `NOTE_ON` à cette borne. Une modification de hauteur, d'instrument ou de vélocité imposerait enfin une relâche puis une réattaque lorsque la note reste couverte.
 
 Le `PlaybackSessionId`, l'origine temporelle et la position du transport ne changent pas. Arrêter le contexte ou la session ne serait pas équivalent : cela terminerait un périmètre d'exécution au lieu d'en remplacer seulement la planification future.
 
@@ -459,8 +459,8 @@ Le `PlaybackSessionId`, l'origine temporelle et la position du transport ne chan
 
 ```mermaid
 flowchart LR
-    Avant["Avant 5 s · commandes exécutées"] --> Borne["5 s · NOTE_OFF puis NOTE_ON"]
-    Borne --> Apres["Après 5 s · planification remplacée"]
+    Avant["Avant 5 s · occurrence audible"] --> Borne["5 s · occurrence conservée"]
+    Borne --> Apres["Après 5 s · NOTE_OFF replanifié"]
 ```
 
 ## Consequences pour le PlaybackService

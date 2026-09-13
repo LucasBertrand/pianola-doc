@@ -558,11 +558,16 @@ Appliquer le projet transitoire ne change pas le contenu de `effectiveProject` e
 
 Une transformation portant simultanément sur des notes et des changements est publiée en une seule fois. Le service ne doit jamais observer un état intermédiaire dans lequel une partie seulement du geste aurait été appliquée.
 
-La réconciliation des occurrences déjà audibles s'effectue à la borne de replanification :
+La réconciliation compare d'abord la couverture de la tête de lecture par la note avant et après la modification :
 
-- une occurrence dont les propriétés d'attaque restent inchangées est conservée ; si seule la fin de la note est avancée ou retardée tout en restant après la tête de lecture, son `NOTE_OFF` est simplement replanifié ;
-- une note supprimée, ou dont la nouvelle fin atteint ou précède la tête de lecture, reçoit un `NOTE_OFF` à la borne de replanification ;
-- une modification du début, de la hauteur, de l'instrument, de la vélocité ou de toute autre donnée déterminant l'attaque relâche l'occurrence existante, puis crée une nouvelle occurrence si la note modifiée couvre encore la tête de lecture.
+| Avant | Après | Comportement |
+| --- | --- | --- |
+| L'occurrence est audible | La note couvre toujours la tête | Conserver l'occurrence et replanifier son `NOTE_OFF` |
+| L'occurrence est audible | La note ne couvre plus la tête | Produire un `NOTE_OFF` à la borne de replanification |
+| La note n'est pas audible | La note couvre désormais la tête | Créer une occurrence et produire un `NOTE_ON` à la borne |
+| La note n'est pas audible | La note ne couvre toujours pas la tête | Replanifier uniquement ses éventuelles commandes futures |
+
+Déplacer le début d'une note sans lui faire franchir la tête de lecture ne redéclenche donc pas une occurrence déjà audible. Si la note reste couverte mais que sa hauteur, son `instrumentId`, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence existante est toutefois relâchée puis remplacée par une nouvelle occurrence.
 
 Cette replanification est une conséquence applicative du geste d'édition, pas une nouvelle commande publique de la présentation.
 
