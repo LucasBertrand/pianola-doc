@@ -50,7 +50,7 @@ Le premier périmètre comprend :
 - une composition structurée en groupes et clips imbriqués ;
 - des groupes lus en séquence ou simultanément ;
 - des notes associées individuellement à un instrument ;
-- des chronologies locales de tempo, de métrique, de contexte de hauteurs et de tonalité ;
+- des chronologies locales de tempo, de métrique, de tonalité et d'harmonie ;
 - l'édition dans un piano roll ;
 - la lecture du projet depuis la tête de lecture ou depuis la position dérivée d'un groupe ou d'un clip ;
 - la préécoute ponctuelle d'une note ;
@@ -64,7 +64,7 @@ Il ne comprend pas :
 - la création, l'import ou l'édition d'instruments par l'utilisateur ;
 - un état audio transitoire sauvegardé dans le projet.
 
-Les `Note` sont donc le seul contenu musical des clips. Les changements de tempo, de métrique, de contexte de hauteurs et de tonalité sont des données structurelles, et non des automations.
+Les `Note` sont donc le seul contenu musical des clips. Les changements de tempo, de métrique, de tonalité et d'harmonie sont des données structurelles, et non des automations.
 
 ---
 
@@ -85,7 +85,7 @@ flowchart TD
     Group --> NestedClip["Clip"]
 ```
 
-Chaque groupe ordonne ses enfants et définit leur mode de lecture. Chaque clip possède ses propres chronologies locales de tempo, de métrique, de contexte de hauteurs et de tonalité, ainsi que ses notes.
+Chaque groupe ordonne ses enfants et définit leur mode de lecture. Chaque clip possède ses propres chronologies locales de tempo, de métrique, de tonalité et d'harmonie, ainsi que ses notes.
 
 Les clips n'ont pas de position dans une timeline globale. Leur départ est dérivé de leur place dans l'arbre et du mode de lecture de leurs groupes ancêtres.
 
@@ -100,7 +100,7 @@ Les clips n'ont pas de position dans une timeline globale. Leur départ est dér
 | `Instrument` | Entity de référence | Décrire publiquement un instrument intégré |
 | `TempoChange` | Entity interne | Placer un tempo sur la chronologie d'un clip |
 | `MeterChange` | Entity interne | Placer une métrique sur la chronologie d'un clip |
-| `PitchContextChange` | Entity interne | Placer un contexte de hauteurs sur la chronologie d'un clip |
+| `HarmonyChange` | Entity interne | Placer un accord ou une gamme sur la chronologie d'un clip |
 | `KeyChange` | Entity interne | Placer une tonalité sur la chronologie d'un clip |
 
 ### Project
@@ -183,15 +183,15 @@ Attributs possibles :
 - `notes` ;
 - `tempoChanges` ;
 - `meterChanges` ;
-- `pitchContextChanges` ;
-- `keyChanges`.
+- `keyChanges` ;
+- `harmonyChanges`.
 
 Responsabilités et invariants :
 
 - définir sa durée canonique en ticks ;
 - contenir des notes positionnées relativement à son début ;
 - contenir et ordonner ses quatre chronologies locales ;
-- fournir le tempo, la métrique, le contexte de hauteurs et la tonalité actifs à une position ;
+- fournir le tempo, la métrique, la tonalité et l'harmonie actifs à une position ;
 - conserver son bypass et son nombre de lectures dans la sauvegarde ;
 - garantir la cohérence locale de ses notes et changements.
 
@@ -222,10 +222,12 @@ Invariants :
 - la note se termine au plus tard à la fin du clip ;
 - la hauteur et la vélocité restent dans leurs plages valides ;
 - exactement un `InstrumentId` est présent ;
-- l'appartenance au `PitchContext` actif est calculée à partir de la position de début et n'est pas sauvegardée ;
-- une note extérieure au contexte de hauteurs actif reste valide.
+- sa relation à la `Key` et à l'`Harmony` actives est dérivée et n'est pas sauvegardée ;
+- une note extérieure à la tonalité, à l'accord ou à la gamme active reste valide.
 
 Modifier le tempo ou la métrique ne déplace pas la note : sa position et sa durée restent exprimées dans les ticks canoniques du clip.
+
+Lorsqu'une note traverse un `KeyChange` ou un `HarmonyChange`, son `TimeRange` est analysé par portions délimitées par ces changements ainsi que par le début et la fin de la note. Chaque portion utilise la tonalité et l'harmonie alors actives. Cette segmentation est une vue dérivée : elle ne découpe ni ne modifie la `Note` persistante.
 
 Les événements instantanés `NoteOn` et `NoteOff` ne sont pas des objets persistants du domaine. Ils sont produits par le service de lecture.
 
@@ -268,9 +270,14 @@ Les battements, mesures et secondes sont des représentations dérivées. La gri
 | `Tempo` | `bpm` | Valeur musicalement exploitable |
 | `Meter` | `beatsPerMeasure`, `beatUnit` | Permet de calculer les frontières de mesure |
 | `Pitch` | `midiNumber` | Le nom et l'octave peuvent être dérivés |
-| `PitchContext` | `label`, `pitchClasses` | Ensemble descriptif de classes de hauteurs |
 | `Tonic` | `letter`, `accidental` | Centre tonal orthographié sans octave |
 | `Key` | `tonic`, `mode` | Tonalité active |
+| `ChordRoot` | `letter`, `accidental` | Fondamentale orthographiée d'un accord |
+| `ScaleRoot` | `letter`, `accidental` | Tonique orthographiée d'une gamme |
+| `TonalDegree` | `value`, `accidental` | Degré éventuellement altéré dans la tonalité active |
+| `Chord` | `reference`, `typeId` | Accord défini par une fondamentale ou un degré |
+| `Scale` | `reference`, `typeId` | Gamme définie par une tonique ou un degré |
+| `Harmony` | `kind`, `chord` ou `scale` | Matériau harmonique actif, accord ou gamme |
 
 Avec une résolution de 960 ticks par noire :
 
@@ -280,11 +287,33 @@ ticksPerMeasure = beatsPerMeasure * (4 / beatUnit) * 960
 
 `TimeRange` facilite notamment la détection des chevauchements ainsi que les opérations de déplacement et de redimensionnement.
 
-`PitchContext` peut représenter une gamme, un mode, un accord ou un ensemble arbitraire de classes de hauteurs. Il permet à l'éditeur de mettre en évidence les hauteurs intérieures et extérieures, sans valider ni refuser les notes.
-
 `Tonic` conserve l'orthographe du centre tonal sous la forme d'une lettre et d'une altération, sans octave. Sa classe de hauteur chromatique est dérivée et n'est pas sauvegardée séparément : `C_SHARP` et `D_FLAT` sont enharmoniquement équivalents, mais restent deux valeurs distinctes. `Key` associe une `Tonic` à un mode tonal. Elle fournit un contexte d'analyse et de présentation sans déplacer ni invalider les notes.
 
-La chronologie de tonalité est indépendante des chronologies de tempo, de métrique et de contexte de hauteurs. Aucun changement de l'une ne crée, ne déplace ou ne modifie automatiquement un changement d'une autre.
+`Harmony` exprime le matériau harmonique actif. Ses variantes `CHORD` et `SCALE` sont exclusives : une section contient soit un `Chord`, soit une `Scale`, jamais les deux simultanément.
+
+```ts
+type Chord =
+  | { reference: "ROOT"; root: ChordRoot; typeId: ChordTypeId }
+  | { reference: "DEGREE"; degree: TonalDegree; typeId: ChordTypeId };
+
+type Scale =
+  | { reference: "ROOT"; root: ScaleRoot; typeId: ScaleTypeId }
+  | { reference: "DEGREE"; degree: TonalDegree; typeId: ScaleTypeId };
+
+type Harmony =
+  | { kind: "CHORD"; chord: Chord }
+  | { kind: "SCALE"; scale: Scale };
+```
+
+Une référence `ROOT` sauvegarde une fondamentale ou une tonique orthographiée et reste inchangée lors d'un `KeyChange`. Une référence `DEGREE` sauvegarde seulement un `TonalDegree` ; sa hauteur effective est résolue depuis la `Key` active et évolue donc avec elle. La hauteur résolue n'est jamais sauvegardée parallèlement au degré.
+
+Par exemple, un `Chord` défini par `DEGREE II` et `MINOR` est résolu en `Dm` sous une `Key` de do majeur, puis en `Gm` si la tonalité active devient fa majeur. L'intention persistante reste le deuxième degré mineur.
+
+Le `typeId` reste explicite dans les deux représentations. Un degré ne détermine donc pas automatiquement la qualité d'un accord ni le type d'une gamme. `ScaleTypeId` peut notamment désigner des gammes diatoniques modales, pentatoniques ou d'autres collections prises en charge.
+
+Une `Harmony` fondée sur `DEGREE` exige une `Key` active. Les opérations sur les deux chronologies doivent préserver cette condition. Si un `KeyChange` et un `HarmonyChange` se trouvent au même tick, leurs nouvelles valeurs s'appliquent ensemble à partir de ce tick.
+
+La `Key` et l'`Harmony` restent distinctes des chronologies de tempo et de métrique. Une `Harmony` de variante `CHORD` peut permettre de dériver des gammes compatibles, tandis qu'une variante `SCALE` peut permettre de dériver des accords compatibles ; ces propositions ne constituent jamais une seconde `Harmony` active et ne sont pas sauvegardées tant que l'utilisateur ne remplace pas explicitement la valeur courante.
 
 ### Chronologies du clip
 
@@ -294,8 +323,8 @@ Un clip possède quatre collections ordonnées de changements :
 | --- | --- | --- | --- |
 | `TempoChange` | `Tempo` | Obligatoire | N'importe quel tick du clip |
 | `MeterChange` | `Meter` | Obligatoire | Frontière de mesure |
-| `PitchContextChange` | `PitchContext` | Facultatif | N'importe quel tick du clip |
 | `KeyChange` | `Key` | Facultatif | N'importe quel tick du clip |
+| `HarmonyChange` | `Harmony` | Facultatif | N'importe quel tick du clip |
 
 Chaque changement possède une identité, une position et sa nouvelle valeur. Les règles communes sont :
 
@@ -305,13 +334,13 @@ Chaque changement possède une identité, une position et sa nouvelle valeur. Le
 - un changement ferme la section précédente et commence la suivante ;
 - un changement reste compris dans les bornes du clip.
 
-Avant le premier `PitchContextChange`, aucun contexte de hauteurs n'est actif. Avant le premier `KeyChange`, aucune tonalité n'est active. Un changement de chaque type peut exister au même tick.
+Avant le premier `KeyChange`, aucune tonalité n'est active. Avant le premier `HarmonyChange`, aucune harmonie n'est active. Un changement de chaque type peut exister au même tick. Un `HarmonyChange` utilisant `DEGREE` ne peut toutefois exister qu'à une position où une `Key` est active.
 
 Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
 
 ### Sections dérivées
 
-`TempoSection`, `MeterSection`, `PitchContextSection` et `KeySection` sont des vues dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du clip.
+`TempoSection`, `MeterSection`, `KeySection` et `HarmonySection` sont des vues dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du clip.
 
 Elles ne sont pas sauvegardées comme des objets autonomes.
 
@@ -319,8 +348,8 @@ Elles ne sont pas sauvegardées comme des objets autonomes.
 | --- | --- | --- |
 | `TempoSection` | `start`, `end`, `tempo` | Conversion des ticks en temps réel |
 | `MeterSection` | `start`, `end`, `meter`, découpage en mesures | Repères métriques et frontières de mesure |
-| `PitchContextSection` | `start`, `end`, `context` | Recherche du contexte actif |
 | `KeySection` | `start`, `end`, `key` | Recherche de la tonalité active |
+| `HarmonySection` | `start`, `end`, `harmony` | Recherche de l'accord ou de la gamme active |
 
 Pour une `MeterSection` :
 
@@ -330,6 +359,8 @@ trailingMeasureDuration = sectionDuration % ticksPerMeasure
 ```
 
 Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Le changement suivant constitue alors une frontière explicite et commence une nouvelle mesure.
+
+Une `HarmonySection` dont le `Chord` ou la `Scale` utilise `DEGREE` peut produire plusieurs résolutions successives lorsqu'elle traverse des `KeySection`. Pour l'analyse d'une note, les intervalles pertinents sont donc dérivés de l'union des frontières de `KeySection`, d'`HarmonySection` et du `TimeRange` de la note.
 
 ### Frontière de l'agrégat
 
@@ -369,11 +400,8 @@ type ClipContentRef =
   | { kind: "NOTE"; noteId: NoteId }
   | { kind: "TEMPO_CHANGE"; tempoChangeId: TempoChangeId }
   | { kind: "METER_CHANGE"; meterChangeId: MeterChangeId }
-  | {
-      kind: "PITCH_CONTEXT_CHANGE";
-      pitchContextChangeId: PitchContextChangeId;
-    }
-  | { kind: "KEY_CHANGE"; keyChangeId: KeyChangeId };
+  | { kind: "KEY_CHANGE"; keyChangeId: KeyChangeId }
+  | { kind: "HARMONY_CHANGE"; harmonyChangeId: HarmonyChangeId };
 
 interface ClipContentSelection {
   items: readonly ClipContentRef[];
@@ -495,7 +523,7 @@ interface MoveClipContentCommand {
 }
 ```
 
-Les références peuvent désigner simultanément des notes, des changements de tempo, de métrique, de contexte de hauteurs et de tonalité. Le cas d'usage résout chaque référence, applique le même déplacement à partir du `project` et ne publie qu'un unique `transientProject` complet.
+Les références peuvent désigner simultanément des notes, des changements de tempo, de métrique, de tonalité et d'harmonie. Le cas d'usage résout chaque référence, applique le même déplacement à partir du `project` et ne publie qu'un unique `transientProject` complet.
 
 La transformation est atomique : si un élément ne peut pas atteindre la position proposée sans violer un invariant, aucun résultat partiel n'est publié. La présentation peut conserver le dernier projet transitoire valide et représenter séparément la position brute ou invalide du geste.
 
@@ -926,7 +954,8 @@ Quelques relations structurantes :
 
 ## Questions ouvertes
 
-- Une tonalité active doit-elle pouvoir être interrompue sans être remplacée, et faut-il alors qu'un `KeyChange` porte explicitement un état sans tonalité ?
+- Une tonalité active doit-elle pouvoir être interrompue sans être remplacée, et faut-il alors qu'un `KeyChange` porte explicitement un état sans tonalité ? Une telle interruption devra être interdite sur tout intervalle couvert par une `Harmony` utilisant `DEGREE`.
+- Quels `ChordTypeId` et `ScaleTypeId` appartiennent au premier périmètre, et selon quelles règles la `Key` active classe-t-elle les accords ou gammes compatibles proposés à l'utilisateur ?
 - Quelle politique appliquer lorsqu'un instrument `smplr` requis n'est pas encore chargé : attendre tous les instruments nécessaires avant de démarrer le transport, ou les précharger dès l'ouverture et chaque modification du projet ?
 - Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
 - Lorsqu'une lecture commence au milieu d'une note déjà engagée dans la timeline, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
@@ -958,9 +987,7 @@ src/
 │   └── pitch/
 │       ├── Pitch.ts
 │       ├── Key.ts
-│       ├── PitchContext.ts
-│       ├── PitchContextChange.ts
-│       └── PitchContextSection.ts
+│       └── Harmony.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
@@ -988,11 +1015,11 @@ src/
     └── stores/
 ```
 
-`Tempo.ts` déclare ensemble `Tempo`, `TempoChange` et `TempoSection`. `Meter.ts` déclare `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Tonic`, `Key`, `KeyChange` et `KeySection`. Cette colocalisation est uniquement modulaire : les valeurs, les changements persistants et les sections dérivées restent des concepts distincts. Les modules `PitchContext.ts`, `PitchContextChange.ts` et `PitchContextSection.ts` restent séparés jusqu'à leur étude dédiée.
+`Tempo.ts` déclare ensemble `Tempo`, `TempoChange` et `TempoSection`. `Meter.ts` déclare `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Tonic`, `Key`, `KeyChange` et `KeySection`. `Harmony.ts` déclare `ChordRoot`, `ScaleRoot`, `TonalDegree`, `Chord`, `Scale`, `Harmony`, `HarmonyChange` et `HarmonySection`. Cette colocalisation est uniquement modulaire : les valeurs, les changements persistants et les sections dérivées restent des concepts distincts.
 
 Les objets centraux restent à la racine de `domain/`. Les concepts temporels sont regroupés dans `time/` et les concepts de hauteurs dans `pitch/`. Ces sous-ensembles restent indépendants de l'agrégat : `Clip` peut connaître `MeterChange`, mais `MeterChange` ne connaît pas `Clip`.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`. `Tonic` reste un value object distinct, déclaré dans `domain/pitch/Key.ts` afin de rester colocalisé avec son unique consommateur sans être réduit à une classe de hauteur numérique.
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`. `Tonic` reste un value object distinct déclaré dans `domain/pitch/Key.ts`. `ChordRoot` et `ScaleRoot` appliquent dans `domain/pitch/Harmony.ts` la même règle d'orthographe : leur classe de hauteur chromatique est dérivée afin qu'une lettre et une altération ne puissent pas contredire une valeur numérique sauvegardée.
 
 `ClipContentSelection`, `GraphContentSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
 
