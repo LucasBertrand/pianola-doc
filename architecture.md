@@ -558,7 +558,13 @@ Appliquer le projet transitoire ne change pas le contenu de `effectiveProject` e
 
 Une transformation portant simultanément sur des notes et des changements est publiée en une seule fois. Le service ne doit jamais observer un état intermédiaire dans lequel une partie seulement du geste aurait été appliquée.
 
-La politique applicable aux occurrences déjà audibles lorsqu'une modification touche leur note reste distincte de cette sélection du projet effectif.
+La réconciliation des occurrences déjà audibles s'effectue à la borne de replanification :
+
+- une note inchangée conserve son occurrence et son éventuel `NOTE_OFF` futur est replanifié ;
+- une note supprimée ou qui ne couvre plus la tête de lecture reçoit un `NOTE_OFF` ;
+- une note modifiée est relâchée, puis réattaquée avec une nouvelle occurrence si sa nouvelle étendue couvre encore la tête de lecture.
+
+Cette replanification est une conséquence applicative du geste d'édition, pas une nouvelle commande publique de la présentation.
 
 #### Interface publique
 
@@ -755,6 +761,13 @@ interface AudioEngine {
   ): void;
 
   schedule(commands: readonly AudioCommand[]): void;
+
+  replaceScheduledCommands(
+    sessionId: PlaybackSessionId,
+    from: number,
+    commands: readonly AudioCommand[]
+  ): void;
+
   completeContext(contextId: PlaybackContextId): void;
   stopContext(contextId: PlaybackContextId, mode: StopMode): void;
   stopSession(sessionId: PlaybackSessionId, mode: StopMode): void;
@@ -765,7 +778,11 @@ interface AudioEngine {
 
 Cette commande reste autonome lorsqu'elle est mise en file, triée ou transmise à un processeur audio. Le moteur retrouve sa session en remontant depuis le contexte ; répéter le `PlaybackSessionId` dans chaque commande serait inutile.
 
-`completeContext` signale la fin structurelle et autorise le drainage naturel. `stopContext` et `stopSession` demandent un arrêt selon le `StopMode` indiqué.
+`replaceScheduledCommands` retire, pour la session ciblée, toutes les commandes non encore exécutées dont `at >= from`, puis installe atomiquement la nouvelle séquence. `from` et les `AudioCommand.at` sont exprimés en secondes relativement au début de la session. Son identité, son origine temporelle et la continuité du transport restent inchangées.
+
+Cette opération ne relâche aucune occurrence active et ne détruit aucun contexte par elle-même. Le `PlaybackService` exprime ces effets par les nouvelles commandes : il peut notamment programmer à la borne un `NOTE_OFF`, puis un `NOTE_ON` doté d'un nouveau `NoteOccurrenceId`. Les nouveaux contextes nécessaires sont ouverts avant le remplacement ; ceux devenus inutiles sont ensuite achevés ou arrêtés selon leur cycle de vie.
+
+`completeContext` signale la fin structurelle et autorise le drainage naturel. `stopContext` et `stopSession` demandent un arrêt selon le `StopMode` indiqué. Ces opérations ne servent pas à replanifier un transport qui continue.
 
 `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais ce port.
 
@@ -920,6 +937,7 @@ Il assure :
 - la résolution des instruments auprès de `StaticInstrumentCatalog` ;
 - la création d'une instance par couple `(PlaybackContext, InstrumentId)` ;
 - la planification des commandes sur l'horloge de l'`AudioContext` ;
+- le remplacement atomique des commandes futures d'une session ;
 - l'association de chaque `NoteOccurrenceId` au contrôle d'arrêt de sa voix ;
 - l'annulation des commandes d'un contexte ou d'une session ;
 - le drainage puis la destruction des contextes ;
@@ -973,8 +991,6 @@ Quelques relations structurantes :
 - Quelle politique appliquer lorsqu'un instrument `smplr` requis n'est pas encore chargé : attendre tous les instruments nécessaires avant de démarrer le transport, ou les précharger dès l'ouverture et chaque modification du projet ?
 - Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
 - Lorsqu'une lecture commence au milieu d'une note déjà engagée dans la timeline, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
-- Lorsqu'une modification transitoire déplace, transpose, raccourcit ou supprime une note dont une occurrence est déjà audible, faut-il relâcher l'occurrence, la remplacer immédiatement ou la laisser se terminer ?
-- Quel mécanisme de replanification ciblée doit permettre au transport actif d'appliquer les changements de `effectiveProject` sans remplacer inutilement toute la session ni accumuler des contextes en drainage ?
 - Lorsqu'un mute ou un solo change pendant que des occurrences de l'instrument concerné sont actives ou déjà planifiées, faut-il les relâcher, les laisser se terminer ou replanifier la fenêtre courante ?
 - Que devient exactement la tête de lecture après une fin naturelle, un `stop` gracieux ou un `stop` immédiat ?
 - Si la structure ou les tempos sont modifiés alors que la tête est positionnée, faut-il préserver son temps global, son repère structurel ou sa position locale dans un clip ?

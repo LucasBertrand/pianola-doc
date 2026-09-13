@@ -439,6 +439,28 @@ block-beta
     ca["C majeur · accord C majeur"] db["C majeur · D dorien"] cc["F majeur · accord C7"]
     e1["E4 · tierce"] e2["E4 · degré II"] e3["E4 · tierce"]
 ```
+## Cas 14 - Replanification du projet transitoire
+
+Un transport est actif et sa session a commencé à `0 s`. À `5 s`, un même geste déplace une note déjà audible et un marqueur situé plus loin dans le clip. Le nouveau `transientProject` devient immédiatement l'`effectiveProject`.
+
+Le `PlaybackService` recalcule le transport depuis cette borne sans ouvrir une nouvelle session, puis demande :
+
+```ts
+replaceScheduledCommands(transportSessionId, 5, replacementCommands);
+```
+
+Le moteur retire les anciennes commandes non exécutées dont `at >= 5` et installe atomiquement `replacementCommands`. La note modifiée reçoit un `NOTE_OFF` à `5 s` ; puisqu'elle couvre toujours la tête de lecture dans son nouvel état, une nouvelle occurrence reçoit un `NOTE_ON` à la même borne. Le déplacement du marqueur est intégré au même recalcul.
+
+Le `PlaybackSessionId`, l'origine temporelle et la position du transport ne changent pas. Arrêter le contexte ou la session ne serait pas équivalent : cela terminerait un périmètre d'exécution au lieu d'en remplacer seulement la planification future.
+
+### Chronologie dérivée
+
+```mermaid
+flowchart LR
+    Avant["Avant 5 s · commandes exécutées"] --> Borne["5 s · NOTE_OFF puis NOTE_ON"]
+    Borne --> Apres["Après 5 s · planification remplacée"]
+```
+
 ## Consequences pour le PlaybackService
 
 Le calcul structurel peut etre interprete par une operation recursive :
@@ -469,5 +491,6 @@ La projection temporelle associe ensuite chaque element a un intervalle global d
 - chaque activation de clip et chaque preecoute de note recoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistree qu'une fois, a l'ouverture du contexte ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
+- une modification du projet transitoire remplace atomiquement les commandes futures du transport actif, sans changer sa session ni son origine temporelle ;
 - la fin structurelle permet au parcours de continuer pendant que l'infrastructure conserve eventuellement le contexte en `DRAINING` ;
 - aucune position globale ni aucun identifiant d'execution n'est ajoute au modele sauvegarde.
