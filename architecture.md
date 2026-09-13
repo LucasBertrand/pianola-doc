@@ -565,9 +565,13 @@ La politique applicable aux occurrences déjà audibles lorsqu'une modification 
 ```ts
 type StopMode = "GRACEFUL" | "IMMEDIATE";
 
+interface NotePreviewHandle {
+  release(): void;
+}
+
 play(): void;
 play(itemId: GroupId | ClipId): void;
-preview(noteId: NoteId): void;
+preview(noteId: NoteId): NotePreviewHandle;
 stop(mode?: StopMode): void;
 ```
 
@@ -590,13 +594,21 @@ L'identifiant transmis à `play` ne devient ni la racine de la session ni une fr
 
 #### Préécoute d'une note
 
-`preview(noteId)` auditionne uniquement la note ciblée. Cette opération :
+`preview(noteId)` déclenche immédiatement une audition soutenue de la note ciblée et retourne un `NotePreviewHandle`. La durée persistante de la note ne détermine pas celle de cette audition : celle-ci se poursuit jusqu'au relâchement du handle ou jusqu'à une durée maximale de sécurité.
+
+Cette opération :
 
 - ne déplace pas la tête de lecture ;
 - ne parcourt aucun groupe ou clip ;
-- ouvre une session `NOTE_PREVIEW` indépendante ;
+- ouvre en interne une session `NOTE_PREVIEW` indépendante ;
 - peut coexister avec le transport et avec d'autres préécoutes de notes ;
 - respecte le mute et le solo de son `InstrumentId`, comme dans tout autre contexte.
+
+`NotePreviewHandle.release()` relâche uniquement l'occurrence créée par l'appel correspondant. L'opération est idempotente : elle reste sans effet si cette préécoute a déjà été relâchée ou arrêtée par sa durée maximale. La release et le tail peuvent ensuite se terminer naturellement.
+
+Pour une touche du piano roll, la présentation appelle `preview(noteId)` au début du geste, conserve le handle, puis appelle `release()` à sa fin, notamment lors de `pointerup` ou `pointercancel`. Elle ne reçoit aucun identifiant de session ou de contexte audio.
+
+Chaque appel possède son propre handle. Plusieurs gestes peuvent donc auditionner simultanément des notes différentes ou plusieurs occurrences de la même note sans que le relâchement de l'une affecte les autres.
 
 Il n'existe aucune préécoute bornée de groupe ou de clip. Leur bouton de lecture déclenche toujours une lecture globale avec `play(itemId)`.
 
@@ -670,6 +682,8 @@ Les répétitions d'une même activation de clip réutilisent le contexte et ses
 
 Les identifiants persistants `ClipId` et `NoteId` restent connus du domaine et du service. Ils ne sont pas transmis au moteur audio.
 
+Ces identités d'exécution appartiennent au langage interne du port `AudioEngine` et ne sont jamais exposées à la présentation. Le `NotePreviewHandle` public n'est pas une identité audio : il expose uniquement la capacité de relâcher l'audition qui l'a créé.
+
 #### Sessions et concurrence
 
 ```ts
@@ -683,11 +697,11 @@ Les sessions se répartissent en deux catégories :
 | Transport | `PROJECT` | Une seule session peut planifier de nouvelles commandes |
 | Audition | `NOTE_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
 
-Le service de lecture identifie l'unique session de transport active et suit séparément les éventuelles sessions de préécoute de note.
+Le service de lecture identifie l'unique session de transport active et suit séparément, en interne, les éventuelles sessions de préécoute de note. À chacune d'elles correspond un `NotePreviewHandle` public qui ne révèle pas son `PlaybackSessionId`.
 
 Démarrer une nouvelle lecture avec `play` retire immédiatement son rôle au transport précédent et annule ses attaques futures. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif.
 
-`preview(noteId)` ne remplace jamais le transport.
+`preview(noteId)` ne remplace jamais le transport. Relâcher son handle produit le `NOTE_OFF` de son occurrence, termine structurellement son contexte et laisse ses releases et tails se drainer. Si le handle n'est pas relâché par la fin du geste, la durée maximale de sécurité applique automatiquement le même comportement.
 
 `stop(mode)` arrête uniquement le transport actif et n'affecte aucune préécoute de note. Le service transmet au moteur l'identifiant de la session correspondante. S'il n'existe aucun transport actif, l'opération est sans effet.
 
@@ -876,7 +890,7 @@ Il possède notamment :
 
 Un contexte de clip correspond à une activation audio du clip. Le `ClipId` d'origine et la correspondance entre le clip et son contexte restent une connaissance du `PlaybackService`.
 
-Une préécoute de note utilise le même type de contexte. Sa session `NOTE_PREVIEW` indique déjà la nature de l'opération, tandis que sa commande `NOTE_ON` porte l'`InstrumentId`. Aucun descripteur de contexte supplémentaire n'est nécessaire.
+Une préécoute de note utilise le même type de contexte. Sa session `NOTE_PREVIEW` indique déjà la nature de l'opération, tandis que sa commande `NOTE_ON` porte l'`InstrumentId`. Le `PlaybackService` conserve l'association interne entre le `NotePreviewHandle`, la session, le contexte et l'occurrence correspondants ; aucun descripteur de contexte supplémentaire n'est nécessaire.
 
 Les groupes ne possèdent pas de contexte audio dans le premier périmètre, puisqu'ils n'ont ni gain, ni bus, ni effet propre. Une session de groupe contient les contextes des clips effectivement activés dans son sous-arbre.
 
