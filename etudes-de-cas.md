@@ -161,7 +161,7 @@ La preecoute de clip est une nouvelle session de transport. Le `PlaybackService`
 | Lancement de la preecoute | `project-session` | `PROJECT` | inactive ; contextes eventuellement `DRAINING` |
 | Lancement de la preecoute | `clip-preview-session` | `CLIP_PREVIEW` | nouveau transport actif |
 
-Les deux activations successives du meme `ClipId` recoivent des `ClipPlaybackId` differents. L'ancienne session reste inactive tandis que ses contextes passent eventuellement en `DRAINING` : leurs releases peuvent rester audibles pendant le debut de la nouvelle session, mais aucune nouvelle attaque n'est planifiee et le parcours du projet ne progresse plus. La session est detruite lorsque tous ses contextes sont `DISPOSED`. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
+Les deux activations successives du meme `ClipId` recoivent des `PlaybackContextId` differents. L'ancienne session reste inactive tandis que ses contextes passent eventuellement en `DRAINING` : leurs releases peuvent rester audibles pendant le debut de la nouvelle session, mais aucune nouvelle attaque n'est planifiee et le parcours du projet ne progresse plus. La session est detruite lorsque tous ses contextes sont `DISPOSED`. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
 
 Pendant la preecoute du clip, une note peut etre auditionnee independamment :
 
@@ -169,11 +169,11 @@ Pendant la preecoute du clip, une note peut etre auditionnee independamment :
 const notePreviewSession = preview({ kind: "NOTE", id: noteId });
 ```
 
-Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `clip-preview-session`. Elle utilise un descripteur portant un `NotePreviewPlaybackId` et un `InstrumentId`. Le `PlaybackService` resout le `NoteId`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs auditions de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif.
+Cette operation ouvre une session `NOTE_PREVIEW` sans remplacer `clip-preview-session`, puis lui rattache un contexte possedant son propre `PlaybackContextId`. La commande `NOTE_ON` porte ce `contextId` ainsi que l'`InstrumentId` resolu par le `PlaybackService`, mais aucun identifiant de source persistante ne traverse le port audio. Plusieurs auditions de notes peuvent se chevaucher, et arreter `notePreviewSession` n'affecte pas le transport actif.
 
 ## Cas 7 - Repetitions et occurrences de notes
 
-Un clip contient une note `note-a` et possede `repeatCount = 3`. Les trois lectures reutilisent le meme `ClipPlaybackId` et la meme `InstrumentInstance`, mais elles produisent trois occurrences distinctes.
+Un clip contient une note `note-a` et possede `repeatCount = 3`. Les trois lectures reutilisent le meme `PlaybackContextId` et la meme `InstrumentInstance`, mais elles produisent trois occurrences distinctes.
 
 | Repetition | Note persistante | Occurrence d'execution |
 | ---: | --- | --- |
@@ -252,7 +252,8 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - un arret `GRACEFUL` relache les occurrences actives et conserve leurs tails, tandis qu'un arret `IMMEDIATE` detruit les contextes sans delai ;
 - `preview(GROUP)` respecte le bypass de ses descendants, tandis que `preview(CLIP)` et `preview(NOTE)` ignorent le bypass de leur cible ;
 - lorsque `isBypassed` passe a `true` pendant une iteration, celle-ci se termine, aucune repetition supplementaire n'est lancee et le parcours continue si l'arbre le permet ;
-- chaque activation de clip recoit un `ClipPlaybackId` distinct de son `ClipId` ;
+- chaque activation de clip et chaque preecoute de note recoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
+- chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistree qu'une fois, a l'ouverture du contexte ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
 - la fin structurelle permet au parcours de continuer pendant que l'infrastructure conserve eventuellement le contexte en `DRAINING` ;
 - aucun de ces calculs ni identifiants d'execution n'ajoute de position temporelle globale ou d'etat audio au modele sauvegarde.
