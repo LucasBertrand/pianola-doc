@@ -672,16 +672,11 @@ L'axe horizontal représente la `ProjectTime` dérivée depuis le début du proj
 La structure du cas 3 peut ainsi être représentée de manière conceptuelle :
 
 ```mermaid
-gantt
-    title Timeline globale dérivée du graphe
-    dateFormat X
-    axisFormat %S s
-    section Clips empilés
-    Introduction    :intro, 0, 2s
-    Groove A        :groove-a, after intro, 2s
-    Ligne de basse  :basse, after intro, 4s
-    Groove B        :groove-b, after groove-a, 2s
-    Conclusion      :conclusion, after groove-b, 2s
+block-beta
+    columns 4
+    t0["0–2 s"] t1["2–4 s"] t2["4–6 s"] t3["6–8 s"]
+    intro["Introduction"] grooveA["Groove A"] grooveB["Groove B"] conclusion["Conclusion"]
+    space basse["Ligne de basse"]:2 space
 ```
 
 Dans cette projection :
