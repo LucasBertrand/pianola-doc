@@ -575,7 +575,7 @@ Les sessions se répartissent en deux catégories :
 | Transport | `PROJECT` | Une seule session peut planifier de nouvelles commandes |
 | Audition | `NOTE_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
 
-Le service conserve un `activeTransportSessionId` optionnel et un ensemble de `notePreviewSessionIds`.
+Le service de lecture identifie l'unique session de transport active et suit séparément les éventuelles sessions de préécoute de note.
 
 Démarrer une nouvelle lecture avec `play` retire immédiatement son rôle au transport précédent et annule ses attaques futures. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif.
 
