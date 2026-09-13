@@ -218,9 +218,11 @@ Les commandes suivantes expriment des intentions differentes :
 | `play(ensemble.id)` | `Piano` et `Basse` ensemble, puis `Conclusion`. |
 | `preview({ kind: "GROUP", id: ensemble.id })` | `Piano` et `Basse` ensemble, puis arret a la fin du groupe. |
 | `preview({ kind: "CLIP", id: piano.id })` | `Piano` seul, puis arret a la fin du clip. |
-| `play(piano.id)` | Commande invalide : `Piano` ne constitue pas un point d'entree structurel isole dans son groupe simultane. |
+| `play(piano.id)` | Commande invalide : `Piano` possede un groupe `SIMULTANEOUS` parmi ses ancetres. La commande ne remonte pas implicitement vers `Ensemble`. |
 
-Dans l'interface, les enfants d'un groupe sequentiel peuvent donc proposer un bouton de lecture structurelle. Un groupe simultane propose ce bouton pour l'ensemble du groupe, tandis que chacun de ses descendants reste accessible par une action de preecoute.
+Dans l'interface, le bouton `play` apparait pour `Introduction`, `Ensemble` et `Conclusion`. Il n'apparait pas pour `Piano` ni `Basse`, tandis que chacun reste accessible par une action de preecoute. L'interface obtient cette decision par `getPlaybackCapabilities(target)` ; elle ne reproduit pas elle-meme les regles de parcours.
+
+La validite est examinee sur toute la chaine d'ancetres. Ainsi, un clip dont le parent direct est `SEQUENTIAL` reste invalide si ce parent se trouve lui-meme dans un groupe `SIMULTANEOUS`. Le `PlaybackService` refuse egalement toute commande invalide recue par un autre chemin que l'interface.
 
 Le point de depart optionnel de `play` ne change pas la racine de la session : il s'agit toujours d'une session `PROJECT`, capable de poursuivre jusqu'a la fin du projet. Une preecoute de groupe ou de clip cree une session `GROUP_PREVIEW` ou `CLIP_PREVIEW` dont la racine est une frontiere infranchissable et remplace le transport courant. Une preecoute de note cree au contraire une session `NOTE_PREVIEW` concurrente qui ne remplace pas le transport.
 
@@ -239,7 +241,9 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - un groupe `SIMULTANEOUS` transmet le meme debut a tous ses enfants et retourne la fin la plus tardive ;
 - une duree `infinite` se propage aux groupes ancetres selon les memes regles ;
 - `play()` commence au debut du `rootGroup`, tandis que `play(itemId)` utilise un point d'entree structurel valide et poursuit ensuite jusqu'a la fin du projet ;
-- un enfant isole d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, car ses freres devraient commencer au meme instant ;
+- un element n'est un point d'entree valide que si tous ses groupes ancetres sont `SEQUENTIAL` ;
+- un descendant d'un groupe `SIMULTANEOUS` ne peut pas servir de point de depart structurel, meme si son parent direct est `SEQUENTIAL`, car les branches de cet ancetre devraient commencer ensemble ;
+- `getPlaybackCapabilities(target)` permet a l'interface de masquer le bouton `play` sans dupliquer cette validation ;
 - `preview(target)` borne le parcours au groupe, au clip ou a la note cible et ne rejoint jamais un noeud exterieur a cette racine ;
 - chaque operation globale ouvre une `PlaybackSession` transitoire ;
 - une seule session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW` peut constituer le transport actif ; une nouvelle lecture structurelle remplace la precedente ;
