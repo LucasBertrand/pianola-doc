@@ -11,7 +11,7 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 - [Domaine de composition](#domaine-de-composition)
   - [Entities](#entities)
   - [Value Objects de la composition](#value-objects-de-la-composition)
-  - [Agregats](#agregats)
+  - [Frontiere d'agregat](#frontiere-dagregat)
 - [Etat applicatif de l'editeur](#etat-applicatif-de-lediteur)
 - [Couche applicative et lecture](#couche-applicative-et-lecture)
 - [Infrastructure audio](#infrastructure-audio)
@@ -50,6 +50,7 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 ### Structure de la composition
 
 - Le `Project` possede un unique `rootGroup`. La composition forme un arbre dont les noeuds sont des `Group` et les feuilles des `Clip`.
+- `Project` est l'unique aggregate root de la composition. Les `Group`, `Clip`, `Note` et changements temporels sont des entites internes de cet agregat, meme lorsqu'ils encapsulent leurs propres invariants locaux.
 - Un `Group` contient une collection ordonnee de `GroupItem`, union de `Clip` et de `Group`. Les groupes peuvent donc etre imbriques.
 - `PlaybackMode` represente le mode de lecture d'un groupe. Pianola prend initialement en charge `SEQUENTIAL` et `SIMULTANEOUS`, mais cette liste pourra etre enrichie.
 - Chaque mode definit trois aspects : la planification temporelle des enfants, les points d'entree autorises pour `play(itemId?)` et la condition de fin du groupe.
@@ -500,16 +501,19 @@ Attributs derives possibles :
 
 La section n'est pas sauvegardee comme un objet autonome. Elle sert a retrouver le contexte de hauteurs actif pour une note ou une position donnee.
 
-### Agregats
+### Frontiere d'agregat
 
-#### Project comme aggregate root
+#### Project comme unique aggregate root
 
-`Project` est la racine principale. Il garantit la coherence globale du document musical et de sa sequence.
+`Project` est l'unique aggregate root du domaine de composition. Il possede l'arbre complet et garantit la coherence globale du document musical.
 
 Il contient :
 
-- un unique `rootGroup` ;
+- un unique `rootGroup` et tous ses descendants `Group` et `Clip` ;
+- les `Note`, `TempoChange`, `MeterChange` et `PitchContextChange` appartenant a chaque clip ;
 - des informations de sauvegarde.
+
+Le chargement et la sauvegarde portent sur le `Project` complet. Les entites internes conservent des identifiants stables afin d'etre ciblees par l'editeur et les cas d'usage, mais elles ne possedent ni repository ni cycle de persistance autonomes. Une modification peut etre executee par une methode d'un `Clip` ou d'un `Group`, mais toujours apres avoir atteint cette entite depuis le `Project` charge.
 
 Regles possibles :
 
@@ -526,9 +530,11 @@ Regles possibles :
 - un `repeatCount` egal a `infinite` rend infinie la branche qui le contient ; dans un groupe sequentiel, les enfants places apres cette branche deviennent inaccessibles par progression automatique ;
 - chaque repetition recommence au tick `0` avec les changements initiaux de tempo, de metrique et de contexte de hauteurs du clip.
 
-#### Clip comme aggregate secondaire
+#### Clip comme entite a invariants locaux
 
-`Clip` garantit la coherence de ses propres notes et de son contexte rythmique.
+`Clip` est une entite interne de l'agregat `Project`. Il garantit localement la coherence de ses notes, de sa duree et de ses chronologies, sans devenir pour autant une racine d'agregat autonome.
+
+Son `ClipId` permet de le retrouver et de le cibler, mais un clip n'est ni charge, ni sauvegarde, ni supprime independamment de son `Project`. Les cas d'usage d'edition obtiennent d'abord le projet concerne, puis deleguent au clip les operations qui relevent de ses invariants locaux.
 
 Regles possibles :
 
@@ -996,7 +1002,7 @@ Les objets centraux `Project`, `Group`, `Clip`, `Note` et `Instrument` restent d
 - `time/` contient les positions, les durees, le tempo et la metrique ;
 - `pitch/` contient les hauteurs et leurs contextes.
 
-Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants des agregats de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
+Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `Note` vers `time/` et `pitch/`. Ces deux sous-domaines restent independants de l'agregat de composition : par exemple, `Clip` peut connaitre `MeterChange`, mais `MeterChange` ne connait pas `Clip`.
 
 `Instrument` et `InstrumentId` sont declares ensemble dans `domain/Instrument.ts`. Le premier constitue la representation publique minimale de l'instrument ; le second reste l'identifiant sauvegarde par les notes et partage avec les ports applicatifs et l'infrastructure audio. `Velocity` est declare a cote de `Note` dans `domain/Note.ts`, puisqu'il ne possede pas encore d'usage independant.
 
