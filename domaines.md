@@ -572,7 +572,7 @@ L'editeur conserve deux selections distinctes, car elles portent sur deux espace
 
 #### ClipContentSelection
 
-Represente les objets selectionnes a l'interieur du clip actuellement edite. Le `EditorState` conserve separement son `editedClipId`, qui definit la portee de cette selection.
+Represente les objets selectionnes a l'interieur du clip actuellement edite. `EditorState` conserve separement son `editedClipId`, qui definit la portee de cette selection.
 
 Une reference de contenu est typee explicitement :
 
@@ -611,7 +611,7 @@ interface StructureSelection {
 
 Cette selection sert aux operations structurelles comme le regroupement, le deplacement, la duplication ou la suppression de clips et de groupes.
 
-Le `EditorState` distingue ainsi explicitement les trois informations suivantes :
+`EditorState` distingue ainsi explicitement les trois informations suivantes :
 
 ```ts
 interface EditorState {
