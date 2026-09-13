@@ -121,7 +121,7 @@ flowchart TD
 
 Apres l'introduction, la nappe et le rythme commencent ensemble. Le rythme peut se terminer, mais la branche de la nappe n'a jamais d'instant de fin. La duree du groupe `Ensemble` est donc `infinite` et la `Conclusion` est inaccessible par progression automatique.
 
-Si la nappe est contournee, sa contribution devient nulle. Le groupe se termine alors avec le rythme fini et la lecture peut atteindre la conclusion. Arreter la lecture ou deplacer manuellement la tete de lecture permet egalement de quitter la repetition infinie.
+Si la nappe est deja contournee lorsqu'elle devrait etre activee, sa contribution est nulle. Si `isBypassed` passe a `true` pendant une iteration, cette iteration atteint sa fin structurelle, mais aucune repetition supplementaire n'est lancee. Le groupe peut alors se terminer avec le rythme fini et la lecture atteindre la conclusion. Arreter la lecture permet egalement de quitter la repetition infinie.
 
 
 ## Cas 5 - Deux clips utilisent le meme instrument
@@ -153,15 +153,15 @@ Meme si le piano est monophonique, la note du clip B n'interrompt pas celle du c
 
 Le clip `Motif` est actif dans une session `PROJECT` lorsque l'utilisateur lance la preecoute de ce meme clip.
 
-La preecoute de clip est une nouvelle session de transport. Le `PlaybackService` retire donc immediatement ce role a `project-session`, annule ses commandes futures et ouvre `clip-preview-session`. Il n'existe jamais deux transports actifs.
+La preecoute de clip est une nouvelle session de transport. Le `PlaybackService` retire donc immediatement ce role a `project-session`, annule ses attaques futures, relache ses occurrences actives selon le mode `GRACEFUL` et ouvre `clip-preview-session`. Il n'existe jamais deux transports actifs.
 
 | Etape | Session | Type | Etat |
 | --- | --- | --- | --- |
 | Lecture initiale | `project-session` | `PROJECT` | transport actif |
-| Lancement de la preecoute | `project-session` | `PROJECT` | remplacee, puis eventuellement `DRAINING` |
+| Lancement de la preecoute | `project-session` | `PROJECT` | inactive ; contextes eventuellement `DRAINING` |
 | Lancement de la preecoute | `clip-preview-session` | `CLIP_PREVIEW` | nouveau transport actif |
 
-Les deux activations successives du meme `ClipId` recoivent des `ClipPlaybackId` differents. Si l'ancienne session passe en `DRAINING`, ses releases peuvent rester audibles pendant le debut de la nouvelle session, mais elle ne planifie plus aucune attaque et ne fait plus progresser le parcours du projet. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
+Les deux activations successives du meme `ClipId` recoivent des `ClipPlaybackId` differents. L'ancienne session reste inactive tandis que ses contextes passent eventuellement en `DRAINING` : leurs releases peuvent rester audibles pendant le debut de la nouvelle session, mais aucune nouvelle attaque n'est planifiee et le parcours du projet ne progresse plus. La session est detruite lorsque tous ses contextes sont `DISPOSED`. Avec un arret `IMMEDIATE`, ses contextes sont detruits sans delai.
 
 Pendant la preecoute du clip, une note peut etre auditionnee independamment :
 
@@ -246,8 +246,12 @@ Une portion finie peut ensuite etre planifiee a partir d'un instant de depart. L
 - `getPlaybackCapabilities(target)` permet a l'interface de masquer le bouton `play` sans dupliquer cette validation ;
 - `preview(target)` borne le parcours au groupe, au clip ou a la note cible et ne rejoint jamais un noeud exterieur a cette racine ;
 - chaque operation globale ouvre une `PlaybackSession` transitoire ;
-- une seule session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW` peut constituer le transport actif ; une nouvelle lecture structurelle remplace la precedente ;
+- une seule session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW` peut constituer le transport actif ; une nouvelle lecture structurelle remplace la precedente, qui ne subsiste que comme proprietaire de contextes eventuellement `DRAINING` ;
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
+- `stop(sessionId, mode)` arrete une session precise, tandis que `stopTransport(mode)` n'arrete que le transport actif ;
+- un arret `GRACEFUL` relache les occurrences actives et conserve leurs tails, tandis qu'un arret `IMMEDIATE` detruit les contextes sans delai ;
+- `preview(GROUP)` respecte le bypass de ses descendants, tandis que `preview(CLIP)` et `preview(NOTE)` ignorent le bypass de leur cible ;
+- lorsque `isBypassed` passe a `true` pendant une iteration, celle-ci se termine, aucune repetition supplementaire n'est lancee et le parcours continue si l'arbre le permet ;
 - chaque activation de clip recoit un `ClipPlaybackId` distinct de son `ClipId` ;
 - chaque attaque, y compris lors d'une repetition, recoit un `NoteOccurrenceId` unique ;
 - la fin structurelle permet au parcours de continuer pendant que l'infrastructure conserve eventuellement le contexte en `DRAINING` ;
