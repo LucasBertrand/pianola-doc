@@ -367,7 +367,7 @@ La projection temporelle associe ensuite chaque element a un intervalle global d
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
 - les mute et solo persistants filtrent les notes par `InstrumentId` dans tous les contextes, sans modifier la timeline ;
 - un clip bypassé avant son activation n'apparaît pas dans la projection et ne contribue pas a la duree ; s'il est bypassé pendant une iteration, celle-ci se termine et aucune repetition supplementaire n'est lancee ;
-- `stop(sessionId, mode)` arrete une session precise, tandis que `stopTransport(mode)` n'arrete que le transport actif ;
+- `stop(mode)` arrete uniquement le transport actif et n'affecte aucune preecoute de note ; le service transmet au moteur le `PlaybackSessionId` correspondant et l'operation est sans effet en l'absence de transport actif ;
 - un arret `GRACEFUL` relache les occurrences actives et conserve leurs tails, tandis qu'un arret `IMMEDIATE` detruit les contextes sans delai ;
 - chaque activation de clip et chaque preecoute de note recoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistree qu'une fois, a l'ouverture du contexte ;
