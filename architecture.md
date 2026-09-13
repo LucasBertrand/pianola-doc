@@ -409,7 +409,7 @@ Les sélections et la résolution de grille ne sont pas sauvegardées comme des 
 
 La tête de lecture est un état applicatif transitoire exprimé par une `ProjectTime`, distincte des `TimePosition` locales aux clips. Sa position appartient à la timeline globale dérivée du projet et n'est pas sauvegardée dans l'agrégat.
 
-Sa position initiale est le début du projet. Elle peut être déplacée directement par l'utilisateur ou résolue à partir du début global d'un `Group` ou d'un `Clip`.
+Sa position initiale est le début du projet. Elle peut être déplacée directement par l'utilisateur sur la timeline globale ou résolue à partir d'un repère structurel : le début global d'un `Group`, ou n'importe quelle `TimePosition` locale d'un `Clip`, convertie en `ProjectTime`.
 
 ### Cas d'usage d'édition
 
