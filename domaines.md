@@ -746,15 +746,13 @@ L'infrastructure audio regroupe le catalogue integre, les definitions techniques
 
 Les instruments et leurs patchs sont ecrits dans le code avant la compilation. Ils ne sont ni editables par l'utilisateur ni sauvegardes dans le projet.
 
-### BuiltInInstrumentCatalog
+### StaticInstrumentCatalog
 
-Implementation concrete du port `InstrumentCatalog`. Il expose en lecture seule les objets `Instrument` disponibles et resout leurs identifiants stables. Il conserve en interne les `InstrumentDefinition` completes sans les exposer a la couche applicative.
+Implementation concrete du port `InstrumentCatalog` et source de verite unique des instruments integres. Il conserve en interne la collection immuable des `InstrumentDefinition`.
 
-### InstrumentDefinitionRegistry
+La couche applicative le manipule uniquement a travers le port `InstrumentCatalog`, qui expose en lecture seule les objets `Instrument` disponibles et permet de resoudre leurs identifiants stables. Aucun patch ni aucune `InstrumentDefinition` ne traverse ce port.
 
-Registre technique prive utilise par le moteur pour resoudre un `InstrumentId` vers son `InstrumentDefinition`. Il constitue la source de verite technique dont `BuiltInInstrumentCatalog` expose seulement la projection publique `Instrument`.
-
-Ce registre n'implemente pas un besoin de la couche applicative et ne constitue donc pas un port supplementaire. Il reste interne a l'infrastructure audio.
+Le moteur audio, situe dans la meme couche d'infrastructure que le catalogue concret, utilise directement `StaticInstrumentCatalog` pour resoudre un `InstrumentId` vers son `InstrumentDefinition`. Cette capacite technique reste propre a l'implementation concrete et ne necessite pas de port supplementaire.
 
 ### PlaybackSession
 
@@ -917,7 +915,7 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `PlaybackSession` | `PlaybackContext` | Une operation globale de lecture possede plusieurs unites audio isolees. |
 | `PlaybackContext` | `InstrumentInstance` | Le contexte possede au plus une instance exclusive par `InstrumentId`. |
 | `InstrumentInstance` | `InstrumentDefinition` | L'instance mutable est creee a partir d'une definition immuable partagee. |
-| `InstrumentCatalog` | `BuiltInInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
+| `InstrumentCatalog` | `StaticInstrumentCatalog` | L'infrastructure implemente le port de consultation attendu par l'application. |
 | Moteur audio concret | `InstrumentDefinition` | Le moteur resout l'identifiant, instancie le patch et produit le son. |
 
 Le sens des dependances de code doit pointer vers l'interieur : l'application depend du domaine, et l'infrastructure depend des ports applicatifs ainsi que du domaine, jamais l'inverse.
@@ -962,8 +960,7 @@ src/
 ├── infrastructure/
 │   ├── audio/
 │   │   ├── catalog/
-│   │   │   ├── BuiltInInstrumentCatalog.ts
-│   │   │   ├── InstrumentDefinitionRegistry.ts
+│   │   │   ├── StaticInstrumentCatalog.ts
 │   │   │   └── InstrumentDefinition.ts
 │   │   ├── modular/
 │   │   │   ├── ModularPatch.ts
