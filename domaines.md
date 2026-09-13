@@ -18,7 +18,6 @@ L'objectif est de poser un vocabulaire metier stable et de rendre visibles les f
 - [Relations architecturales](#relations-architecturales)
 - [Etudes de cas](etudes-de-cas.md)
 - [Arborescence cible](#arborescence-cible)
-- [Questions ouvertes](#questions-ouvertes)
 - [Principes directeurs](#principes-directeurs)
 
 ## Vision generale
@@ -82,7 +81,8 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Chaque note reference exactement un `InstrumentId`. Plusieurs instruments peuvent ainsi coexister dans un meme clip.
 - Plusieurs clips lus simultanement peuvent utiliser le meme instrument, y compris a la meme hauteur et au meme instant. Leurs notes restent des intentions distinctes et ne sont jamais fusionnees implicitement.
 - Le contexte de hauteurs est descriptif : il met en evidence l'appartenance des notes a un ensemble de hauteurs sans interdire les notes exterieures.
-- La quantification et la selection appartiennent a l'experience d'edition. Elles guident les actions de l'utilisateur sans transformer le modele musical en grille rigide ni devenir des donnees de composition.
+- La quantification et les selections appartiennent a l'experience d'edition. Elles guident les actions de l'utilisateur sans transformer le modele musical en grille rigide ni devenir des donnees de composition.
+- La selection du contenu du clip edite et la selection structurelle des clips et groupes sont deux etats applicatifs distincts. Elles peuvent coexister et ne sont jamais fusionnees implicitement.
 
 ### Perimetre audio
 
@@ -568,25 +568,69 @@ L'etat applicatif de l'editeur decrit le contexte transitoire dans lequel l'util
 
 ### Selection
 
-Represente l'ensemble courant des objets selectionnes. Elle ne possede pas d'identite propre et n'est ni une entity metier ni un agregat du domaine.
+L'editeur conserve deux selections distinctes, car elles portent sur deux espaces d'edition differents. Elles ne possedent pas d'identite propre et ne sont ni des entities metier ni des agregats du domaine.
 
-Attributs possibles :
+#### ClipContentSelection
 
-- `selectedClipIds`
-- `selectedNoteIds`
-- `selectionAnchor`
+Represente les objets selectionnes a l'interieur du clip actuellement edite. Le `EditorState` conserve separement son `editedClipId`, qui definit la portee de cette selection.
 
-Des informations comme `activeClipId` ou `focusedNoteId` permettent de distinguer l'objet actif de l'ensemble des objets selectionnes.
+Une reference de contenu est typee explicitement :
 
-Responsabilites :
+```ts
+type ClipContentRef =
+  | { kind: "NOTE"; noteId: NoteId }
+  | { kind: "TEMPO_CHANGE"; tempoChangeId: TempoChangeId }
+  | { kind: "METER_CHANGE"; meterChangeId: MeterChangeId }
+  | {
+      kind: "PITCH_CONTEXT_CHANGE";
+      pitchContextChangeId: PitchContextChangeId;
+    };
 
-- conserver l'intention d'edition courante ;
-- permettre les operations de groupe ;
+interface ClipContentSelection {
+  items: readonly ClipContentRef[];
+}
+```
+
+Les marqueurs visibles dans l'editeur ne forment donc pas un type metier generique. Ils designent les changements de tempo, de metrique ou de contexte de hauteurs deja definis par le domaine.
+
+Tous les objets de `ClipContentSelection` appartiennent au clip designe par `editedClipId`. Lorsque le clip edite change ou est ferme, cette selection est videe.
+
+#### StructureSelection
+
+Represente les elements de l'arbre de composition selectionnes dans l'inspecteur de structure :
+
+```ts
+type StructureItemRef =
+  | { kind: "CLIP"; clipId: ClipId }
+  | { kind: "GROUP"; groupId: GroupId };
+
+interface StructureSelection {
+  items: readonly StructureItemRef[];
+}
+```
+
+Cette selection sert aux operations structurelles comme le regroupement, le deplacement, la duplication ou la suppression de clips et de groupes.
+
+Le `EditorState` distingue ainsi explicitement les trois informations suivantes :
+
+```ts
+interface EditorState {
+  editedClipId?: ClipId;
+  clipContentSelection: ClipContentSelection;
+  structureSelection: StructureSelection;
+}
+```
+
+Le clip edite et la selection structurelle de l'inspecteur representent des faits differents. Un meme geste d'interface peut les mettre a jour ensemble, mais aucun lien implicite n'est impose entre eux.
+
+Responsabilites communes :
+
+- conserver les intentions d'edition courantes ;
+- permettre les operations portant sur plusieurs objets d'un meme espace ;
 - porter la logique de selection independamment de sa representation graphique ;
-- transmettre aux cas d'usage les identifiants des objets concernes.
+- transmettre aux cas d'usage des references typees vers les objets concernes.
 
-Lorsqu'une action est executee, la couche applicative transforme la selection en une commande explicite. Le domaine recoit les identifiants des objets a modifier et applique l'operation sans connaitre la notion de selection.
-
+Lorsqu'une action est executee, la couche applicative choisit explicitement la selection correspondant a sa portee, puis la transforme en une commande explicite. Le domaine recoit les identifiants des objets a modifier et applique l'operation sans connaitre la notion de selection.
 ### GridResolution
 
 Represente la precision de la grille utilisee pendant l'edition.
@@ -612,7 +656,8 @@ La couche applicative orchestre les actions de l'utilisateur et la lecture sans 
 Responsabilites :
 
 - traduire les gestes de l'editeur en commandes explicites ;
-- resoudre la selection vers les identifiants des objets concernes ;
+- choisir la selection locale ou structurelle selon la portee de l'action ;
+- resoudre ses references vers les identifiants des objets concernes ;
 - appliquer si necessaire la quantification avant d'appeler le domaine ;
 - charger et sauvegarder le projet a travers des ports.
 
@@ -971,7 +1016,9 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | `Clip.tempoChanges` | `TempoChange` | Les changements delimitent les `TempoSection` derivees du clip. |
 | `Clip.meterChanges` | `MeterChange` | Les changements delimitent les `MeterSection` derivees du clip. |
 | `Clip.pitchContextChanges` | `PitchContextChange` | Les changements delimitent les `PitchContextSection` utilisees pour analyser visuellement les notes. |
-| Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
+| `ClipContentSelection` | Cas d'usage d'edition locale | Les references aux notes et changements du clip edite sont transformees en commandes explicites. |
+| `StructureSelection` | Cas d'usage structurels | Les references aux clips et groupes de l'inspecteur sont transformees en commandes explicites. |
+| `GridResolution` | Cas d'usage d'edition locale | La grille transforme un geste en position ou duree quantifiee avant l'appel au domaine. |
 | `PlaybackService.getPlaybackCapabilities(target)` | `PreviewTarget` | Le service fournit a l'interface les actions valides sans lui faire dupliquer les regles de parcours. |
 | `PlaybackService.play(itemId?)` | `Project.rootGroup` et `GroupItem` | Le service commence au debut du projet ou a un point d'entree dont tous les ancetres sont `SEQUENTIAL`, puis poursuit le parcours structurel. |
 | `PlaybackService.preview(target)` | `PreviewTarget` | Le service borne la lecture au groupe, au clip ou a la note cible sans atteindre les noeuds exterieurs. |
@@ -1058,11 +1105,7 @@ Les dependances doivent principalement partir de `Project`, `Group`, `Clip` et `
 
 `PreviewTarget` et `PlaybackCapabilities` appartiennent a l'interface du cas d'usage et peuvent etre declares avec `application/use-cases/PlaybackService.ts`. Les types `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` peuvent d'abord etre declares avec `application/ports/AudioEngine.ts`. Ils forment le langage d'echange du port et ne doivent pas etre places dans `domain/`. Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou comportements independants.
 
-Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module.
-
-## Questions ouvertes
-
-- Les `Group` doivent-ils devenir selectionnables dans l'editeur et, dans ce cas, faut-il ajouter `selectedGroupIds` a `Selection` ?
+Cette structure exprime des responsabilites plutot qu'un decoupage definitif fichier par fichier. Elle ne doit pas conduire a creer prematurement un fichier pour chaque type si plusieurs concepts restent plus coherents dans un meme module. `Selection.ts` peut ainsi declarer ensemble `ClipContentSelection`, `StructureSelection` et leurs unions de references typees.
 
 ## Principes directeurs
 
