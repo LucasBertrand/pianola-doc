@@ -678,10 +678,10 @@ gantt
     axisFormat %S s
     section Clips empilés
     Introduction    :intro, 0, 2s
-    Groove A        :groove-a, 2, 2s
-    Groove B        :groove-b, 4, 2s
-    Ligne de basse  :basse, 2, 4s
-    Conclusion      :conclusion, 6, 2s
+    Groove A        :groove-a, after intro, 2s
+    Ligne de basse  :basse, after intro, 4s
+    Groove B        :groove-b, after groove-a, 2s
+    Conclusion      :conclusion, after groove-b, 2s
 ```
 
 Dans cette projection :
