@@ -89,10 +89,13 @@ Cette section synthetise les choix structurants. Les invariants et responsabilit
 - Le catalogue et le moteur audio appartiennent a l'infrastructure. Les patchs, les politiques d'allocation des voix et les autres details techniques restent dans `InstrumentDefinition`.
 - Chaque lecture d'une note produit une occurrence sonore distincte. Son identite d'execution permet de relacher cette voix sans interrompre les autres notes utilisant le meme instrument et la meme hauteur.
 - Une operation globale de lecture est identifiee par un `PlaybackSessionId` et qualifiee par un `PlaybackSessionKind` : `PROJECT`, `GROUP_PREVIEW`, `CLIP_PREVIEW`, `NOTE_PREVIEW` ou `OFFLINE_RENDER`.
+- Les sessions `PROJECT`, `GROUP_PREVIEW` et `CLIP_PREVIEW` sont des sessions de transport. Une seule session de transport peut etre active et planifier de nouvelles commandes a un instant donne.
 - Une session `PROJECT` provient de `play(itemId?)` : l'identifiant optionnel modifie son point de depart, mais pas sa racine structurelle, qui reste le projet.
 - Une session `GROUP_PREVIEW`, `CLIP_PREVIEW` ou `NOTE_PREVIEW` provient de `preview(target)` selon le type de la cible et reste bornee a cet element.
+- Demarrer une nouvelle session de transport remplace la precedente. L'ancienne cesse immediatement de planifier de nouvelles attaques, mais ses contextes peuvent subsister en `DRAINING` jusqu'a l'extinction de leurs tails.
+- Les sessions `NOTE_PREVIEW` sont des sessions d'audition independantes. Plusieurs peuvent coexister entre elles et avec l'unique session de transport active ; leur arret n'affecte aucune autre session.
+- Une session `OFFLINE_RENDER` ne participe pas au transport audio temps reel et n'est pas soumise a cette exclusivite.
 - Chaque unite de lecture audio isolee possede un descripteur strict `PlaybackContextDescriptor`. Une source `CLIP` porte obligatoirement un `ClipPlaybackId` ; une source `NOTE_PREVIEW` porte obligatoirement un `NotePreviewPlaybackId` et un `InstrumentId`.
-- Une preecoute de note peut etre lancee pendant une lecture du projet ou une autre preecoute. Chaque operation ouvre une session independante : l'arret de la note preecoutee n'affecte aucune autre session.
 - Un `ClipPlaybackId` identifie une activation transitoire d'un clip et reste distinct du `ClipId` persistant. Deux activations du meme clip ne partagent donc jamais leurs instances audio.
 - Pour chaque `InstrumentId` effectivement utilise dans un contexte de clip, l'infrastructure cree une `InstrumentInstance` exclusive a partir de l'`InstrumentDefinition` partagee.
 - Les repetitions d'une meme activation reutilisent le meme contexte et les memes instances, mais produisent de nouvelles occurrences de notes.
@@ -658,8 +661,11 @@ Responsabilites :
 - produire des commandes d'attaque et de relachement ciblant cette occurrence, afin que deux notes utilisant le meme instrument et la meme hauteur restent independantes ;
 - transmettre ces commandes a un `AudioEngine` abstrait ;
 - ouvrir une `PlaybackSession` pour chaque operation globale de lecture ;
-- attribuer un nouveau `ClipPlaybackId` a chaque activation d'un clip, y compris lorsqu'un meme `ClipId` est simultanement lu et preecoute ;
+- conserver au plus une session de transport active parmi `PROJECT`, `GROUP_PREVIEW` et `CLIP_PREVIEW` ;
+- remplacer la session de transport courante lorsqu'une nouvelle lecture structurelle commence, en empechant immediatement toute nouvelle attaque de l'ancienne session ;
+- attribuer un nouveau `ClipPlaybackId` a chaque activation d'un clip, y compris lorsque la nouvelle activation remplace une session encore en `DRAINING` ;
 - attribuer un nouveau `NotePreviewPlaybackId` a chaque preecoute de note et l'isoler dans sa propre session ;
+- permettre a plusieurs sessions `NOTE_PREVIEW` de coexister entre elles et avec l'unique session de transport active ;
 - attribuer un nouveau `NoteOccurrenceId` a chaque attaque, y compris a chaque repetition d'une meme `Note` ;
 - distinguer la fin structurelle d'un clip de la fin audible de ses releases et de ses effets ;
 - annuler les commandes futures d'un contexte lors d'un bypass dynamique ou d'un arret ;
@@ -679,7 +685,9 @@ preview(target: PreviewTarget): PlaybackSessionId;
 
 `play` ouvre toujours une session `PROJECT`. Le parametre `itemId` est un curseur initial conserve par le `PlaybackService` ; il ne transforme pas l'element en racine de preecoute et n'a pas a traverser le port `AudioEngine`.
 
-`preview` ouvre une session `GROUP_PREVIEW`, `CLIP_PREVIEW` ou `NOTE_PREVIEW` selon le discriminant de la cible. Pour un groupe ou un clip, la racine de cette preecoute constitue une frontiere : le planificateur peut parcourir tout son sous-arbre, mais ne peut pas atteindre ses freres ni ses ancetres. Pour une note, le `PlaybackService` resout la note persistante et son instrument, puis cree un contexte `NOTE_PREVIEW` sans transmettre le `NoteId` au moteur audio.
+`preview` ouvre une session `GROUP_PREVIEW`, `CLIP_PREVIEW` ou `NOTE_PREVIEW` selon le discriminant de la cible. Pour un groupe ou un clip, la racine de cette preecoute constitue une frontiere : le planificateur peut parcourir tout son sous-arbre, mais ne peut pas atteindre ses freres ni ses ancetres. Ces deux preecoutes sont des lectures structurelles et remplacent donc la session de transport courante. Pour une note, le `PlaybackService` resout la note persistante et son instrument, puis cree un contexte `NOTE_PREVIEW` sans transmettre le `NoteId` au moteur audio. Cette audition s'ajoute au transport existant sans le remplacer.
+
+Le service peut conserver un `activeTransportSessionId` optionnel et un ensemble de `notePreviewSessionIds`. Une session de transport remplacee perd immediatement le statut actif. Selon le `StopMode`, ses contextes sont detruits sans delai ou passent en `DRAINING`; leur existence transitoire ne constitue pas une seconde session de transport active.
 
 Le parcours peut etre conceptualise par une operation recursive de calcul `calculateDuration(item): duration`, puis par une planification glissante des evenements. Une operation qui tenterait de programmer immediatement tout l'arbre ne pourrait pas traiter un `repeatCount` infini.
 
@@ -777,7 +785,9 @@ Une session `PROJECT` est ouverte par `play(itemId?)`. Sans point de depart, le 
 
 Une session `CLIP_PREVIEW` est bornee au clip cible. Une session `GROUP_PREVIEW` est bornee au groupe cible et peut contenir plusieurs contextes de clips, ordonnes ou superposes selon les modes du sous-arbre. Une session `NOTE_PREVIEW` est bornee a une seule note et possede son propre contexte audio. Lorsque sa cible atteint sa fin structurelle, aucune preecoute ne poursuit vers un frere ou un ancetre. Les contextes audio peuvent toutefois rester en `DRAINING` jusqu'a l'extinction de leurs releases et de leurs tails.
 
-Les sessions sont independantes et peuvent coexister. Une note peut donc etre preecoutee pendant une session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW`. Arreter cette session `NOTE_PREVIEW` ne relache aucune occurrence appartenant aux autres sessions.
+Les sessions `PROJECT`, `GROUP_PREVIEW` et `CLIP_PREVIEW` se partagent un transport exclusif : une seule d'entre elles peut rester active et planifier de nouvelles commandes. En demarrer une nouvelle retire ce role a la precedente. Celle-ci peut encore exister en `DRAINING`, mais ne fait plus progresser la lecture structurelle.
+
+Les sessions `NOTE_PREVIEW` n'utilisent pas ce transport exclusif. Une note peut donc etre preecoutee pendant une session `PROJECT`, `GROUP_PREVIEW` ou `CLIP_PREVIEW`, et plusieurs auditions peuvent se chevaucher. Arreter une session `NOTE_PREVIEW` ne relache aucune occurrence appartenant aux autres sessions.
 
 ### PlaybackContext
 
@@ -928,6 +938,8 @@ Son etat d'execution est transitoire et n'est pas sauvegarde dans le projet.
 | Etat de l'editeur | Cas d'usage | La selection et la grille sont transformees en commandes explicites. |
 | `PlaybackService.play(itemId?)` | `Project.rootGroup` et `GroupItem` | Le service commence au debut du projet ou a un point d'entree valide, puis poursuit le parcours structurel. |
 | `PlaybackService.preview(target)` | `PreviewTarget` | Le service borne la lecture au groupe, au clip ou a la note cible sans atteindre les noeuds exterieurs. |
+| `PlaybackService` | Session de transport active | Le service conserve au plus un transport actif et le remplace lors d'une nouvelle lecture structurelle. |
+| `PlaybackService` | Sessions `NOTE_PREVIEW` | Les auditions de notes peuvent coexister entre elles et avec le transport actif. |
 | `PlaybackService` | `AudioEngine` | Le service transmet des commandes et des identites d'execution a travers un port abstrait. |
 | `PlaybackSession` | `PlaybackContext` | Une operation globale de lecture possede plusieurs unites audio isolees. |
 | `PlaybackContext` | `InstrumentInstance` | Le contexte possede au plus une instance exclusive par `InstrumentId`. |
