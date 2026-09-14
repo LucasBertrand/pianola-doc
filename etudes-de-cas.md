@@ -252,7 +252,7 @@ Si une occurrence du clip commence au tick global `10000`, ces bornes locales co
 
 ## Cas 14 — Replanification du projet transitoire
 
-Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement une occurrence déjà active et déplace un changement local situé plus loin dans le clip qu'elle référence. Le nouveau `transientProject` devient immédiatement l'`effectiveProject`.
+Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement une occurrence déjà active et déplace un changement local situé plus loin dans le clip qu'elle référence. Le nouveau `transientProject`, projection applicative du geste, devient immédiatement l’`effectiveProject` et alimente simultanément la présentation et l’audio.
 
 Le `PlaybackService` recalcule le transport depuis cette borne sans ouvrir une nouvelle session, puis demande :
 
@@ -312,7 +312,7 @@ Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisate
 
 Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-La première tentative ne modifie ni `project` ni `transientProject`. Elle retourne `{ ok: false, error }` avec le code `NOTE_OVERLAP`, `note-m` comme note manipulée et `note-a` comme note conflictuelle dans `error.details`. La présentation demande alors un mode de résolution.
+Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, la tentative ne modifie pas `project` et retourne `{ ok: false, error }` avec le code `NOTE_OVERLAP`. `error.details.collisions` associe `note-m` à `note-a`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
 Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -322,7 +322,7 @@ Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle
 | Note manipulée | `C4` | `[960, 1440)` | conserve `note-m` | 100 |
 | Fragment droit | `C4` | `[1440, 1920)` | nouveau `NoteId` | 70 |
 
-Avec `MERGE`, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation.
+Avec `MERGE`, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `transientProject` et restauré `project` à l’écran comme dans l’audio.
 
 Une note `C4` commençant exactement au tick `1920` serait seulement contiguë au résultat : les intervalles semi-ouverts ne déclenchent alors ni question ni résolution automatique.
 
@@ -344,7 +344,7 @@ const result = Tempo.create(1000.0);
 
 Aucun `Tempo` invalide n'est construit. Le cas d'usage conserve le tempo précédent et la présentation traduit le code stable vers son propre message.
 
-De même, déplacer une occurrence sur une ligne où elle en chevaucherait une autre retourne un `ProjectEditError`. Le `Project` d'origine reste intact et aucun `transientProject` n'est publié. Une opération valide retourne au contraire `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer l'état courant.
+De même, valider le déplacement d’une occurrence sur une ligne où elle en chevaucherait une autre retourne un `ProjectEditError`. Le `Project` d'origine reste intact. Un éventuel `transientProject` utilisé pendant le geste demeure une projection applicative non sauvegardable et ne peut jamais remplacer l’état courant après cet échec. Une opération valide retourne au contraire `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer `project`.
 
 La lecture d'une sauvegarde suit le même chemin de validation. Une référence vers un clip absent produit une erreur métier typée, tandis qu'un échec d'accès au stockage reste une erreur technique distincte.
 
