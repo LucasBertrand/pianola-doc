@@ -114,7 +114,7 @@ block-beta
     space noteB["Note B · piano"] space:2
 ```
 
-## Cas 6 — Transports global et local, avec préécoute concurrente
+## Cas 6 — Transports et deux formes de préécoute
 
 Le projet est lu depuis sa tête globale dans une session `PROJECT`. Le clip source `Motif` est parallèlement ouvert dans le piano roll ; sa tête locale est restée au tick `960`.
 
@@ -128,18 +128,25 @@ Lorsque l'utilisateur appelle `playClip()`, le `PlaybackService` prépare l’in
 
 La session `CLIP` lit directement le contenu local de `Motif` jusqu'à sa durée structurelle. Elle ignore toutes ses occurrences, leurs positions globales et leurs répétitions.
 
-Pendant ce transport local, l'utilisateur maintient une touche du piano roll :
+Pendant ce transport, l’utilisateur maintient la touche `F♯4` du piano roll, même si aucune note de cette hauteur n’existe dans le clip :
 
 ```ts
-const notePreview = preview(noteId);
+const pitchPreview = previewPitch(Pitch.F_SHARP_4);
 
-// À la fin du geste : pointerup ou pointercancel
-notePreview.release();
+pitchPreview.release(); // pointerup ou pointercancel
 ```
 
-`preview(noteId)` résout la note dans le clip `Motif` actuellement édité et ouvre une session `NOTE_PREVIEW` sans remplacer `clip-session-b`. La présentation reçoit seulement un `NotePreviewHandle`.
+`previewPitch` utilise l’instrument de `Motif`, ouvre une session `PITCH_PREVIEW` sans remplacer `clip-session-b` et soutient la voix jusqu’à `release()`. Si la banque est encore en chargement, le handle est retourné immédiatement ; un relâchement antérieur empêche toute attaque tardive.
 
-`release()` produit le `NOTE_OFF` de l'occurrence correspondante, termine structurellement son contexte et laisse sa release et son tail se drainer. Une durée maximale de sécurité applique le même relâchement si la fin du geste n'est pas reçue. Plusieurs préécoutes peuvent se chevaucher et être relâchées indépendamment.
+L’utilisateur commence ensuite une transposition de quatre notes sélectionnées, dont deux possèdent initialement la même hauteur :
+
+```ts
+const selectionPreview = previewSelection(selectedNoteIds);
+```
+
+Le service ignore leurs positions et leurs durées, déduplique leurs hauteurs et produit une attaque brève simultanée. Lorsqu’une seule des quatre notes change de hauteur, l’attaque précédente encore active est relâchée et toutes les hauteurs actuelles de la sélection sont dédupliquées puis réattaquées. Les hauteurs restées identiques sont donc elles aussi rejouées. Un déplacement seulement temporel ne provoque aucune nouvelle attaque.
+
+`selectionPreview.stop()` cesse de suivre le geste, annule les attaques en attente et relâche les voix brèves encore actives. La session `SELECTION_PREVIEW` n’a jamais remplacé le transport `CLIP`.
 
 Un appel ultérieur à `playProject(5760)` remplace à son tour le transport `CLIP`, déplace uniquement la tête globale au tick demandé et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
 
@@ -189,7 +196,7 @@ Les commandes suivantes choisissent une position sans changer la portée du tran
 | `playProject(3840)` | Place la tête globale à 2 s ; `Piano`, `Basse` et la partie encore active de `Percussions` participent au transport. |
 | `playProject(11520)` | Place la tête globale à 6 s et lit la fin du projet. |
 
-`playProject` reçoit directement un `Tick` global et aucune identité d'occurrence. `playClip(tick?)` utilise au contraire un tick local au clip édité. `preview(noteId)` ne déplace aucune tête et ne modifie pas le transport.
+`playProject` reçoit directement un `Tick` global et aucune identité d'occurrence. `playClip(tick?)` utilise au contraire un tick local au clip édité. `previewPitch` et `previewSelection` ne déplacent aucune tête et ne modifient pas le transport.
 
 Si une note de `Percussions` a commencé avant deux secondes mais couvre encore cette position, la note chase minimale la réattaque au démarrage et programme son relâchement pour sa durée restante. Aucun état antérieur d'enveloppe ou de voix n'est reconstruit.
 
