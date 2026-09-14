@@ -591,7 +591,7 @@ interface ClipEditorState {
 
 interface EditorState {
   projectPlayhead: Tick;
-  projectGridResolution: GridResolution;
+  gridResolution: GridResolution;
   clipEditor?: ClipEditorState;
   clipOccurrenceSelection: ClipOccurrenceSelection;
 }
@@ -609,9 +609,20 @@ Attribut possible :
 
 - `snapStepTicks`.
 
-Elle permet de convertir un geste en position ou durée quantifiée avant l'appel au domaine. Le déplacement et le redimensionnement global des occurrences utilisent obligatoirement `EditorState.projectGridResolution`, dans le référentiel global et sans dépendre d'une métrique. Pour un redimensionnement, la position quantifiée du bord est ensuite convertie en un `repeatCount` entier ; le bord effectif s’aligne donc sur la frontière de répétition complète la plus proche. Le piano roll utilise séparément `ClipEditorState.gridResolution`, dans le référentiel local du clip. Les deux instances emploient la même unité `Tick`, mais aucune égalité de pas ni dépendance structurelle n'est imposée entre elles.
+Les deux espaces possèdent des réglages indépendants :
 
-Les sélections et la résolution ne sont pas sauvegardées comme des données musicales. Leur persistance éventuelle relève des préférences ou de la restauration de session.
+| Espace | État | Valeur initiale |
+| --- | --- | ---: |
+| Grille globale | `EditorState.gridResolution` | `960` ticks, soit une noire |
+| Piano roll | `ClipEditorState.gridResolution` | `240` ticks, soit une double croche |
+
+La résolution globale sert au déplacement et au redimensionnement des occurrences ainsi qu’au positionnement quantifié de la tête globale. Elle travaille dans le référentiel global et ne dépend d’aucune métrique locale. Pour le redimensionnement d’une occurrence, la position quantifiée du bord est ensuite convertie en un `repeatCount` entier ; le bord effectif s’aligne donc sur la frontière de répétition complète la plus proche.
+
+La résolution locale sert à créer, déplacer et redimensionner les notes, à déplacer les changements de métrique ou d’harmonie et à positionner la tête locale. Elle travaille dans le référentiel du clip.
+
+Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre. Ouvrir un clip initialise son `ClipEditorState.gridResolution` à `240` ticks ; changer ou rouvrir un clip recrée cette valeur initiale.
+
+Les deux instances utilisent le même Value Object et la même unité `Tick`, sans pour autant partager leur valeur. Les résolutions et sélections ne sont pas sauvegardées comme des données musicales. Leur persistance éventuelle relève des préférences ou de la restauration de session.
 
 #### Têtes de lecture
 
@@ -1492,7 +1503,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Édition et invariants
 
-- **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
 
 ### Transport et contrat audio
 
