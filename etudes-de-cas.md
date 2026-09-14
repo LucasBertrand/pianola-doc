@@ -87,20 +87,20 @@ block-beta
 
 ## Cas 4 — Lignes sans association instrumentale
 
-L'occurrence `Couplet`, ligne `0`, référence un clip contenant des notes de piano et de basse. L'occurrence `Contrechant`, ligne `3`, référence un clip contenant des notes de piano et de cordes. Leurs intervalles globaux se chevauchent et les quatre parties peuvent donc être audibles simultanément.
+L'occurrence `Couplet`, ligne `0`, référence un clip associé au piano. L'occurrence `Contrechant`, ligne `3`, référence un clip associé aux cordes. Leurs intervalles globaux se chevauchent et les deux parties peuvent donc être audibles simultanément.
 
-Déplacer l'occurrence `Contrechant` sur la ligne `0` ne modifie aucune note ni aucun `InstrumentId`. Les deux occurrences continuent de jouer simultanément selon leurs seuls intervalles temporels ; seule une modification de leur couverture temporelle nécessiterait une replanification audio.
+Déplacer l'occurrence `Contrechant` sur la ligne `0` ne modifie ni les notes ni le `Clip.instrumentId` de chaque source. Les deux occurrences continuent de jouer simultanément selon leurs seuls intervalles temporels ; seule une modification de leur couverture temporelle nécessiterait une replanification audio.
 
 Une ligne est uniquement une coordonnée d'organisation. Elle n'impose pas d'instrument et ne crée ni bus, ni filtre, ni contexte audio commun entre les clips qui l'occupent.
 
 ## Cas 5 — Deux clips utilisent le même instrument
 
-Deux occurrences qui se chevauchent référencent chacune un clip contenant une note de même hauteur jouée par le même instrument.
+Deux occurrences qui se chevauchent référencent chacune un clip associé au piano et contenant une note de même hauteur.
 
 | Occurrence | Source | Instrument | Hauteur | Début | Fin |
 | --- | --- | --- | --- | ---: | ---: |
-| `occurrence-a` | note A du clip A | piano | do | 0 s | 4 s |
-| `occurrence-b` | note B du clip B | piano | do | 1 s | 2 s |
+| `occurrence-a` | clip A · note A | piano | do | 0 s | 4 s |
+| `occurrence-b` | clip B · note B | piano | do | 1 s | 2 s |
 
 À deux secondes, le moteur relâche uniquement `occurrence-b`. La voix correspondant à `occurrence-a` continue jusqu'à quatre secondes. Une commande identifiée seulement par l'instrument et la hauteur serait insuffisante.
 
@@ -257,7 +257,7 @@ Le moteur retire les anciennes commandes non exécutées dont `at >= 5` et insta
 
 Si l'ancien et le nouveau début global de la note restent avant la tête, tandis que sa fin reste après, l'occurrence de note audible est conservée et seul son `NOTE_OFF` est replanifié. Si le déplacement de la `ClipOccurrence` place l'attaque après la tête, l'occurrence de note reçoit un `NOTE_OFF` à la borne et sa future attaque est replanifiée. Une note auparavant inactive qui couvre désormais la tête reçoit un `NOTE_ON` à cette borne.
 
-Une modification de hauteur, d'instrument ou de vélocité impose une relâche puis une réattaque lorsque la note reste couverte. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
+Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Changer l'instrument du clip applique cette règle à chacune de ses notes audibles dans toutes ses occurrences actives. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
 
 Le déplacement du changement local participe au même recalcul atomique. Le `PlaybackSessionId`, l'origine temporelle et la position musicale du transport ne changent pas.
 
@@ -272,7 +272,7 @@ Le clip source `Ostinato` possède une durée de 1920 ticks et contient `note-a`
 
 Les deux occurrences se chevauchent et sont planifiées dans deux `PlaybackContext` distincts. Les attaques issues de `note-a` reçoivent des `NoteOccurrenceId` distincts ; elles ne partagent ni voix ni instance audio malgré leur `ClipId` commun.
 
-Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. Transposer `note-a`, modifier sa vélocité, déplacer un changement local ou redimensionner le clip met immédiatement à jour les deux occurrences. Pendant un transport, le `PlaybackService` réconcilie séparément leurs occurrences de notes audibles et leurs commandes futures.
+Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. Transposer `note-a`, modifier sa vélocité, changer l'instrument du clip, déplacer un changement local ou redimensionner le clip met immédiatement à jour les deux occurrences. Pendant un transport, le `PlaybackService` réconcilie séparément leurs occurrences de notes audibles et leurs commandes futures.
 
 Déplacer `ostinato-b`, changer sa ligne ou son `repeatCount` ne modifie pas `ostinato-a`, car ces propriétés appartiennent à chaque `ClipOccurrence`. Dupliquer `ostinato-a` crée par défaut une troisième occurrence liée au même `clipId`. Une copie indépendante exige la création explicite d'un nouveau clip source.
 
@@ -291,7 +291,7 @@ calculateInterval(
 ```
 
 - le `Project` fournit un tempo unique à toutes les conversions vers les secondes ;
-- chaque `ClipOccurrence` calcule ses événements à partir de son `start`, de son `repeatCount` et des positions locales du `Clip` référencé ;
+- chaque `ClipOccurrence` calcule ses événements à partir de son `start`, de son `repeatCount` et des positions locales du `Clip` référencé ; chaque `NOTE_ON` reçoit l'`instrumentId` unique de ce clip ;
 - toutes les occurrences dont les intervalles se chevauchent sont actives simultanément, quelle que soit leur ligne ou leur référence source ;
 - un changement de ligne n'entraîne aucune replanification sonore ;
 - `play()` commence à la position actuelle de la tête ;

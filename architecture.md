@@ -22,7 +22,7 @@ Pianola sépare quatre responsabilités :
 
 | Couche | Responsabilité | Exemples |
 | --- | --- | --- |
-| Domaine | Représenter la composition et garantir ses invariants musicaux. | `Project`, `Clip`, `ClipOccurrence`, `Note` et temps musical |
+| Domaine | Représenter la composition et garantir ses invariants musicaux. | `Project`, `Clip`, `ClipOccurrence`, `Note`, temps musical et pitch |
 | Application | Orchestrer l'édition et la lecture à partir du domaine. | état de l'éditeur, cas d'usage, ports |
 | Infrastructure | Réaliser les capacités techniques demandées par l'application. | Web Audio, catalogue concret, persistance |
 | Présentation | Afficher la grille et traduire les gestes utilisateur. | blocs de clips, piano roll, inspecteur |
@@ -54,7 +54,7 @@ Le premier périmètre comprend :
 - un placement horizontal et une ligne persistants pour chaque occurrence de clip ;
 - des occurrences référençant par défaut un contenu `Clip` partagé : modifier ce contenu modifie toutes ses occurrences ;
 - un tempo unique appartenant au projet ;
-- des notes associées individuellement à un instrument ;
+- un instrument associé à chaque clip et partagé par toutes ses notes ;
 - des chronologies de métrique, de tonalité et d'harmonie locales à chaque clip ;
 - la lecture simultanée de tous les clips dont les intervalles globaux se chevauchent ;
 - l'édition du contenu d'un clip dans un piano roll ;
@@ -91,6 +91,7 @@ flowchart TD
     Project --> OccB["ClipOccurrence · placement B"]
     OccA --> Clip
     OccB --> Clip
+    Clip --> Instrument
     Clip --> Content["Notes · métrique · Key · Harmony"]
 ```
 
@@ -103,9 +104,9 @@ Les lignes ne sont ni des pistes, ni des conteneurs, ni des canaux audio. Deux o
 | Concept | Nature | Rôle principal |
 | --- | --- | --- |
 | `Project` | Entity et racine d'agrégat | Posséder le document musical, le tempo, les clips et leurs occurrences |
-| `Clip` | Entity interne | Porter un contenu musical local partagé et éditable |
+| `Clip` | Entity interne | Porter un instrument et un contenu musical local partagé et éditable |
 | `ClipOccurrence` | Entity interne | Référencer un clip et porter son placement global dans la grille |
-| `Note` | Entity interne | Représenter une note persistante associée à un instrument |
+| `Note` | Entity interne | Représenter une note persistante dont l'instrument est hérité du clip |
 | `Instrument` | Entity de référence | Décrire publiquement un instrument intégré |
 | `Tempo` | Value Object | Définir la vitesse unique du projet |
 | `MeterChange` | Entity interne | Placer une métrique sur la chronologie locale d'un clip |
@@ -143,13 +144,14 @@ La durée structurelle du projet est dérivée de la fin globale la plus tardive
 
 ### Clip
 
-`Clip` représente un contenu musical local éditable dans le piano roll et partageable par plusieurs occurrences.
+`Clip` représente un contenu musical local éditable dans le piano roll, associé à un instrument et partageable par plusieurs occurrences.
 
 Attributs possibles :
 
 - `id` ;
 - `name` ;
 - `duration` ;
+- `instrumentId` ;
 - `notes` ;
 - `meterChanges` ;
 - `keyChanges` ;
@@ -158,7 +160,8 @@ Attributs possibles :
 Responsabilités et invariants :
 
 - définir sa durée canonique locale en ticks ;
-- contenir des notes positionnées relativement à son début local ;
+- référencer exactement un `InstrumentId` ;
+- contenir des notes positionnées relativement à son début local, toutes jouées par l'instrument du clip ;
 - contenir et ordonner ses trois chronologies locales ;
 - fournir la métrique, la tonalité et l'harmonie actives à une position locale ;
 - garantir la cohérence locale de ses notes et changements.
@@ -194,15 +197,14 @@ Deux occurrences peuvent partager la même ligne et tout ou partie du même inte
 
 ### Note
 
-`Note` représente une note placée dans un clip et associée à un instrument.
+`Note` représente une note placée dans un clip. Son instrument est celui du clip qui la contient.
 
 Attributs possibles :
 
 - `id` ;
 - `pitch` ;
 - `range` ;
-- `velocity` ;
-- `instrumentId`.
+- `velocity`.
 
 Une note possède une identité afin de conserver sa continuité lorsqu'elle est déplacée, redimensionnée, transposée ou modifiée. Une copie ou une duplication reçoit une nouvelle identité.
 
@@ -212,7 +214,6 @@ Invariants :
 - la durée est strictement positive ;
 - la note se termine au plus tard à la fin locale du clip ;
 - la hauteur et la vélocité restent dans leurs plages valides ;
-- exactement un `InstrumentId` est présent ;
 - sa relation à la `Key` et à l'`Harmony` actives est dérivée et n'est pas sauvegardée ;
 - une note extérieure à la tonalité, à l'accord ou à la gamme active reste valide.
 
@@ -235,7 +236,7 @@ Attributs possibles :
 
 `InstrumentId` est un type stable et opaque déclaré avec `Instrument` dans `domain/Instrument.ts`.
 
-Une `Note` sauvegarde uniquement cet identifiant, et non une référence directe vers l'objet `Instrument`. Plusieurs instruments peuvent coexister dans un même clip, et plusieurs clips peuvent référencer le même instrument. Le placement d'une occurrence sur une ligne ne modifie jamais cette association.
+Un `Clip` sauvegarde uniquement cet identifiant, et non une référence directe vers l'objet `Instrument`. Il référence exactement un instrument, dont héritent toutes ses notes. Plusieurs clips peuvent référencer le même instrument. Le placement d'une occurrence sur une ligne ne modifie jamais cette association.
 
 `Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni configuration d'échantillons, ni état de voix, ni objet du moteur audio.
 
@@ -256,15 +257,6 @@ Les battements, mesures et secondes sont des représentations dérivées. La gri
 | `LineIndex` | entier | Entier positif ou nul, sans sémantique audio |
 | `Tempo` | `bpm` | Valeur unique et musicalement exploitable du projet |
 | `Meter` | `beatsPerMeasure`, `beatUnit` | Permet de calculer les frontières de mesure locales |
-| `Pitch` | `midiNumber` | Le nom et l'octave peuvent être dérivés |
-| `Tonic` | `letter`, `accidental` | Centre tonal orthographié sans octave |
-| `Key` | `tonic`, `mode` | Tonalité active |
-| `ChordRoot` | `letter`, `accidental` | Fondamentale orthographiée d'un accord |
-| `ScaleRoot` | `letter`, `accidental` | Tonique orthographiée d'une gamme |
-| `TonalDegree` | `value`, `accidental` | Degré éventuellement altéré dans la tonalité active |
-| `Chord` | `reference`, `typeId` | Accord défini par une fondamentale ou un degré |
-| `Scale` | `reference`, `typeId` | Gamme définie par une tonique ou un degré |
-| `Harmony` | `kind`, `chord` ou `scale` | Matériau harmonique actif, accord ou gamme |
 
 Avec une résolution de 960 ticks par noire :
 
@@ -284,6 +276,22 @@ noteGlobalStart = occurrence.start
 La métrique du clip n'intervient pas dans cette conversion. Elle structure les mesures et les repères locaux sans créer une horloge indépendante.
 
 `TimeRange` facilite notamment la détection des chevauchements ainsi que les opérations de déplacement et de redimensionnement.
+
+### Hauteur, tonalité et harmonie
+
+Ces objets décrivent la hauteur des notes et leur contexte tonal ou harmonique. Ils n'appartiennent pas au calcul du temps musical.
+
+| Value Object | Représentation | Règles principales |
+| --- | --- | --- |
+| `Pitch` | `midiNumber` | Le nom et l'octave peuvent être dérivés |
+| `Tonic` | `letter`, `accidental` | Centre tonal orthographié sans octave |
+| `Key` | `tonic`, `mode` | Tonalité active |
+| `ChordRoot` | `letter`, `accidental` | Fondamentale orthographiée d'un accord |
+| `ScaleRoot` | `letter`, `accidental` | Tonique orthographiée d'une gamme |
+| `TonalDegree` | `value`, `accidental` | Degré éventuellement altéré dans la tonalité active |
+| `Chord` | `reference`, `typeId` | Accord défini par une fondamentale ou un degré |
+| `Scale` | `reference`, `typeId` | Gamme définie par une tonique ou un degré |
+| `Harmony` | `kind`, `chord` ou `scale` | Matériau harmonique actif, accord ou gamme |
 
 `Tonic` conserve l'orthographe du centre tonal sous la forme d'une lettre et d'une altération, sans octave. Sa classe de hauteur chromatique est dérivée et n'est pas sauvegardée séparément : `C_SHARP` et `D_FLAT` sont enharmoniquement équivalents, mais restent deux valeurs distinctes. `Key` associe une `Tonic` à un mode tonal. Elle fournit un contexte d'analyse et de présentation sans déplacer ni invalider les notes.
 
@@ -498,7 +506,7 @@ Exemples :
 - créer, dupliquer, délier ou supprimer des occurrences ;
 - modifier le tempo unique du projet ;
 - modifier le `repeatCount` d'une occurrence ;
-- associer un instrument disponible à une ou plusieurs notes.
+- associer un instrument disponible à un clip.
 
 La substitution du projet transitoire est commune à tous les gestes d'édition. Chaque geste reste porté par un cas d'usage explicite, qui peut transformer atomiquement plusieurs types d'éléments lorsqu'ils participent à une même intention utilisateur.
 
@@ -564,7 +572,7 @@ La réconciliation compare, pour chaque couple `(ClipOccurrence, Note)`, la couv
 
 Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d'une `ClipOccurrence`. Déplacer le début d'une note ou d'une occurrence de clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Modifier un `Clip` source déclenche la même réconciliation séparément pour chacune de ses occurrences actives ou planifiées.
 
-Si la note reste couverte mais que sa hauteur, son `instrumentId`, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
+Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Changer le `Clip.instrumentId` applique la même règle à toutes les notes audibles issues de toutes les occurrences actives de ce clip. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
 
 Cette replanification est une conséquence applicative du geste d'édition, pas une nouvelle commande publique de la présentation.
 
@@ -653,9 +661,9 @@ La lecture utilise trois niveaux d'identité opaques et transitoires :
 | `PlaybackContextId` | Une unité audio isolée appartenant à une session |
 | `NoteOccurrenceId` | Une attaque précise dans un contexte |
 
-Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions. Deux notes utilisant le même instrument, la même hauteur et le même instant restent ainsi indépendantes.
+Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions. Deux notes issues de clips associés au même instrument, avec la même hauteur et le même instant, restent ainsi indépendantes.
 
-Un nouveau contexte est créé à chaque activation d'une occurrence de clip et à chaque préécoute de note. Les répétitions d'une même occurrence réutilisent son contexte et ses instances d'instrument, mais produisent de nouvelles occurrences de notes. Deux occurrences simultanées référençant le même `ClipId` possèdent toujours des contextes distincts.
+Un nouveau contexte est créé à chaque activation d'une occurrence de clip et à chaque préécoute de note. Les répétitions d'une même occurrence réutilisent son contexte et son instance d'instrument, mais produisent de nouvelles occurrences de notes. Deux occurrences simultanées référençant le même `ClipId` possèdent toujours des contextes distincts.
 
 Les identifiants persistants `ClipId`, `ClipOccurrenceId` et `NoteId` restent connus du domaine et du service. Ils ne sont pas transmis au moteur audio.
 
@@ -692,7 +700,7 @@ Les scénarios complets sont décrits dans [etudes-de-cas.md](etudes-de-cas.md).
 
 #### AudioEngine
 
-`AudioEngine` accepte des identités d'exécution et des commandes audio sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio.
+`AudioEngine` accepte des identités d'exécution et des commandes audio sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Le `PlaybackService` copie le `Clip.instrumentId` dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
 
 ```ts
 type AudioCommand = {
@@ -788,7 +796,7 @@ Dans cette représentation :
 | Blocs chevauchants | Occurrences lues simultanément |
 | Tête de lecture verticale | `ProjectPosition` utilisée par `play()` |
 
-Une ligne ne possède aucun instrument implicite. Deux occurrences d'une même ligne peuvent référencer des clips utilisant des instruments différents ; un clip peut lui-même contenir plusieurs instruments. Déplacer une occurrence verticalement ne change donc jamais le son.
+Une ligne ne possède aucun instrument implicite. Deux occurrences d'une même ligne peuvent référencer des clips associés à des instruments différents. Chaque clip conserve toutefois un seul instrument pour toutes ses notes. Déplacer une occurrence verticalement ne change donc jamais le son.
 
 La grille applique directement la sémantique du transport :
 
@@ -855,7 +863,7 @@ Une session remplacée ne devient pas elle-même `DRAINING`. Elle subsiste uniqu
 Il possède notamment :
 
 - un bus de sortie propre ;
-- une table `InstrumentId -> InstrumentInstance` ;
+- l'`InstrumentId` du clip joué et son unique `InstrumentInstance`, créés paresseusement au premier `NOTE_ON` ;
 - une table `NoteOccurrenceId -> VoiceHandle` ;
 - les commandes programmées qui doivent pouvoir être annulées ;
 - un état `SCHEDULED`, `ACTIVE`, `DRAINING` ou `DISPOSED`.
@@ -902,7 +910,7 @@ Une préécoute de note utilise le même type de contexte. Le `PlaybackService` 
 
 `InstrumentInstance` adapte une instance `smplr` au cycle de vie audio de Pianola.
 
-Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Pour un contexte, une seule instance est créée paresseusement par `InstrumentId`. Deux contextes utilisant le même instrument possèdent donc des instances indépendantes.
+Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Comme toutes les notes d'un clip partagent son `InstrumentId`, un contexte de lecture de clip crée au plus une instance, paresseusement. Deux contextes jouant des clips associés au même instrument possèdent néanmoins des instances indépendantes.
 
 Lors d'un `NOTE_ON`, l'instance déclenche la note à l'instant `at`. Le contrôle d'arrêt retourné par `smplr` est associé au `NoteOccurrenceId` par le contexte, afin qu'un `NOTE_OFF` puisse relâcher exactement la bonne occurrence.
 
@@ -922,7 +930,7 @@ Il assure :
 
 - la gestion des sessions et contextes ;
 - la résolution des instruments auprès de `StaticInstrumentCatalog` ;
-- la création d'une instance par couple `(PlaybackContext, InstrumentId)` ;
+- la création d'une unique instance pour l'`InstrumentId` associé au clip de chaque `PlaybackContext` ;
 - la planification des commandes sur l'horloge de l'`AudioContext` ;
 - le remplacement atomique des commandes futures d'une session ;
 - l'association de chaque `NoteOccurrenceId` au contrôle d'arrêt de sa voix ;
@@ -943,7 +951,7 @@ La sauvegarde contient notamment le tempo unique du projet, les contenus `Clip`,
 
 Seul le `project` courant validé peut être sauvegardé. `transientProject` et `effectiveProject` appartiennent à l'orchestration applicative et ne traversent jamais le port de persistance. Une demande de sauvegarde effectuée pendant une manipulation enregistre donc le dernier `project` validé, sans adopter implicitement le projet transitoire.
 
-La stratégie applicable lorsqu'un `InstrumentId` sauvegardé ne peut plus être résolu n'est pas encore définie. Elle sera traitée avec la conception de la persistance.
+La stratégie applicable lorsqu'un `Clip.instrumentId` sauvegardé ne peut plus être résolu n'est pas encore définie. Elle sera traitée avec la conception de la persistance.
 
 ---
 
@@ -962,7 +970,7 @@ Quelques relations structurantes :
 - `Project.clips` possède les contenus musicaux partagés ;
 - `Project.clipOccurrences` possède les blocs placés dans la grille ;
 - `ClipOccurrence.clipId` référence son contenu, tandis que `start`, `line` et `repeatCount` décrivent uniquement son emploi global ;
-- `Note.instrumentId` référence un instrument sans importer sa définition technique ;
+- `Clip.instrumentId` référence l'unique instrument de toutes les notes du clip sans importer sa définition technique ;
 - `transientProject` remplace provisoirement `project` sans constituer un type du domaine ;
 - `effectiveProject` résout cette substitution pour la présentation et le `PlaybackService` ;
 - seule la valeur `project` est proposée à la persistance ;
@@ -970,7 +978,7 @@ Quelques relations structurantes :
 - `InstrumentCatalog` expose les instruments disponibles à l'application ;
 - `StaticInstrumentCatalog` implémente ce port et fournit au moteur les définitions capables de créer les instances `smplr` ;
 - `PlaybackSession` possède des `PlaybackContext` ;
-- chaque contexte possède au plus une `InstrumentInstance` par `InstrumentId`.
+- chaque contexte de lecture de clip possède au plus une `InstrumentInstance`, correspondant au `Clip.instrumentId`.
 
 ## Questions ouvertes
 
