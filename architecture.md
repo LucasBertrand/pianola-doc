@@ -741,7 +741,7 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures et u
 
 Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe, y compris ses collisions provisoires.
 
-Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` susceptible d'affecter sa portée invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service la recalcule depuis le nouvel `effectiveProject` et transmet les changements au moteur lors du prochain cycle de planification sûr. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `CLIP`, seules les modifications du clip attaché à la session et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
+Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` susceptible d'affecter sa portée invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service obtient alors `safeAt` par `AudioEngine.getClock(sessionId)`, recalcule depuis cette borne avec le nouvel `effectiveProject`, puis transmet une unique mise à jour atomique au moteur. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `CLIP`, seules les modifications du clip attaché à la session et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
 
 Valider un brouillon sans en modifier la projection sonore ne doit provoquer ni nouvelle planification ni rupture. L'abandonner entraîne la même réconciliation que toute autre modification du projet effectif.
 
@@ -999,7 +999,7 @@ Le mode par défaut est `GRACEFUL` :
 
 #### AudioEngine
 
-`AudioEngine` accepte des identités d'exécution et des commandes audio sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Le `PlaybackService` copie le `Clip.instrumentId` dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
+`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Le `PlaybackService` copie le `Clip.instrumentId` dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
 
 ```ts
 type AudioCommand = {
@@ -1019,6 +1019,25 @@ type AudioCommand = {
     }
 );
 
+interface ContextCompletion {
+  contextId: PlaybackContextId;
+  at: number;
+}
+
+interface PlaybackSchedule {
+  audioCommands: readonly AudioCommand[];
+  contextCompletions: readonly ContextCompletion[];
+}
+
+interface ScheduleUpdate extends PlaybackSchedule {
+  from: number;
+}
+
+interface PlaybackClock {
+  now: number;
+  safeAt: number;
+}
+
 interface AudioEngine {
   prepareInstruments(instrumentIds: readonly InstrumentId[]): Promise<void>;
 
@@ -1032,29 +1051,44 @@ interface AudioEngine {
     contextId: PlaybackContextId
   ): void;
 
-  schedule(commands: readonly AudioCommand[]): void;
+  getClock(sessionId: PlaybackSessionId): PlaybackClock;
 
-  replaceScheduledCommands(
+  schedule(
     sessionId: PlaybackSessionId,
-    from: number,
-    commands: readonly AudioCommand[]
+    schedule: PlaybackSchedule
   ): void;
 
-  completeContext(contextId: PlaybackContextId): void;
+  replaceSchedule(
+    sessionId: PlaybackSessionId,
+    update: ScheduleUpdate
+  ): void;
+
   stopContext(contextId: PlaybackContextId, mode: StopMode): void;
   stopSession(sessionId: PlaybackSessionId, mode: StopMode): void;
 }
 ```
 
+Tous les champs `at`, ainsi que `PlaybackClock.now`, `PlaybackClock.safeAt` et `ScheduleUpdate.from`, sont exprimés en secondes relativement au début de la session. Le moteur possède l’horloge monotone et la conversion vers son horloge technique interne ; l’application n’utilise ni `Date.now()` ni directement `AudioContext.currentTime`.
+
+`now` représente la position audio actuelle de la session. `safeAt` est la première borne que l’application peut encore remplacer ou programmer de façon fiable selon le lookahead, la latence et le cycle du moteur. Le moteur garantit `safeAt >= now`. Les événements antérieurs à `safeAt` sont considérés comme engagés.
+
 `prepareInstruments` résout et charge toutes les ressources demandées. `PlaybackService` attend sa réussite avant `openSession`. Lors d’un changement d’instrument en cours de session, il attend également cette réussite avant de modifier `effectiveProject`, d’ouvrir les nouveaux contextes et de drainer les anciens. Le chargement reste ainsi technique sans déplacer dans l'application les définitions `smplr`.
 
-`openContext` enregistre une seule fois la relation entre le contexte et sa session propriétaire. Chaque `AudioCommand` transporte donc uniquement son `contextId`.
+`openContext` enregistre une seule fois la relation entre le contexte et sa session propriétaire. Chaque `AudioCommand` et `ContextCompletion` transporte donc uniquement son `contextId`.
 
-`replaceScheduledCommands` retire, pour la session ciblée, toutes les commandes non encore exécutées dont `at >= from`, puis installe atomiquement la nouvelle séquence. `from` et les `AudioCommand.at` sont exprimés en secondes relativement au début de la session. Son identité, son origine temporelle et la continuité du transport restent inchangées.
+`ContextCompletion` n’est pas une commande sonore. Elle fixe la fin structurelle planifiée d’un contexte : aucune nouvelle attaque de ce contexte n’est acceptée à partir de `at`, ses voix encore actives sont relâchées, puis il passe à `DRAINING` ou directement à `DISPOSED`. Les commandes et fins nécessaires placées avant cette borne restent exécutées.
 
-Cette opération ne relâche aucune occurrence active et ne détruit aucun contexte par elle-même. Le `PlaybackService` exprime ces effets par les nouvelles commandes. Les nouveaux contextes nécessaires sont ouverts avant le remplacement ; ceux devenus inutiles sont ensuite achevés ou arrêtés selon leur cycle de vie.
+`replaceSchedule` retire, pour la session ciblée, les `AudioCommand` et `ContextCompletion` non encore exécutés dont `at >= from`, puis installe atomiquement les deux nouvelles collections. `from` doit être supérieur ou égal au `safeAt` obtenu pour cette mise à jour. L’identité, l’origine temporelle et la continuité du transport restent inchangées.
 
-`completeContext` signale la fin structurelle et autorise le drainage naturel. `stopContext` et `stopSession` demandent un arrêt selon le `StopMode` indiqué. Ces opérations ne servent pas à replanifier un transport qui continue.
+À un même instant `at`, le moteur garantit l’ordre suivant sur l’ensemble de la session :
+
+1. tous les `NOTE_OFF` ;
+2. toutes les `ContextCompletion` ;
+3. tous les `NOTE_ON`.
+
+Une fin de contexte interdit ainsi ses propres attaques simultanées, tandis qu’un `NOTE_ON` appartenant à un nouveau contexte reste accepté. Entre événements d’une même catégorie et du même instant, l’ordre d’insertion est stable mais ne porte aucune signification musicale.
+
+`stopContext` et `stopSession` restent les opérations d’interruption demandées immédiatement selon un `StopMode`. Elles sont distinctes d’une `ContextCompletion` planifiée et ne servent pas à replanifier un transport qui continue.
 
 `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais ce port.
 
@@ -1200,13 +1234,13 @@ stateDiagram-v2
 | `DRAINING` | La lecture structurelle est terminée ; seules les occurrences relâchées et les tails subsistent. | Toute nouvelle attaque est refusée. |
 | `DISPOSED` | La chaîne audio, les instances et les références du contexte ont été libérées. | Toute commande devient sans effet. |
 
-`completeContext` exprime la fin structurelle décidée par le `PlaybackService`. Le moteur annule les commandes encore futures du contexte, relâche ses occurrences actives et passe à `DRAINING` si un signal peut encore être produit ; sinon il passe directement à `DISPOSED`.
+Une `ContextCompletion` exprime la fin structurelle décidée par le `PlaybackService`. À son instant planifié, le moteur refuse les nouvelles attaques de ce contexte, relâche ses occurrences encore actives et passe à `DRAINING` si un signal peut encore être produit ; sinon il passe directement à `DISPOSED`.
 
 Un arrêt `GRACEFUL` suit la même sortie vers `DRAINING`, mais peut survenir avant la fin structurelle. Le remplacement préparé d’un instrument utilise également cette sortie pour l’ancien contexte, tandis que le nouveau contexte est ouvert dans la même session. Un arrêt `IMMEDIATE` annule les commandes futures, coupe la sortie et conduit directement à `DISPOSED` depuis tout état non détruit.
 
 Le moteur réalise seul la transition `DRAINING -> DISPOSED`, lorsqu'aucune voix ni aucun tail ne peut encore produire de signal, ou lorsque la durée maximale de sécurité est atteinte. Il notifie alors la session propriétaire, qui est elle-même détruite dès que tous ses contextes sont `DISPOSED`.
 
-Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peut pas redevenir `ACTIVE` : si une replanification exige de nouvelles attaques après son achèvement, le `PlaybackService` doit ouvrir un nouveau contexte. `replaceScheduledCommands` ne change en revanche pas l'état d'un contexte encore `SCHEDULED` ou `ACTIVE`.
+Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peut pas redevenir `ACTIVE` : si une replanification exige de nouvelles attaques après son achèvement, le `PlaybackService` doit ouvrir un nouveau contexte. `replaceSchedule` peut déplacer une fin encore future, mais ne change pas l'état d'un contexte toujours `SCHEDULED` ou `ACTIVE`.
 
 Si une occurrence est déplacée au-delà de la tête alors que son ancien contexte est déjà `DRAINING`, ce contexte conserve uniquement ses releases et tails jusqu'au silence. Il n'est ni réactivé ni coupé. Si le nouveau placement requiert des attaques futures, le service ouvre un autre contexte indépendant.
 
@@ -1273,7 +1307,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 ### Transport et contrat audio
 
 - **Préparation asynchrone :** comment propager les erreurs de chargement, invalider un démarrage dépassé par un nouvel appel ou un `stop`, et tenir compte d’un projet modifié pendant l’attente ? Un seek vers une banque non chargée suit la même barrière ; préciser son état visible pendant l’attente.
-- **Horloge et fin structurelle :** comment le service obtient-il l’horloge et une borne sûre du moteur ? `completeContext` doit-il être horodaté pour éviter qu’un appel anticipé annule des commandes encore nécessaires ? Quel ordre garantir aux `NOTE_OFF` et `NOTE_ON` simultanés ?
 - **Erreurs publiques :** quelles signatures de résultat employer pour les appels invalides de lecture, seek et préécoute, actuellement présentés avec `void`, `Promise<void>` ou un handle ? Distinguer validation applicative et erreur technique de chargement.
 - **Têtes et portée :** que devient la tête à la fin naturelle, après un raccourcissement du contenu ou lors d’un départ à la fin ou au-delà ? Que devient une session `CLIP` si son clip non placé est supprimé pendant la lecture ?
 
@@ -1341,7 +1374,7 @@ Les modules de temps et de hauteur sont déclarés directement sous `domain/`. C
 
 `ProjectState` conserve le `project` validé, son éventuel `transientProject`, brouillon applicatif du geste, et une éventuelle demande de changement d’instrument en préparation. `effectiveProject` est la résolution dérivée utilisée par la présentation et l’audio ; ce nom ne lui confère pas les invariants du `Project` domaine et ne nécessite ni fichier ni état autonome.
 
-`PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
+`PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand`, `ContextCompletion`, `PlaybackSchedule`, `PlaybackClock` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
 
 Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou des comportements indépendants.
 
