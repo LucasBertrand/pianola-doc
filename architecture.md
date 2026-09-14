@@ -592,41 +592,45 @@ Une session `CLIP` reste attachée au `clipId` avec lequel elle a été ouverte.
 
 #### Projet transitoire
 
-L'application distingue le projet courant validé d'un éventuel projet transitoire produit pendant une manipulation.
+L'application distingue le projet courant validé d'un éventuel projet transitoire représentant le brouillon du geste en cours.
 
 ```ts
 interface ProjectState {
   project: Project;
-  transientProject?: Project;
+  transientProject?: TransientProject;
 }
 
-const effectiveProject = state.transientProject ?? state.project;
+const effectiveProject: Project | TransientProject =
+  state.transientProject ?? state.project;
 ```
 
-`project` est la version courante faisant autorité dans l'éditeur. Elle peut comporter des modifications validées qui n'ont pas encore été sauvegardées. Le terme ne doit donc pas être remplacé par `persistedProject`.
+`project` est la version courante faisant autorité dans l'éditeur. Elle respecte les invariants du domaine et peut comporter des modifications validées qui n'ont pas encore été sauvegardées. Le terme ne doit donc pas être remplacé par `persistedProject`.
 
-`transientProject` est le résultat provisoire de la manipulation en cours. Il remplace temporairement `project` pour tous les usages interactifs, sans le modifier. Il reste un `Project` ordinaire soumis aux mêmes invariants : aucun type `TransientProject` n'est introduit dans le domaine.
+`TransientProject` appartient à l'application. Il constitue une projection complète de `project` après application visuelle et sonore du geste, mais n'est pas un `Project` du domaine. Il peut notamment contenir provisoirement des chevauchements de notes de même hauteur. Il ne peut être ni sauvegardé, ni transmis à une opération exigeant un agrégat valide.
 
-`effectiveProject` est une valeur dérivée, jamais un troisième projet stocké :
+`effectiveProject` est une valeur dérivée, jamais un troisième état stocké :
 
 - il vaut `transientProject` lorsqu'il existe ;
 - il vaut sinon `project` ;
 - il constitue la source commune de la présentation et de la lecture audio ;
+- son nom relève du vocabulaire applicatif et ne garantit pas la validité de domaine de sa valeur ;
 - il n'est jamais transmis tel quel à la persistance.
 
-Un seul projet transitoire peut exister à la fois. Chaque actualisation est recalculée depuis `project`, et non depuis la version transitoire précédente, afin d'éviter l'accumulation d'arrondis au cours d'un geste continu.
+Un seul projet transitoire peut exister à la fois. Chaque actualisation est recalculée depuis `project` et l'intention initiale du geste, non depuis la projection précédente, afin d'éviter l'accumulation d'arrondis.
 
-Le cycle de substitution expose conceptuellement trois opérations :
+Le cycle expose conceptuellement trois opérations :
 
 ```ts
-setTransientProject(project: Project): void;
-applyTransientProject(): void;
+setTransientProject(project: TransientProject): void;
+commitTransientProject(
+  resolution?: NoteCollisionResolution
+): Result<Project, ProjectEditError>;
 discardTransientProject(): void;
 ```
 
-`setTransientProject` crée ou remplace le résultat provisoire. `applyTransientProject` en fait atomiquement le nouveau `project`, puis supprime l'état transitoire. `discardTransientProject` l'abandonne et rétablit immédiatement le projet précédent comme projet effectif.
+`setTransientProject` crée ou remplace le brouillon affiché et joué. `commitTransientProject` soumet l'intention finale au domaine et ne remplace `project` que si un nouveau projet valide est produit. `discardTransientProject` abandonne le brouillon et rétablit immédiatement le projet validé comme projet effectif.
 
-Appliquer un projet transitoire ne le sauvegarde pas. Une application du projet transitoire formera également une seule unité dans un futur historique d'annulation, quels que soient le nombre de mises à jour produites pendant le geste.
+Valider le geste ne sauvegarde pas le projet. Sa validation formera également une seule unité dans un futur historique d'annulation, quels que soient le nombre de mouvements intermédiaires et le mode de résolution éventuellement choisi.
 
 ### Cas d'usage d'édition
 
@@ -684,15 +688,25 @@ Les identifiants des entités déplacées sont conservés. Lorsqu'une transforma
 
 #### Orchestration des collisions
 
-Les cas d'usage qui créent ou modifient une note acceptent un mode facultatif :
+Pendant un déplacement, un redimensionnement ou une autre manipulation continue, la présentation met à jour `transientProject` à chaque mouvement. Cette projection suit le pointeur et reste la source commune du rendu visuel et audio, même lorsqu'elle contient provisoirement plusieurs notes de même hauteur en collision. Ces notes sont alors rendues comme des occurrences sonores simultanées.
+
+Aucune résolution `SLICE` ou `MERGE` n'est exécutée pendant le geste et aucun fragment n'est créé. Les collisions intermédiaires n'ont donc aucun effet durable.
+
+Au relâchement, le cas d'usage soumet une seule fois l'intention finale quantifiée au domaine :
 
 ```ts
-type NoteEditResult = Result<Project, ProjectEditError>; // validation de l’agrégat
+type NoteEditResult = Result<Project, ProjectEditError>;
 ```
 
-La première tentative est effectuée sans `NoteCollisionResolution`. Si le résultat quantifié ferait chevaucher la note manipulée avec une ou plusieurs notes de même hauteur, le cas d'usage retourne `err(noteCollisionError)` avec le code `NOTE_OVERLAP`, sans remplacer le dernier projet effectif valide. La présentation demande alors à l'utilisateur `SLICE` ou `MERGE`, puis rejoue la même intention avec le mode choisi. Le domaine ne dépend donc d'aucune interaction utilisateur et aucun état intermédiaire invalide n'est créé.
+Sans collision, le projet valide retourné remplace `project` et `transientProject` disparaît. En cas de `NOTE_OVERLAP`, le brouillon final reste affiché et audible, tandis que la commande finale est suspendue. La présentation demande alors `SLICE`, `MERGE` ou l'annulation :
 
-Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-collisions-de-notes). Le cas d’usage soumet le clip résultant à la validation du `Project` avant de publier un état. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La résolution constitue une seule future unité d’annulation.
+- `SLICE` ou `MERGE` rejoue la même intention contre `project`, avec le mode choisi ;
+- les fragments et leurs identifiants sont créés une seule fois pendant cette résolution définitive ;
+- l'annulation supprime `transientProject` sans modifier `project`.
+
+Pendant cette attente, le geste ne reçoit plus d'actualisation : sa géométrie finale et la commande quantifiée sont figées. Le domaine ne dépend d'aucune interaction utilisateur et ne reçoit jamais le projet transitoire potentiellement invalide.
+
+Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-collisions-de-notes). Le cas d’usage soumet le clip résolu à la validation du `Project` avant publication. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule future unité d’annulation.
 
 Les services seront nommés et ajoutés dans `application/use-cases/` lorsque leurs responsabilités précises seront établies.
 
@@ -715,11 +729,11 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures et u
 
 #### Projet effectif et modification en temps réel
 
-Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe.
+Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe, y compris ses collisions provisoires.
 
-Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` susceptible d'affecter sa portée invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service la recalcule depuis le nouvel `effectiveProject` et transmet les changements au moteur lors du prochain cycle de planification sûr. Pour `CLIP`, seules les modifications du clip attaché à la session et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
+Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` susceptible d'affecter sa portée invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service la recalcule depuis le nouvel `effectiveProject` et transmet les changements au moteur lors du prochain cycle de planification sûr. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `CLIP`, seules les modifications du clip attaché à la session et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
 
-Appliquer le projet transitoire ne change pas le contenu d'`effectiveProject` et ne doit donc provoquer ni nouvelle planification ni rupture sonore. L'abandonner entraîne la même réconciliation que toute autre modification transitoire.
+Valider un brouillon sans en modifier la projection sonore ne doit provoquer ni nouvelle planification ni rupture. L'abandonner entraîne la même réconciliation que toute autre modification du projet effectif.
 
 La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipOccurrenceId, indice de répétition, NoteId)` à la tête globale. Pour un transport `CLIP`, elle compare les notes du `clipId` attaché à la session à son curseur local :
 
@@ -734,7 +748,7 @@ Cette règle vaut autant pour une modification locale de la note que pour le dé
 
 Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Changer le `Clip.instrumentId` applique la même règle à toutes ses notes audibles : dans toutes ses occurrences actives pour `PROJECT`, ou dans la portée locale pour `CLIP`. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
 
-Une résolution `SLICE` ou `MERGE` devient audible seulement après production de son projet valide. Elle est réconciliée comme une unique modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`. Aucune planification n'est produite pour la tentative en collision qui a précédé le choix utilisateur.
+Au choix de `SLICE` ou `MERGE`, le résultat valide remplace la projection provisoire comme une modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`.
 
 Cette replanification est une conséquence applicative du geste d'édition, pas une nouvelle commande publique de la présentation.
 
@@ -990,7 +1004,7 @@ Dans cette représentation :
 
 Une ligne ne possède aucun instrument implicite. Deux occurrences successives d'une même ligne peuvent référencer des clips associés à des instruments différents. Chaque clip conserve toutefois un seul instrument pour toutes ses notes. Déplacer une occurrence verticalement ne change donc jamais le son, mais le geste est refusé si le bloc chevaucherait un autre bloc de la ligne cible.
 
-La présentation affiche toujours l'`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `clipId`, crée le `ClipEditorState` avec une tête locale au tick `0` et édite le contenu source partagé ; toutes les occurrences correspondantes reflètent immédiatement la modification. Pendant un geste, le déplacement global ou vertical provisoire d'une occurrence est quantifié par la grille globale, puis immédiatement visible et audible s'il respecte l'absence de chevauchement sur la ligne cible. Les coordonnées validées appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `clipId`, crée le `ClipEditorState` avec une tête locale au tick `0` et édite le contenu source partagé ; toutes les occurrences correspondantes reflètent immédiatement la modification. Pendant un geste, `transientProject` suit la transformation quantifiée et devient immédiatement visible et audible, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
 ### Piano roll et collisions
 
@@ -1156,7 +1170,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 - **Bornes et valeurs :** fixer la limite des lignes, les plages de `Pitch` et `Velocity`, les métriques et altérations acceptées, ainsi que les limites numériques sûres des ticks et répétitions. Un changement peut-il être placé exactement à `clip.duration` ?
 - **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
-- **Geste en attente :** une collision pendant un glissement suspend-elle le geste ? Comment gérer son annulation, la commande en attente et les identifiants de fragments si les collisions changent pendant les actualisations ?
 
 ### Transport et contrat audio
 
@@ -1230,7 +1243,7 @@ Les modules de temps et de hauteur sont déclarés directement sous `domain/`. C
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/Selection.ts`.
 
-`ProjectState` conserve le `project` validé et son éventuel `transientProject`. `effectiveProject` est une résolution dérivée de cet état et ne nécessite ni fichier ni type autonome.
+`ProjectState` conserve le `project` validé et son éventuel `transientProject`, brouillon applicatif du geste. `effectiveProject` est la résolution dérivée utilisée par la présentation et l’audio ; ce nom ne lui confère pas les invariants du `Project` domaine et ne nécessite ni fichier ni état autonome.
 
 `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
 
