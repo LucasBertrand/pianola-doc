@@ -131,22 +131,32 @@ La session `CLIP` lit directement le contenu local de `Motif` jusqu'à sa durée
 Pendant ce transport, l’utilisateur maintient la touche `F♯4` du piano roll, même si aucune note de cette hauteur n’existe dans le clip :
 
 ```ts
-const pitchPreview = previewPitch(Pitch.F_SHARP_4);
+const pitchResult = previewPitch(Pitch.F_SHARP_4);
 
-pitchPreview.release(); // pointerup ou pointercancel
+if (pitchResult.ok) {
+  const pitchPreview = pitchResult.value;
+  pitchPreview.release(); // pointerup ou pointercancel
+}
 ```
 
-`previewPitch` utilise l’instrument de `Motif`, ouvre une session `PITCH_PREVIEW` sans remplacer `clip-session-b` et soutient la voix jusqu’à `release()`. Si la banque est encore en chargement, le handle est retourné immédiatement ; un relâchement antérieur empêche toute attaque tardive.
+`previewPitch` valide immédiatement l’entrée. Lorsque son `Result` contient un handle, celui-ci est disponible avant la banque et sa propriété `ready` décrit ensuite `STARTED`, `CANCELLED` ou un échec de préparation. La session `PITCH_PREVIEW` ne remplace jamais `clip-session-b` et soutient la voix jusqu’à `release()`. Un relâchement antérieur au chargement fait résoudre `ready` avec `ok("CANCELLED")` et empêche toute attaque tardive.
 
 L’utilisateur commence ensuite une transposition de quatre notes sélectionnées, dont deux possèdent initialement la même hauteur :
 
 ```ts
-const selectionPreview = previewSelection(selectedNoteIds);
+const selectionResult = previewSelection(selectedNoteIds);
+
+if (!selectionResult.ok) {
+  // La présentation traduit PreviewValidationError.
+}
+
+const selectionPreview =
+  selectionResult.ok ? selectionResult.value : undefined;
 ```
 
-Le service ignore leurs positions et leurs durées, déduplique leurs hauteurs et produit une attaque brève simultanée. Lorsqu’une seule des quatre notes change de hauteur, l’attaque précédente encore active est relâchée et toutes les hauteurs actuelles de la sélection sont dédupliquées puis réattaquées. Les hauteurs restées identiques sont donc elles aussi rejouées. Un déplacement seulement temporel ne provoque aucune nouvelle attaque.
+Le service ignore leurs positions et leurs durées, déduplique leurs hauteurs et produit une attaque brève simultanée lorsque `selectionPreview.ready` peut démarrer l’audition. Lorsqu’une seule des quatre notes change de hauteur, l’attaque précédente encore active est relâchée et toutes les hauteurs actuelles de la sélection sont dédupliquées puis réattaquées. Les hauteurs restées identiques sont donc elles aussi rejouées. Un déplacement seulement temporel ne provoque aucune nouvelle attaque.
 
-`selectionPreview.stop()` cesse de suivre le geste, annule les attaques en attente et relâche les voix brèves encore actives. La session `SELECTION_PREVIEW` n’a jamais remplacé le transport `CLIP`.
+`selectionPreview?.stop()` cesse de suivre le geste, fait résoudre une préparation encore en attente avec `ok("CANCELLED")`, annule les attaques futures et relâche les voix brèves encore actives. La session `SELECTION_PREVIEW` n’a jamais remplacé le transport `CLIP`.
 
 Un appel ultérieur à `playProject(5760)` remplace à son tour le transport `CLIP`, déplace uniquement la tête globale au tick demandé et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
 
@@ -321,7 +331,7 @@ Aucun marqueur n’accepte `null` ou `CLEAR`. La dernière harmonie déclarée r
 
 Le projet est arrêté avec une tête globale au tick `1920`. `playProject()` recense les instruments nécessaires entre ce tick et la fin du projet, demande leur préparation au moteur, puis attend leur chargement. La session `PROJECT` et l'avancement de la tête ne commencent qu'après la disponibilité de toutes les banques requises.
 
-Pendant la lecture, `setProjectPlayhead(7680)` prépare les instruments requis à partir du tick `7680`, puis remplace gracieusement la session par une nouvelle session `PROJECT` à ce tick lorsque les banques sont disponibles. Un `stop(IMMEDIATE)` ultérieur coupe le son mais laisse la tête globale au tick atteint ; la tête locale n'est pas modifiée.
+Pendant la lecture, `seekProject(7680)` crée une requête identifiée, prépare les instruments requis à partir du tick `7680`, puis remplace gracieusement la session par une nouvelle session `PROJECT` à ce tick lorsque les banques sont disponibles. Un `stop(IMMEDIATE)` ultérieur coupe le son mais laisse la tête globale au tick atteint ; la tête locale n'est pas modifiée.
 
 Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisateur ferme le piano roll ou ouvre `Couplet`. La session `CLIP` continue sur `Motif` avec son propre curseur d'exécution. La tête locale du nouvel éditeur ne suit pas ce transport. Un nouvel appel à `playClip()` remplace la session et cible alors `Couplet`.
 
@@ -500,6 +510,24 @@ Un clip se termine au tick `7680`. L’utilisateur ajoute un `HarmonyChange` exa
 Si le clip est ensuite allongé jusqu’au tick `11520`, ce même changement devient le début de la section `[7680, 11520)` sans être déplacé ni recréé.
 
 Un `MeterChange` placé à la fin suit la même règle. À l’inverse, raccourcir le clip en dessous d’un changement existant est refusé, sauf si le même geste déplace ou supprime également ce changement.
+
+## Cas 27 — Préparation remplacée et projet modifié
+
+Le projet est arrêté au tick `1920`. Un premier `playProject()` crée la requête `request-a` et commence à préparer le piano nécessaire à cette portée.
+
+Avant la fin du chargement, l’utilisateur appelle `playProject(7680)`. Le service crée `request-b`, rend `request-a` obsolète et résout sa promesse avec `ok("SUPERSEDED")`. Même si le piano termine ensuite son chargement pour `request-a`, cette ancienne requête ne peut ouvrir aucune session.
+
+Pendant la préparation de `request-b`, l’utilisateur modifie `effectiveProject` et ajoute après le tick `7680` une occurrence utilisant un vibraphone. `effectiveProjectRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
+
+Si `stop()` intervient pendant cette seconde préparation :
+
+- `request-b` se résout avec `ok("CANCELLED")` ;
+- aucun résultat tardif ne peut démarrer le transport ;
+- l’éventuel transport déjà actif est arrêté selon le `StopMode` demandé.
+
+Dans une variante avec un transport déjà actif, `seekProject(7680)` laisse la tête sonore continuer à avancer et affiche le tick `7680` comme destination provisoire en chargement. La tête effective ne saute à cette position qu’au remplacement effectif de la session. Un échec de banque retourne `err(InstrumentPreparationError)` et conserve l’ancien transport.
+
+Les préécoutes suivent une forme différente parce que leur contrôle doit être immédiat : `previewPitch` ou `previewSelection` retourne synchroniquement un `Result` contenant éventuellement un handle, tandis que `handle.ready` porte l’issue asynchrone du chargement.
 
 ## Référence des contrats
 
