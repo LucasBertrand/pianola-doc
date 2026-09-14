@@ -271,7 +271,7 @@ Le moteur retire les anciennes commandes non exécutées dont `at >= 5` et insta
 
 Si l'ancien et le nouveau début global de la note restent avant la tête, tandis que sa fin reste après, l'occurrence de note audible est conservée et seul son `NOTE_OFF` est replanifié. Si le déplacement de la `ClipOccurrence` place l'attaque après la tête, l'occurrence de note reçoit un `NOTE_OFF` à la borne et sa future attaque est replanifiée. Une note auparavant inactive qui couvre désormais la tête reçoit un `NOTE_ON` à cette borne.
 
-Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Changer l'instrument du clip applique cette règle à chacune de ses notes audibles dans toutes ses occurrences actives. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
+Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Un changement d’instrument suit une préparation distincte : l’ancien instrument continue de jouer jusqu’à ce que la nouvelle banque soit prête, puis chaque occurrence active bascule vers un nouveau contexte tandis que l’ancien se draine. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
 
 Le déplacement du changement local participe au même recalcul atomique. Le `PlaybackSessionId`, l'origine temporelle et le tick global du transport ne changent pas.
 
@@ -288,7 +288,7 @@ Le clip source `Ostinato` possède une durée de 1920 ticks et contient `note-a`
 
 Les deux occurrences se chevauchent et sont planifiées dans deux `PlaybackContext` distincts. Les attaques issues de `note-a` reçoivent des `NoteOccurrenceId` distincts ; elles ne partagent ni voix ni instance audio malgré leur `ClipId` commun.
 
-Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. Transposer `note-a`, modifier sa vélocité, changer l'instrument du clip, déplacer un changement local ou redimensionner le clip met immédiatement à jour les deux occurrences. Pendant un transport, le `PlaybackService` réconcilie séparément leurs occurrences de notes audibles et leurs commandes futures.
+Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. Transposer `note-a`, modifier sa vélocité, déplacer un changement local ou redimensionner le clip met immédiatement à jour les deux occurrences. Un changement d’instrument ne devient effectif pour aucune des deux avant la préparation réussie de sa banque ; elles basculent ensuite ensemble dans le projet, et le `PlaybackService` réconcilie séparément leurs contextes actifs et leurs commandes futures.
 
 Déplacer `ostinato-b`, changer sa ligne ou son `repeatCount` ne modifie pas `ostinato-a`, car ces propriétés appartiennent à chaque `ClipOccurrence`. Dupliquer `ostinato-a` crée une troisième occurrence liée au même `clipId`. Le premier périmètre ne propose aucune commande pour rendre cette occurrence unique ou la délier.
 
@@ -354,6 +354,29 @@ Aucun `Tempo` invalide n'est construit. Le cas d'usage conserve le tempo précé
 De même, valider le déplacement d’une occurrence sur une ligne où elle en chevaucherait une autre retourne un `ProjectEditError`. Le `Project` d'origine reste intact. Un éventuel `transientProject` utilisé pendant le geste demeure une projection applicative non sauvegardable et ne peut jamais remplacer l’état courant après cet échec. Une opération valide retourne au contraire `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer `project`.
 
 La lecture d'une sauvegarde suit le même chemin de validation. Une référence vers un clip absent produit une erreur métier typée, tandis qu'un échec d'accès au stockage reste une erreur technique distincte.
+
+## Cas 20 — Changement d’instrument pendant la lecture
+
+Un transport `PROJECT` joue deux occurrences actives du même clip `Ostinato`, actuellement associé au piano. L’utilisateur choisit un vibraphone dont la banque n’est pas encore chargée.
+
+L’application crée une demande identifiée de changement d’instrument et lance :
+
+```ts
+await audioEngine.prepareInstruments([vibraphoneId]);
+```
+
+Pendant le chargement :
+
+- `project` et `effectiveProject` conservent le piano ;
+- les deux contextes actifs continuent leurs attaques avec le piano ;
+- la présentation indique que le vibraphone est en préparation ;
+- une annulation ou un autre choix rend cette demande obsolète.
+
+Lorsque la banque est prête, le changement devient effectif à une même borne sûre pour les deux occurrences. Pour chacune, le service ouvre un nouveau contexte de vibraphone dans la session `PROJECT`, relâche les voix du contexte de piano et laisse celui-ci passer à `DRAINING`. Les notes couvrant encore la tête sont réattaquées au vibraphone et les attaques futures sont planifiées dans les nouveaux contextes.
+
+Les releases et tails du piano peuvent donc coexister temporairement avec les nouvelles voix de vibraphone. Aucun nouveau transport n’est créé et la tête globale ne se déplace pas.
+
+Si la préparation échoue, aucun contexte n’est remplacé et l’`InstrumentId` du clip reste celui du piano.
 
 ## Référence des contrats
 
