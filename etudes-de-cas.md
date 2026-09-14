@@ -4,7 +4,7 @@ Ce document illustre les règles de composition et de lecture définies dans [ar
 
 ## Conventions de calcul
 
-Sauf indication contraire, le projet utilise un tempo unique de 120 BPM et une résolution de 960 ticks par noire :
+Sauf indication contraire, le projet utilise un tempo unique de 120,0 BPM et une résolution de 960 ticks par noire. Un `Tempo` accepte une décimale entre 20,0 et 999,9 BPM inclus :
 
 ```text
 durationSeconds = (durationTicks / 960) * (60 / 120)
@@ -19,7 +19,7 @@ occurrenceEnd = occurrence.start + clip.duration * occurrence.repeatCount
 projectEnd    = maximum des occurrenceEnd, ou 0 si le projet ne contient aucune occurrence
 ```
 
-Les intervalles sont semi-ouverts. Deux occurrences sont simultanées si leurs intervalles globaux se recouvrent avec une durée strictement positive. La ligne n'intervient jamais dans ce calcul.
+Les intervalles sont semi-ouverts. Deux occurrences sont simultanées si leurs intervalles globaux se recouvrent avec une durée strictement positive. Le premier périmètre interdit ce recouvrement sur une même ligne ; des occurrences situées sur des lignes différentes restent simultanées. La ligne n'intervient jamais dans le calcul audio.
 
 ## Cas 1 — Placement explicite, espace vide et répétition
 
@@ -39,7 +39,7 @@ block-beta
     ouverture["0–2 s · Ouverture"]:2 gap1["2–3 s · silence"] motif1["3–4 s · Motif 1"] motif2["4–5 s · Motif 2"] gap2["5–6 s · silence"] conclusion["6–8 s · Conclusion"]:2
 ```
 
-Déplacer ou supprimer une occurrence ne rapproche jamais automatiquement les autres occurrences. Leurs coordonnées persistantes restent inchangées. Supprimer l'occurrence ne supprime pas son clip source.
+Déplacer ou supprimer une occurrence ne rapproche jamais automatiquement les autres occurrences. Leurs coordonnées persistantes restent inchangées. Supprimer l'occurrence ne supprime pas son clip source, même s'il s'agissait de sa dernière occurrence : seule une suppression manuelle distincte peut ensuite supprimer ce clip non référencé.
 
 ## Cas 2 — Chevauchement de clips aux métriques indépendantes
 
@@ -89,9 +89,9 @@ block-beta
 
 L'occurrence `Couplet`, ligne `0`, référence un clip associé au piano. L'occurrence `Contrechant`, ligne `3`, référence un clip associé aux cordes. Leurs intervalles globaux se chevauchent et les deux parties peuvent donc être audibles simultanément.
 
-Déplacer l'occurrence `Contrechant` sur la ligne `0` ne modifie ni les notes ni le `Clip.instrumentId` de chaque source. Les deux occurrences continuent de jouer simultanément selon leurs seuls intervalles temporels ; seule une modification de leur couverture temporelle nécessiterait une replanification audio.
+Tenter de déplacer `Contrechant` sur la ligne `0` sans modifier son intervalle est refusé, car il chevaucherait `Couplet` sur la même ligne. Le même déplacement devient valide si `Contrechant` est d'abord décalé après la fin de `Couplet`. Dans les deux cas, changer sa ligne ne modifierait ni ses notes ni le `Clip.instrumentId` de sa source et n'aurait, à placement temporel égal, aucun effet audio.
 
-Une ligne est uniquement une coordonnée d'organisation. Elle n'impose pas d'instrument et ne crée ni bus, ni filtre, ni contexte audio commun entre les clips qui l'occupent.
+Une ligne est uniquement une coordonnée d'organisation bornée par une limite fixe de sécurité. Elle n'impose pas d'instrument, ne crée ni bus, ni filtre, ni contexte audio commun et ne fait l'objet d'aucune commande utilisateur d'ajout ou de suppression.
 
 ## Cas 5 — Deux clips utilisent le même instrument
 
@@ -141,7 +141,7 @@ notePreview.release();
 
 `release()` produit le `NOTE_OFF` de l'occurrence correspondante, termine structurellement son contexte et laisse sa release et son tail se drainer. Une durée maximale de sécurité applique le même relâchement si la fin du geste n'est pas reçue. Plusieurs préécoutes peuvent se chevaucher et être relâchées indépendamment.
 
-Un appel ultérieur à `playProject(occurrence.start)` remplace à son tour le transport `CLIP`, déplace uniquement la tête globale et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
+Un appel ultérieur à `playProject(5760)` remplace à son tour le transport `CLIP`, déplace uniquement la tête globale au tick demandé et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
 
 ## Cas 7 — Répétitions et occurrences de notes
 
@@ -169,7 +169,7 @@ L'occurrence `Nappe` occupe `[0, 3840)`, soit deux secondes. Le clip qu'elle ré
 
 Le tail ne modifie ni la fin globale de l'occurrence `Nappe`, ni le `start` de l'occurrence `Conclusion`. Il peut se superposer à l'occurrence suivante. Le contexte de `Nappe` refuse toute nouvelle attaque après deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'à une durée maximale de sécurité.
 
-## Cas 9 — Lecture globale depuis une occurrence
+## Cas 9 — Lecture globale depuis un tick explicite
 
 La grille contient les occurrences suivantes :
 
@@ -186,13 +186,12 @@ Les commandes suivantes choisissent une position sans changer la portée du tran
 | Commande | Résultat |
 | --- | --- |
 | `playProject()`, tête globale à 0 | Lit tout le projet depuis son début. |
-| `playProject(pianoOccurrence.start)` | Place la tête globale à 2 s ; `Piano`, `Basse` et la partie encore active de `Percussions` participent au transport. |
-| `playProject(basseOccurrence.start)` | Produit le même point de départ, car les deux occurrences commencent au même tick. |
-| `playProject(conclusionOccurrence.start)` | Place la tête globale à 6 s et lit la fin du projet. |
+| `playProject(3840)` | Place la tête globale à 2 s ; `Piano`, `Basse` et la partie encore active de `Percussions` participent au transport. |
+| `playProject(11520)` | Place la tête globale à 6 s et lit la fin du projet. |
 
-`playProject` reçoit directement un `Tick` global. Le bouton d'une occurrence lui transmet son `start`, sans transmettre l'identité de l'occurrence au transport. `playClip(tick?)` utilise au contraire un tick local au clip édité. `preview(noteId)` ne déplace aucune tête et ne modifie pas le transport.
+`playProject` reçoit directement un `Tick` global et aucune identité d'occurrence. `playClip(tick?)` utilise au contraire un tick local au clip édité. `preview(noteId)` ne déplace aucune tête et ne modifie pas le transport.
 
-Le traitement d'une note ayant commencé avant la position choisie reste soumis à la politique de note chase à définir.
+Si une note de `Percussions` a commencé avant deux secondes mais couvre encore cette position, la note chase minimale la réattaque au démarrage et programme son relâchement pour sa durée restante. Aucun état antérieur d'enveloppe ou de voix n'est reconstruit.
 
 ## Cas 10 — Accord `ROOT` et changement de tonalité
 
@@ -231,7 +230,7 @@ Deux clips illustrent les deux références possibles d'une `Harmony` de variant
 
 Dans `Modal fixe`, la collection reste inchangée. Dans `Pentatonique relative`, aucune tonique de gamme n'est sauvegardée : le sixième degré est résolu depuis la `Key` active.
 
-Les deux clips peuvent être placés n'importe où dans la grille. Leur ligne et leur chevauchement éventuel ne changent pas ces analyses.
+Les deux clips peuvent être placés n'importe où dans la grille. Leur ligne et leur éventuel chevauchement sur des lignes différentes ne changent pas ces analyses.
 
 ## Cas 13 — Note tenue à travers `KeyChange` et `HarmonyChange`
 
@@ -280,7 +279,27 @@ Les deux occurrences se chevauchent et sont planifiées dans deux `PlaybackConte
 
 Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. Transposer `note-a`, modifier sa vélocité, changer l'instrument du clip, déplacer un changement local ou redimensionner le clip met immédiatement à jour les deux occurrences. Pendant un transport, le `PlaybackService` réconcilie séparément leurs occurrences de notes audibles et leurs commandes futures.
 
-Déplacer `ostinato-b`, changer sa ligne ou son `repeatCount` ne modifie pas `ostinato-a`, car ces propriétés appartiennent à chaque `ClipOccurrence`. Dupliquer `ostinato-a` crée par défaut une troisième occurrence liée au même `clipId`. Une copie indépendante exige la création explicite d'un nouveau clip source.
+Déplacer `ostinato-b`, changer sa ligne ou son `repeatCount` ne modifie pas `ostinato-a`, car ces propriétés appartiennent à chaque `ClipOccurrence`. Dupliquer `ostinato-a` crée une troisième occurrence liée au même `clipId`. Le premier périmètre ne propose aucune commande pour rendre cette occurrence unique ou la délier.
+
+## Cas 16 — Interruption explicite de la tonalité
+
+Un clip possède un `KeyChange` vers do majeur au tick `0`, un `KeyChange` portant `null` au tick `3840`, puis un `KeyChange` vers fa majeur au tick `5760`.
+
+| Intervalle local | Valeur du changement | Tonalité active |
+| --- | --- | --- |
+| `[0, 3840)` | do majeur | do majeur |
+| `[3840, 5760)` | `null` | aucune |
+| `[5760, clip.duration)` | fa majeur | fa majeur |
+
+Une `Harmony` définie par `ROOT` peut traverser l'intervalle sans tonalité, car sa fondamentale ou sa tonique reste autonome. Une `Harmony` définie par `DEGREE` ne peut ni commencer avant le tick `3840` et le traverser, ni être créée dans `[3840, 5760)` : son invariant exige une `Key` active sur toute sa section.
+
+## Cas 17 — Préchargement, seek et fermeture du piano roll
+
+Le projet est arrêté avec une tête globale au tick `1920`. `playProject()` recense les instruments nécessaires entre ce tick et la fin du projet, demande leur préparation au moteur, puis attend leur chargement. La session `PROJECT` et l'avancement de la tête ne commencent qu'après la disponibilité de toutes les banques requises.
+
+Pendant la lecture, `setProjectPlayhead(7680)` remplace gracieusement la session par une nouvelle session `PROJECT` commençant au tick `7680`. Un `stop(IMMEDIATE)` ultérieur coupe le son mais laisse la tête globale au tick atteint ; la tête locale n'est pas modifiée.
+
+Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisateur ferme le piano roll ou ouvre `Couplet`. La session `CLIP` continue sur `Motif` avec son propre curseur d'exécution. La tête locale du nouvel éditeur ne suit pas ce transport. Un nouvel appel à `playClip()` remplace la session et cible alors `Couplet`.
 
 ## Conséquences pour le PlaybackService
 
@@ -298,20 +317,25 @@ calculateInterval(
 
 - le `Project` fournit un tempo unique à toutes les conversions vers les secondes ;
 - chaque `ClipOccurrence` calcule ses événements à partir de son `start`, de son `repeatCount` et des positions locales du `Clip` référencé ; chaque `NOTE_ON` reçoit l'`instrumentId` unique de ce clip ;
-- toutes les occurrences dont les intervalles se chevauchent sont actives simultanément, quelle que soit leur ligne ou leur référence source ;
+- toutes les occurrences dont les intervalles se chevauchent sur des lignes différentes sont actives simultanément, quelle que soit leur référence source ;
+- le domaine refuse toutefois deux intervalles chevauchants sur une même ligne ;
 - un changement de ligne n'entraîne aucune replanification sonore ;
+- les déplacements et redimensionnements globaux sont quantifiés par une grille globale sans métrique ;
 - `playProject()` commence à la tête globale, tandis que `playProject(tick)` la déplace avant de lire le projet ;
-- le bouton d'une occurrence appelle `playProject(occurrence.start)` et toutes les occurrences actives à ce tick participent au transport ;
 - `playClip()` commence à la tête locale du clip édité, tandis que `playClip(tick)` la déplace avant de lire ce seul clip ;
 - le transport `CLIP` ignore les placements et répétitions des occurrences, mais conserve le tempo unique du projet ;
 - `preview(noteId)` résout uniquement une note du clip édité, sans déplacer les têtes ni remplacer le transport ;
 - une seule session `PROJECT` ou `CLIP` peut constituer le transport actif ;
+- tous les instruments requis sont chargés avant l'ouverture de cette session ;
+- déplacer la tête du transport actif remplace immédiatement sa session par une session de même portée ;
+- fermer le piano roll ou changer de clip édité ne termine pas un transport `CLIP` déjà actif ;
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
-- `stop(mode)` arrête uniquement le transport actif et n'affecte aucune préécoute de note ;
+- `stop(mode)` arrête uniquement le transport actif, laisse les deux têtes en place et n'affecte aucune préécoute de note ;
 - chaque activation de `ClipOccurrence`, chaque transport local de clip et chaque préécoute de note reçoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
 - deux occurrences du même `Clip` possèdent des contextes audio indépendants ;
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistrée qu'à l'ouverture du contexte ;
 - chaque attaque, y compris lors d'une répétition, reçoit un `NoteOccurrenceId` unique ;
 - une modification du projet transitoire remplace atomiquement les commandes futures selon la portée `PROJECT` ou `CLIP` du transport actif, sans changer sa session ni son origine temporelle ;
 - la fin structurelle permet aux autres occurrences de poursuivre leur lecture pendant que l'infrastructure conserve éventuellement un contexte en `DRAINING` ;
+- un contexte déjà `DRAINING` conserve ses tails jusqu'au silence même si l'occurrence est déplacée ; un nouveau placement nécessitant des attaques reçoit un nouveau contexte ;
 - le tempo, les contenus `Clip` et les propriétés globales des `ClipOccurrence` sont persistants ; les identifiants d'exécution ne le sont jamais.
