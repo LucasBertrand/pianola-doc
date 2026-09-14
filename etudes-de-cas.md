@@ -10,7 +10,7 @@ Sauf indication contraire, le projet utilise un tempo unique de 120,0 BPM et une
 durationSeconds = (durationTicks / 960) * (60 / 120)
 ```
 
-La métrique ainsi que les contextes indépendants de gamme et d’accord restent locaux à chaque clip. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
+La métrique et la chronologie harmonique restent locales à chaque clip. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
 
 La durée structurelle d'une occurrence et celle du projet suivent les règles suivantes :
 
@@ -193,51 +193,60 @@ Les commandes suivantes choisissent une position sans changer la portée du tran
 
 Si une note de `Percussions` a commencé avant deux secondes mais couvre encore cette position, la note chase minimale la réattaque au démarrage et programme son relâchement pour sa durée restante. Aucun état antérieur d'enveloppe ou de voix n'est reconstruit.
 
-## Cas 10 — Contextes simultanés de gamme et d’accord
+## Cas 10 — Alternance exclusive entre gamme et accord
 
-Un clip de 7680 ticks possède un `ScaleChange` `C IONIAN` au tick local `0` et un `ChordChange` `D MINOR_SEVENTH` au tick `1920`.
+Un clip de 7680 ticks possède les changements harmoniques suivants :
 
-| Intervalle local | Gamme active | Accord actif |
-| --- | --- | --- |
-| `[0, 1920)` | do ionien | aucun |
-| `[1920, 7680)` | do ionien | `Dm7` |
+| Tick local | `Harmony` |
+| --- | --- |
+| `0` | `SCALE · C IONIAN` |
+| `1920` | `CHORD · D MINOR_SEVENTH` |
+| `3840` | `SCALE · A MINOR_PENTATONIC` |
 
-Le changement d’accord ne ferme ni ne remplace la `ScaleSection`. Les deux chronologies sont indépendantes et leurs sections se chevauchent à partir du tick `1920`.
+| Intervalle local | Harmonie active |
+| --- | --- |
+| `[0, 1920)` | do ionien |
+| `[1920, 3840)` | `Dm7` |
+| `[3840, 7680)` | la pentatonique mineure |
 
-Le placement global des occurrences et le tempo du projet n’affectent pas ces contextes locaux.
+Chaque `HarmonyChange` remplace la variante précédente. Aucun accord et aucune gamme ne sont actifs simultanément.
 
-## Cas 11 — Suggestions d’accords guidées par la gamme
+Le placement global des occurrences et le tempo du projet n’affectent pas cette chronologie locale.
 
-Un clip utilise la gamme `C IONIAN`. Lors de l’ajout d’un accord, l’éditeur compare les classes de hauteur de chaque accord du catalogue avec celles de la gamme active.
+## Cas 11 — Suggestions lors d’un remplacement harmonique
+
+La section active contient `SCALE · C IONIAN`. Lorsque l’utilisateur choisit de la remplacer par un accord, l’éditeur compare les classes de hauteur de chaque accord du catalogue avec celles de cette gamme.
 
 Les accords dont toutes les notes appartiennent à `C IONIAN`, notamment `C MAJOR`, `D MINOR`, `E MINOR`, `F MAJOR`, `G MAJOR`, `A MINOR` et `B DIMINISHED`, sont proposés avant les accords extérieurs. À compatibilité égale, l’ordre stable du catalogue s’applique.
 
-Cette suggestion ne constitue pas une contrainte. L’utilisateur peut créer, par exemple, `D♭ MAJOR` dans ce contexte. Sa fondamentale explicite et son `ChordTypeId` sont sauvegardés tels quels.
+Cette suggestion ne constitue pas une contrainte. L’utilisateur peut choisir `D♭ MAJOR`. Le même mécanisme permet de proposer des gammes compatibles lorsqu’une section d’accord est remplacée par une section de gamme.
+
+Le remplacement modifie la variante du `HarmonyChange` ciblé ; il ne crée jamais un second contexte simultané.
 
 ## Cas 12 — Gammes modales et pentatoniques
 
-Un clip possède successivement les changements de gamme suivants :
+Un clip possède successivement les changements harmoniques suivants :
 
-| Tick local | `Scale` |
+| Tick local | `Harmony` |
 | --- | --- |
-| `0` | `D DORIAN` |
-| `3840` | `A MINOR_PENTATONIC` |
+| `0` | `SCALE · D DORIAN` |
+| `3840` | `SCALE · A MINOR_PENTATONIC` |
 
-Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucun contexte supérieur implicite. La première `ScaleSection` couvre `[0, 3840)` et la seconde `[3840, clip.duration)`.
+Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucun contexte supérieur implicite. La première `HarmonySection` couvre `[0, 3840)` et la seconde `[3840, clip.duration)`.
 
 Les occurrences du clip peuvent être placées n’importe où dans la grille. Leur ligne et leur éventuel chevauchement avec d’autres occurrences ne changent pas ces analyses locales.
 
-## Cas 13 — Note tenue à travers les deux chronologies
+## Cas 13 — Note tenue à travers plusieurs variantes d’harmonie
 
-Une note `E4` commence au tick local `960` et se termine au tick `5280`. Le clip possède `C IONIAN` au tick `0`, un accord `C MAJOR` au tick `1920`, puis des changements simultanés vers `A MINOR_PENTATONIC` et `A MINOR` au tick `3840`.
+Une note `E4` commence au tick local `960` et se termine au tick `5280`. Le clip possède `SCALE · C IONIAN` au tick `0`, `CHORD · C MAJOR` au tick `1920`, puis `SCALE · A MINOR_PENTATONIC` au tick `3840`.
 
-| Intervalle analysé | Gamme active | Accord actif | Appartenance à la gamme | Appartenance à l’accord |
-| --- | --- | --- | --- | --- |
-| `[960, 1920)` | do ionien | aucun | `SCALE_TONE` | `NO_CHORD` |
-| `[1920, 3840)` | do ionien | do majeur | `SCALE_TONE` | `CHORD_TONE` |
-| `[3840, 5280)` | la pentatonique mineure | la mineur | `SCALE_TONE` | `CHORD_TONE` |
+| Intervalle analysé | Harmonie active | Rôle de `E4` |
+| --- | --- | --- |
+| `[960, 1920)` | do ionien | `SCALE_TONE` |
+| `[1920, 3840)` | do majeur | `CHORD_TONE` |
+| `[3840, 5280)` | la pentatonique mineure | `SCALE_TONE` |
 
-Les frontières des `ScaleSection` et `ChordSection` sont réunies avec celles du `TimeRange` pour produire ces portions. La note persistante conserve néanmoins un seul intervalle et n’est jamais découpée.
+Les frontières des `HarmonySection` sont réunies avec celles du `TimeRange` pour produire ces portions. La note persistante conserve néanmoins un seul intervalle et n’est jamais découpée.
 
 Si une occurrence du clip commence au tick global `10000`, ces bornes locales correspondent aux ticks globaux `10960`, `11920`, `13840` et `15280`. Les objets locaux ne sont pas réécrits pour autant.
 
@@ -276,20 +285,20 @@ Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. 
 
 Déplacer `ostinato-b`, changer sa ligne ou son `repeatCount` ne modifie pas `ostinato-a`, car ces propriétés appartiennent à chaque `ClipOccurrence`. Dupliquer `ostinato-a` crée une troisième occurrence liée au même `clipId`. Le premier périmètre ne propose aucune commande pour rendre cette occurrence unique ou la délier.
 
-## Cas 16 — Contexte initial chromatique et accord facultatif
+## Cas 16 — Harmonie chromatique initiale
 
-À sa création, un clip possède obligatoirement un `ScaleChange` `C CHROMATIC` au tick `0`. Ce changement initial ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée.
+À sa création, un clip possède obligatoirement un `HarmonyChange` au tick `0` dont la valeur est `SCALE · C CHROMATIC`. Ce changement initial ne peut être ni supprimé ni déplacé, mais il peut être remplacé par une autre gamme ou par un accord.
 
-Le clip ne possède initialement aucun `ChordChange`. Si un premier accord `F MAJOR_SEVENTH` est ajouté au tick `3840` :
+Si un changement `CHORD · F MAJOR_SEVENTH` est ajouté au tick `3840` :
 
-| Intervalle local | Gamme active | Accord actif |
-| --- | --- | --- |
-| `[0, 3840)` | do chromatique | aucun |
-| `[3840, clip.duration)` | do chromatique | `Fmaj7` |
+| Intervalle local | Harmonie active |
+| --- | --- |
+| `[0, 3840)` | do chromatique |
+| `[3840, clip.duration)` | `Fmaj7` |
 
-La gamme chromatique contient toutes les classes de hauteur : toute note y est `SCALE_TONE`. Avant le premier accord, son rôle d’accord vaut `NO_CHORD`. Après le changement, son rôle dépend de son appartenance à `Fmaj7`.
+Dans la première section, toute note est `SCALE_TONE`. Dans la seconde, une note de l’accord est `CHORD_TONE` et toute autre note est `OUTSIDE_TONE`.
 
-Aucun marqueur n’accepte `null` ou `CLEAR`. La dernière gamme et, après son apparition, le dernier accord restent actifs jusqu’à la fin du clip.
+Aucun marqueur n’accepte `null` ou `CLEAR`. La dernière harmonie déclarée reste active jusqu’à la fin du clip.
 
 ## Cas 17 — Préchargement, seek et fermeture du piano roll
 
