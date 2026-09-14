@@ -49,7 +49,7 @@ Le premier périmètre comprend :
 - un tempo unique appartenant au projet ;
 - un instrument associé à chaque clip et partagé par toutes ses notes ;
 - l'absence de chevauchement entre notes de même hauteur dans un clip, avec résolution explicite `SLICE` ou `MERGE` ;
-- des chronologies locales de métrique, de gamme et d’accord pour chaque clip ;
+- des chronologies locales de métrique et d’harmonie pour chaque clip ;
 - la lecture simultanée de tous les clips dont les intervalles globaux se chevauchent ;
 - l'édition du contenu d'un clip dans un piano roll ;
 - la lecture du projet depuis sa tête globale ou depuis un tick global explicite ;
@@ -66,7 +66,7 @@ Il ne comprend pas :
 - la création, l'import ou l'édition d'instruments par l'utilisateur ;
 - un état audio transitoire sauvegardé dans le projet.
 
-Les `Note` sont le seul contenu sonore des clips. La métrique, les gammes et les accords sont des données structurelles locales, et non des automations.
+Les `Note` sont le seul contenu sonore des clips. La métrique et l’harmonie sont des données structurelles locales, et non des automations.
 
 ---
 
@@ -87,7 +87,7 @@ flowchart TD
     OccA --> Clip
     OccB --> Clip
     Clip --> Instrument
-    Clip --> Content["Notes · métrique · Scale · Chord"]
+    Clip --> Content["Notes · métrique · Harmony"]
 ```
 
 La coordonnée horizontale d'une occurrence est son instant de départ global. Sa coordonnée verticale est un indice de ligne. La durée du bloc est dérivée de la durée locale du clip référencé et du `repeatCount` de l'occurrence.
@@ -105,8 +105,7 @@ Les lignes ne sont ni des pistes, ni des conteneurs, ni des canaux audio. Dans l
 | `Instrument` | Entity de référence | Décrire publiquement un instrument intégré |
 | `Tempo` | Value Object | Définir la vitesse unique du projet |
 | `MeterChange` | Entity interne | Placer une métrique sur la chronologie locale d'un clip |
-| `ScaleChange` | Entity interne | Placer une gamme sur sa chronologie locale dans un clip |
-| `ChordChange` | Entity interne | Placer un accord sur sa chronologie locale dans un clip |
+| `HarmonyChange` | Entity interne | Placer un accord ou une gamme sur la chronologie harmonique locale d’un clip |
 
 ### Result et validation du domaine
 
@@ -208,8 +207,7 @@ Attributs possibles :
 - `instrumentId` ;
 - `notes` ;
 - `meterChanges` ;
-- `scaleChanges` ;
-- `chordChanges`.
+- `harmonyChanges`.
 
 Responsabilités et invariants :
 
@@ -217,9 +215,9 @@ Responsabilités et invariants :
 - référencer exactement un `InstrumentId` ;
 - contenir des notes positionnées relativement à son début local, toutes jouées par l'instrument du clip ;
 - empêcher le chevauchement temporel de deux notes de même hauteur ;
-- contenir et ordonner ses trois chronologies locales : métrique, gamme et accord ;
-- fournir la métrique, la gamme et l’accord actifs à une position locale ;
-- posséder un `ScaleChange` initial obligatoire au tick `0`, chromatique par défaut ;
+- contenir et ordonner ses deux chronologies locales : métrique et harmonie ;
+- fournir la métrique et l’harmonie actives à une position locale ;
+- posséder un `HarmonyChange` initial obligatoire au tick `0`, de variante `SCALE` et chromatique par défaut ;
 - garantir la cohérence locale de ses notes et changements.
 
 Un `Clip` ne possède ni début global, ni ligne, ni nombre de répétitions. Modifier son contenu ou sa durée modifie la source commune observée et jouée par toutes les `ClipOccurrence` qui le référencent.
@@ -295,7 +293,7 @@ Invariants :
 - la note se termine au plus tard à la fin locale du clip ;
 - la hauteur et la vélocité restent dans leurs plages valides ;
 - deux notes de même `Pitch` ne se chevauchent jamais avec une durée strictement positive dans un même clip ;
-- ses appartenances à la gamme et à l’accord actifs sont dérivées séparément et ne sont pas sauvegardées ;
+- son rôle dans l’accord ou la gamme active est dérivé et n’est pas sauvegardé ;
 - une note extérieure à l’accord ou à la gamme active reste valide.
 
 Les intervalles sont semi-ouverts : deux notes de même hauteur peuvent être contiguës lorsque la fin de l'une est égale au début de l'autre. Des notes de hauteurs différentes peuvent se chevaucher ; cet invariant préserve donc la polyphonie et les accords.
@@ -304,7 +302,7 @@ Une création, un déplacement, un redimensionnement ou une transposition qui pr
 
 Modifier le tempo du projet ou la métrique locale ne déplace pas la note : sa position et sa durée restent exprimées dans les ticks canoniques du clip.
 
-Lorsqu’une note traverse un `ScaleChange` ou un `ChordChange`, son `TimeRange` est analysé par portions délimitées par ces changements ainsi que par le début et la fin de la note. Chaque portion produit séparément son appartenance à la gamme et à l’accord actifs. Cette segmentation est une vue dérivée : elle ne découpe ni ne modifie la `Note` persistante.
+Lorsqu’une note traverse un `HarmonyChange`, son `TimeRange` est analysé par portions délimitées par ces changements ainsi que par le début et la fin de la note. Chaque portion produit son rôle dans l’accord ou la gamme active. Cette segmentation est une vue dérivée : elle ne découpe ni ne modifie la `Note` persistante.
 
 Les événements instantanés `NoteOn` et `NoteOff` ne sont pas des objets persistants du domaine. Ils sont produits par le service de lecture.
 
@@ -382,9 +380,9 @@ La métrique du clip n'intervient pas dans cette conversion. Elle structure les 
 
 `TimeRange` facilite notamment la détection des chevauchements ainsi que les opérations de déplacement et de redimensionnement.
 
-### Hauteur, gammes et accords
+### Hauteur et harmonie
 
-Ces objets décrivent la hauteur des notes et leurs deux contextes musicaux locaux. Ils n'appartiennent pas au calcul du temps musical.
+Ces objets décrivent la hauteur des notes et leur contexte harmonique local. Ils n'appartiennent pas au calcul du temps musical.
 
 | Value Object | Représentation | Règles principales |
 | --- | --- | --- |
@@ -392,6 +390,7 @@ Ces objets décrivent la hauteur des notes et leurs deux contextes musicaux loca
 | `RootNote` | `letter`, `accidental` | Fondamentale orthographiée sans octave ; classe chromatique dérivée |
 | `Chord` | `root`, `typeId` | Accord possédant obligatoirement une fondamentale explicite |
 | `Scale` | `root`, `typeId` | Gamme possédant obligatoirement une tonique explicite |
+| `Harmony` | `kind`, `chord` ou `scale` | Contexte exclusif contenant un accord ou une gamme |
 
 `RootNote` conserve l'orthographe sous la forme d'une lettre et d'une altération, sans octave. Sa classe de hauteur chromatique est dérivée et n'est pas sauvegardée séparément : `C_SHARP` et `D_FLAT` sont enharmoniquement équivalents, mais restent deux valeurs distinctes.
 
@@ -405,9 +404,13 @@ interface Scale {
   root: RootNote;
   typeId: ScaleTypeId;
 }
+
+type Harmony =
+  | { kind: "CHORD"; chord: Chord }
+  | { kind: "SCALE"; scale: Scale };
 ```
 
-La fondamentale de `Chord` et la tonique de `Scale` sont toujours explicites. Il n'existe ni référence par degré, ni contexte supérieur implicite permettant de les déduire. Un accord entièrement absent se représente par l'absence de `ChordSection`, jamais par une `root` facultative.
+`Chord` et `Scale` possèdent toujours une `RootNote` explicite. Il n'existe ni référence par degré, ni contexte supérieur implicite permettant de la déduire. Les deux variantes de `Harmony` sont exclusives : une seule est active à un tick donné.
 
 Le catalogue initial comprend :
 
@@ -440,17 +443,16 @@ Une gamme est compatible avec un accord lorsque les classes de hauteur résolues
 chordPitchClasses ⊆ scalePitchClasses
 ```
 
-Cette compatibilité sert à ordonner les propositions de l'éditeur sans contraindre les choix. Les accords compatibles précèdent les accords extérieurs ; au sein de chaque groupe, l'ordre stable du catalogue s'applique. Aucun classement musical manuel supplémentaire n'appartient au premier périmètre.
+Puisqu’un accord et une gamme ne sont jamais actifs simultanément, cette compatibilité sert uniquement à proposer des remplacements pertinents dans l’éditeur. Les propositions compatibles précèdent les autres ; au sein de chaque groupe, l'ordre stable du catalogue s'applique. Aucun classement musical manuel supplémentaire n'appartient au premier périmètre.
 
 ### Chronologies locales du clip
 
-Un clip possède trois collections ordonnées de changements :
+Un clip possède deux collections ordonnées de changements :
 
 | Changement | Valeur | Changement initial au tick `0` | Positions suivantes |
 | --- | --- | --- | --- |
 | `MeterChange` | `Meter` | Obligatoire | Début d’une nouvelle mesure locale ; peut tronquer la précédente |
-| `ScaleChange` | `Scale` | Obligatoire, `C CHROMATIC` par défaut | N'importe quel tick local du clip |
-| `ChordChange` | `Chord` | Facultatif | N'importe quel tick local du clip |
+| `HarmonyChange` | `Harmony` | Obligatoire, `SCALE · C CHROMATIC` par défaut | N'importe quel tick local du clip |
 
 Chaque changement possède une identité, une position locale et sa nouvelle valeur. Les règles communes sont :
 
@@ -461,23 +463,22 @@ Chaque changement possède une identité, une position locale et sa nouvelle val
 - un changement reste compris dans les bornes locales du clip ;
 - aucun changement n'accepte `null` ni une variante `CLEAR`.
 
-Le `ScaleChange` initial au tick `0` ne peut pas être supprimé ni déplacé, mais sa valeur peut être remplacée. `C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
+Le `HarmonyChange` initial au tick `0` ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée par un accord ou une autre gamme. `SCALE · C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
 
-Avant le premier `ChordChange`, aucun accord n'est actif. Après son apparition, le dernier accord déclaré reste actif jusqu'à la fin du clip. Un `ScaleChange` et un `ChordChange` sont indépendants et peuvent occuper le même tick ; modifier l'un ne remplace ni ne déplace l'autre.
+Chaque nouveau `HarmonyChange` remplace indifféremment l’accord ou la gamme précédente. Il est donc impossible qu’un `Chord` et une `Scale` soient actifs simultanément ou que deux marqueurs harmoniques occupent le même tick.
 
 Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
 
 ### Sections dérivées
 
-`MeterSection`, `ScaleSection` et `ChordSection` sont des vues locales dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du clip.
+`MeterSection` et `HarmonySection` sont des vues locales dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du clip.
 
 Elles ne sont pas sauvegardées comme des objets autonomes.
 
 | Section | Valeurs dérivées | Usage principal |
 | --- | --- | --- |
 | `MeterSection` | `start`, `end`, `meter`, découpage en mesures | Repères métriques et frontières de mesure |
-| `ScaleSection` | `start`, `end`, `scale` | Recherche de la gamme active et analyse d'appartenance |
-| `ChordSection` | `start`, `end`, `chord` | Recherche de l'accord actif et analyse d'appartenance |
+| `HarmonySection` | `start`, `end`, `harmony` | Recherche de l’accord ou de la gamme active et analyse des notes |
 
 Pour une `MeterSection` :
 
@@ -488,15 +489,13 @@ trailingMeasureDuration = sectionDuration % ticksPerMeasure
 
 Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Cette mesure tronquée est valide aussi bien à la fin du clip qu’avant un `MeterChange`. Chaque `MeterChange` termine immédiatement la section précédente, même au milieu de sa mesure théorique, puis commence une nouvelle mesure complète dans la nouvelle métrique.
 
-Les sections de gamme et d'accord sont indépendantes : elles peuvent se chevaucher et posséder des frontières différentes. Une `ScaleSection` couvre toujours chaque tick du clip grâce au changement initial obligatoire ; aucune `ChordSection` n'existe avant le premier `ChordChange`.
-
-Pour analyser une note, les intervalles pertinents sont dérivés de l'union des frontières de `ScaleSection`, de `ChordSection` et du `TimeRange` de la note. Chaque portion expose deux résultats indépendants :
+Grâce au changement initial obligatoire, une `HarmonySection` couvre toujours chaque tick du clip. Pour analyser une note, les intervalles pertinents sont dérivés de l'union des frontières de `HarmonySection` et du `TimeRange` de la note. Chaque portion expose un rôle exclusif :
 
 ```ts
-interface NotePitchAnalysis {
-  scaleRole: "SCALE_TONE" | "OUTSIDE_SCALE";
-  chordRole: "CHORD_TONE" | "OUTSIDE_CHORD" | "NO_CHORD";
-}
+type NoteHarmonyRole =
+  | "CHORD_TONE"
+  | "SCALE_TONE"
+  | "OUTSIDE_TONE";
 ```
 
 ### Frontière de l'agrégat
@@ -527,8 +526,7 @@ Deux sélections indépendantes correspondent à deux espaces d'édition distinc
 type ClipContentRef =
   | { kind: "NOTE"; noteId: NoteId }
   | { kind: "METER_CHANGE"; meterChangeId: MeterChangeId }
-  | { kind: "SCALE_CHANGE"; scaleChangeId: ScaleChangeId }
-  | { kind: "CHORD_CHANGE"; chordChangeId: ChordChangeId };
+  | { kind: "HARMONY_CHANGE"; harmonyChangeId: HarmonyChangeId };
 
 interface ClipContentSelection {
   items: readonly ClipContentRef[];
@@ -680,7 +678,7 @@ interface MoveClipContentCommand {
 }
 ```
 
-Les références peuvent désigner simultanément des notes et des changements de métrique, de gamme et d’accord. La transformation est atomique : si un élément ne peut pas atteindre la position proposée sans violer un invariant, aucun résultat partiel n'est publié.
+Les références peuvent désigner simultanément des notes et des changements de métrique et d’harmonie. La transformation est atomique : si un élément ne peut pas atteindre la position proposée sans violer un invariant, aucun résultat partiel n'est publié.
 
 Les identifiants des entités déplacées sont conservés. Lorsqu'une transformation provisoire crée des entités, leurs identifiants sont générés une seule fois pour le geste, restent stables pendant ses actualisations et sont conservés si le projet transitoire est appliqué.
 
@@ -806,7 +804,7 @@ occurrenceInterval = [occurrence.start,
 projectEnd = max(occurrenceInterval.end), ou 0 sans occurrence
 ```
 
-Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément ; l'invariant de grille garantit simplement qu'ils se trouvent alors sur des lignes différentes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique, de gamme et d’accord du clip.
+Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément ; l'invariant de grille garantit simplement qu'ils se trouvent alors sur des lignes différentes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique et d’harmonie du clip.
 
 Pour un transport `CLIP`, le service parcourt les événements du `clipId` attaché à la session entre son curseur local et `clip.duration`. Aucun placement global ni `repeatCount` n'intervient.
 
@@ -1193,8 +1191,7 @@ src/
 │   ├── Tempo.ts
 │   ├── Meter.ts
 │   ├── Pitch.ts
-│   ├── Scale.ts
-│   └── Chord.ts
+│   └── Harmony.ts
 ├── application/
 │   ├── EditorState.ts
 │   ├── ProjectState.ts
@@ -1221,7 +1218,7 @@ src/
     └── stores/
 ```
 
-`Tempo.ts` déclare uniquement le value object global `Tempo`. `Meter.ts` déclare ensemble `Meter`, `MeterChange` et `MeterSection`. `Pitch.ts` déclare `Pitch` et le value object commun `RootNote`. `Scale.ts` déclare `Scale`, `ScaleChange`, `ScaleSection` et le catalogue des `ScaleTypeId`. `Chord.ts` réutilise `RootNote` et déclare `Chord`, `ChordChange`, `ChordSection` ainsi que le catalogue des `ChordTypeId`.
+`Tempo.ts` déclare uniquement le value object global `Tempo`. `Meter.ts` déclare ensemble `Meter`, `MeterChange` et `MeterSection`. `Pitch.ts` déclare `Pitch` et le value object commun `RootNote`. `Harmony.ts` déclare `Chord`, `Scale`, leur catalogue de types, l’union exclusive `Harmony`, `HarmonyChange` et `HarmonySection`.
 
 `domain/Result.ts` déclare `Result`, ses helpers génériques et la forme générique `ValidationError`. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
 
@@ -1229,7 +1226,7 @@ src/
 
 Les modules de temps et de hauteur sont déclarés directement sous `domain/`. Cette organisation physique ne fusionne pas leurs concepts.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `RootNote` est partagé par `Scale` et `Chord` et reste déclaré dans `domain/Pitch.ts`.
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `RootNote` est partagé par `Scale` et `Chord` et reste déclaré dans `domain/Pitch.ts`. `Harmony` les réunit uniquement comme variantes exclusives d’un même contexte local.
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/Selection.ts`.
 
