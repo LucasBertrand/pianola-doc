@@ -55,6 +55,7 @@ Le premier périmètre comprend :
 - des occurrences référençant par défaut un contenu `Clip` partagé : modifier ce contenu modifie toutes ses occurrences ;
 - un tempo unique appartenant au projet ;
 - un instrument associé à chaque clip et partagé par toutes ses notes ;
+- l'absence de chevauchement entre notes de même hauteur dans un clip, avec résolution explicite `SLICE` ou `MERGE` ;
 - des chronologies de métrique, de tonalité et d'harmonie locales à chaque clip ;
 - la lecture simultanée de tous les clips dont les intervalles globaux se chevauchent ;
 - l'édition du contenu d'un clip dans un piano roll ;
@@ -166,6 +167,7 @@ Responsabilités et invariants :
 - définir sa durée canonique locale en ticks ;
 - référencer exactement un `InstrumentId` ;
 - contenir des notes positionnées relativement à son début local, toutes jouées par l'instrument du clip ;
+- empêcher le chevauchement temporel de deux notes de même hauteur ;
 - contenir et ordonner ses trois chronologies locales ;
 - fournir la métrique, la tonalité et l'harmonie actives à une position locale ;
 - garantir la cohérence locale de ses notes et changements.
@@ -218,8 +220,13 @@ Invariants :
 - la durée est strictement positive ;
 - la note se termine au plus tard à la fin locale du clip ;
 - la hauteur et la vélocité restent dans leurs plages valides ;
+- deux notes de même `Pitch` ne se chevauchent jamais avec une durée strictement positive dans un même clip ;
 - sa relation à la `Key` et à l'`Harmony` actives est dérivée et n'est pas sauvegardée ;
 - une note extérieure à la tonalité, à l'accord ou à la gamme active reste valide.
+
+Les intervalles sont semi-ouverts : deux notes de même hauteur peuvent être contiguës lorsque la fin de l'une est égale au début de l'autre. Des notes de hauteurs différentes peuvent se chevaucher ; cet invariant préserve donc la polyphonie et les accords.
+
+Une création, un déplacement, un redimensionnement ou une transposition qui produirait un chevauchement de même hauteur n'est jamais appliqué implicitement. Le domaine signale la collision à l'application, qui doit obtenir de la présentation un mode de résolution `SLICE` ou `MERGE` avant de soumettre une nouvelle tentative explicite.
 
 Modifier le tempo du projet ou la métrique locale ne déplace pas la note : sa position et sa durée restent exprimées dans les ticks canoniques du clip.
 
@@ -548,12 +555,42 @@ interface MoveClipContentCommand {
   clipId: ClipId;
   items: readonly ClipContentRef[];
   deltaTicks: number;
+  collisionResolution?: NoteCollisionResolution;
 }
 ```
 
 Les références peuvent désigner simultanément des notes et des changements de métrique, de tonalité et d'harmonie. La transformation est atomique : si un élément ne peut pas atteindre la position proposée sans violer un invariant, aucun résultat partiel n'est publié.
 
 Les identifiants des entités déplacées sont conservés. Lorsqu'une transformation provisoire crée des entités, leurs identifiants sont générés une seule fois pour le geste, restent stables pendant ses actualisations et sont conservés si le projet transitoire est appliqué.
+
+#### Résolution des collisions de notes
+
+Les cas d'usage qui créent ou modifient une note acceptent un mode facultatif :
+
+```ts
+type NoteCollisionResolution = "SLICE" | "MERGE";
+
+interface NoteCollision {
+  manipulatedNoteId: NoteId;
+  conflictingNoteIds: readonly NoteId[];
+}
+
+type NoteEditResult =
+  | { kind: "APPLIED"; project: Project }
+  | { kind: "COLLISION"; collision: NoteCollision };
+```
+
+La première tentative est effectuée sans `NoteCollisionResolution`. Si le résultat quantifié ferait chevaucher la note manipulée avec une ou plusieurs notes de même hauteur, le cas d'usage retourne `COLLISION` sans publier de `transientProject`. La présentation demande alors à l'utilisateur `SLICE` ou `MERGE`, puis rejoue la même intention avec le mode choisi. Le domaine ne dépend donc d'aucune interaction utilisateur et aucun état intermédiaire invalide n'est créé.
+
+`SLICE` donne priorité à la note manipulée et conserve son identité, son intervalle et sa vélocité. Chaque note existante de même hauteur est remplacée par la différence entre son intervalle et celui de la note manipulée :
+
+- une partie entièrement couverte est supprimée ;
+- un chevauchement sur un bord raccourcit la note existante ;
+- une note existante qui contient entièrement la note manipulée est scindée en deux fragments ; le fragment gauche conserve son `NoteId` et sa vélocité, tandis que le fragment droit reçoit un nouveau `NoteId` avec la même vélocité.
+
+`MERGE` calcule l'union de l'intervalle de la note manipulée et de toutes les notes de même hauteur qui entrent en collision, transitivement. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la note manipulée ; les notes existantes absorbées sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
+
+Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes avant de publier le résultat. `SLICE` comme `MERGE` forme une seule transformation atomique et une seule future unité d'annulation.
 
 Les services seront nommés et ajoutés dans `application/use-cases/` lorsque leurs responsabilités précises seront établies.
 
@@ -594,6 +631,8 @@ La réconciliation dépend de la portée du transport actif. Pour un transport `
 Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d'une `ClipOccurrence`. Déplacer le début d'une note ou d'une occurrence de clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Clip` source déclenche la réconciliation séparément pour chacune de ses occurrences actives ou planifiées. Dans un transport `CLIP`, la même modification est réconciliée une seule fois dans le contexte local du clip édité.
 
 Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Changer le `Clip.instrumentId` applique la même règle à toutes ses notes audibles : dans toutes ses occurrences actives pour `PROJECT`, ou dans son unique contexte local pour `CLIP`. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
+
+Une résolution `SLICE` ou `MERGE` devient audible seulement après production de son projet valide. Elle est réconciliée comme une unique modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`. Aucune planification n'est produite pour la tentative en collision qui a précédé le choix utilisateur.
 
 Cette replanification est une conséquence applicative du geste d'édition, pas une nouvelle commande publique de la présentation.
 
@@ -859,6 +898,12 @@ La grille applique directement la sémantique du transport :
 
 La présentation affiche toujours l'`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `clipId`, crée le `ClipEditorState` avec une tête locale au tick `0` et édite le contenu source partagé ; toutes les occurrences correspondantes reflètent immédiatement la modification. Pendant un geste, le déplacement global ou vertical provisoire d'une occurrence est quantifié par la grille globale, puis immédiatement visible et audible s'il respecte l'absence de chevauchement sur la ligne cible. Les coordonnées validées appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
+### Piano roll et collisions
+
+Le piano roll peut afficher simultanément des notes de hauteurs différentes. Après quantification d'une création ou d'une transformation, une collision n'existe que si deux notes de même hauteur se chevauchent avec une durée strictement positive.
+
+Lorsque le cas d'usage retourne `COLLISION`, la présentation conserve le projet effectif précédent et affiche les deux choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement : l'utilisateur décide pour cette collision. La réponse rejoue la commande initiale avec la résolution explicite ; l'éditeur affiche ensuite uniquement le résultat valide et atomique.
+
 ---
 
 ## Infrastructure
@@ -1037,6 +1082,7 @@ Quelques relations structurantes :
 
 ## Questions ouvertes
 
+- Lorsqu'un même geste manipule plusieurs notes de même hauteur qui entrent en collision entre elles, quelle note doit être prioritaire pour `SLICE` et quelle identité doit survivre à `MERGE` ?
 - Les résolutions des grilles globale et locale doivent-elles être configurées indépendamment, partager une valeur par défaut ou être reliées par une règle explicite ?
 - Quels `ChordTypeId` et `ScaleTypeId` appartiennent au premier périmètre, et selon quelles règles la `Key` active classe-t-elle les accords ou gammes compatibles proposés à l'utilisateur ?
 - Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
@@ -1096,7 +1142,7 @@ src/
 
 `Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `ClipOccurrence.ts` déclare `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity` reste déclaré avec `Note`. `Tonic` reste un value object distinct déclaré dans `domain/pitch/Key.ts`.
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `Tonic` reste un value object distinct déclaré dans `domain/pitch/Key.ts`.
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
 

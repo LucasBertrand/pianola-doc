@@ -301,6 +301,24 @@ Pendant la lecture, `setProjectPlayhead(7680)` remplace gracieusement la session
 
 Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisateur ferme le piano roll ou ouvre `Couplet`. La session `CLIP` continue sur `Motif` avec son propre curseur d'exécution. La tête locale du nouvel éditeur ne suit pas ce transport. Un nouvel appel à `playClip()` remplace la session et cible alors `Couplet`.
 
+## Cas 18 — Collision de notes de même hauteur
+
+Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
+
+La première tentative ne modifie ni `project` ni `transientProject`. Elle retourne `COLLISION` avec `note-m` comme note manipulée et `note-a` comme note conflictuelle. La présentation demande alors un mode de résolution.
+
+Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
+
+| Note résultante | Hauteur | Intervalle | Identité | Vélocité |
+| --- | --- | --- | --- | ---: |
+| Fragment gauche | `C4` | `[0, 960)` | conserve `note-a` | 70 |
+| Note manipulée | `C4` | `[960, 1440)` | conserve `note-m` | 100 |
+| Fragment droit | `C4` | `[1440, 1920)` | nouveau `NoteId` | 70 |
+
+Avec `MERGE`, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation.
+
+Une note `C4` commençant exactement au tick `1920` serait seulement contiguë au résultat : les intervalles semi-ouverts ne déclenchent alors ni question ni résolution automatique.
+
 ## Conséquences pour le PlaybackService
 
 Le calcul de planification repose sur l'intervalle persistant de chaque occurrence et sur la durée du clip qu'elle référence, sans parcours récursif :
@@ -336,6 +354,7 @@ calculateInterval(
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistrée qu'à l'ouverture du contexte ;
 - chaque attaque, y compris lors d'une répétition, reçoit un `NoteOccurrenceId` unique ;
 - une modification du projet transitoire remplace atomiquement les commandes futures selon la portée `PROJECT` ou `CLIP` du transport actif, sans changer sa session ni son origine temporelle ;
+- une résolution de collision `SLICE` ou `MERGE` produit une seule réconciliation audio après le choix utilisateur ; la tentative invalide antérieure ne produit aucune commande ;
 - la fin structurelle permet aux autres occurrences de poursuivre leur lecture pendant que l'infrastructure conserve éventuellement un contexte en `DRAINING` ;
 - un contexte déjà `DRAINING` conserve ses tails jusqu'au silence même si l'occurrence est déplacée ; un nouveau placement nécessitant des attaques reçoit un nouveau contexte ;
 - le tempo, les contenus `Clip` et les propriétés globales des `ClipOccurrence` sont persistants ; les identifiants d'exécution ne le sont jamais.
