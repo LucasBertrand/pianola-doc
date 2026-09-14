@@ -608,13 +608,11 @@ stop(mode?: StopMode): void;
 #### Lecture du projet
 
 `playProject()` ouvre une session `PROJECT` depuis `EditorState.projectPlayhead`.
-
-`playProject(tick)` valide le tick dans le référentiel global, place la tête du projet à cette position, puis démarre la même lecture globale. Le bouton de lecture d'une occurrence appelle donc simplement `playProject(occurrence.start)` : l'occurrence fournit un repère, mais ne limite jamais la portée du transport. Toutes les autres occurrences actives ou futures à partir de ce tick participent à la lecture.
+`playProject(tick)` valide le tick dans le référentiel global, place la tête du projet à cette position, puis démarre la même lecture globale.
 
 #### Lecture du clip édité
 
 `playClip()` exige un `clipEditor`, puis ouvre une session `CLIP` pour son `clipId` depuis la tête locale conservée dans `clipEditor.playhead`.
-
 `playClip(tick)` valide le tick dans les bornes locales du clip, place cette tête, puis démarre la lecture. Ce transport :
 
 - lit uniquement le contenu du clip édité ;
@@ -639,8 +637,6 @@ Cette opération :
 `NotePreviewHandle.release()` relâche uniquement l'occurrence de note créée par l'appel correspondant. L'opération est idempotente. La release et le tail peuvent ensuite se terminer naturellement.
 
 Pour une touche du piano roll, la présentation appelle `preview(noteId)` au début du geste, conserve le handle, puis appelle `release()` à sa fin, notamment lors de `pointerup` ou `pointercancel`. Elle ne reçoit aucun identifiant de session ou de contexte audio.
-
-L'écoute structurelle isolée du clip relève de `playClip`, pas de `preview`. Le bouton d'une occurrence déclenche une lecture globale avec `playProject(occurrence.start)`.
 
 #### Planification selon la portée
 
@@ -729,8 +725,6 @@ Le mode par défaut est `GRACEFUL` :
 - les contextes laissent leurs releases et tails se terminer.
 
 `IMMEDIATE` détruit sans délai les contextes ciblés et leur sortie sonore. Le remplacement d'un transport suit la politique `GRACEFUL`.
-
-Les scénarios complets sont décrits dans [etudes-de-cas.md](etudes-de-cas.md).
 
 ### Ports applicatifs
 
@@ -1020,22 +1014,32 @@ Quelques relations structurantes :
 ## Questions ouvertes
 
 - Lorsque la dernière occurrence d'un clip est supprimée, le clip source doit-il rester disponible pour être replacé plus tard ou être supprimé après confirmation ?
+  Il est conservé et doit faire l'objet d'une suppression manuelle.
 - L'action permettant de transformer une occurrence liée en copie indépendante doit-elle être nommée « rendre unique », « délier » ou « dupliquer le clip » ?
+  Pour le première périmètre, toutes les occurrences dépendent de clips déjà référencés et il n'y aura de fonction de ce type.
 - Les chevauchements sur une même ligne doivent-ils rester entièrement libres, être interdits par l'éditeur ou recevoir une règle explicite de superposition visuelle ? Leur lecture audio est dans tous les cas simultanée.
+  Même si du coté audio, cela n'a pas d'importance, nous interdirons le chevauchement visuel des occurences sur une même ligne.
 - Les lignes doivent-elles rester de simples indices, ou faut-il leur donner plus tard une identité et des métadonnées persistantes telles qu'un nom, une couleur ou une hauteur d'affichage ? Elles ne devront pas acquérir de sémantique instrumentale implicite.
+  Pour le premier périmètre, elles seront de simple indices, mais elles seront très probablement garni par la suite de propriétés supplémentaires.
 - Lorsqu'une ligne vide est supprimée ou qu'une ligne est insérée, les indices des clips suivants doivent-ils être décalés automatiquement ou les espaces vides doivent-ils rester stables ?
+  Je ne suis pas sur de comprendre. Le nombre de ligne n'a aucun importance. Nous aurons une limite fixe par sécurité mais l'ajout/suppression de ligne ne fera pas l'objet de commande utilisateur.
 - Le déplacement et le redimensionnement des occurrences doivent-ils autoriser tout tick global ou appliquer par défaut une quantification relative à une grille globale sans métrique ?
+  le déplacement se fera via une quantification relative à une grille globale sans métrique. il reste à comparer la grille d’édition de clip de celle-ci pour déterminer leur place dans la structure.
 - Quelle plage de BPM et quelle précision décimale le `Tempo` du projet doit-il accepter ?
+  [20.0, 999.9]
 - Une tonalité active doit-elle pouvoir être interrompue sans être remplacée, et faut-il alors qu'un `KeyChange` porte explicitement un état sans tonalité ? Une telle interruption devra être interdite sur tout intervalle couvert par une `Harmony` utilisant `DEGREE`.
+  Une tonalité activé n'est interrompue que par un autre Keychange qui peut porter explicitement un état sans tonalité.
 - Quels `ChordTypeId` et `ScaleTypeId` appartiennent au premier périmètre, et selon quelles règles la `Key` active classe-t-elle les accords ou gammes compatibles proposés à l'utilisateur ?
 - Quelle politique appliquer lorsqu'un instrument `smplr` requis n'est pas encore chargé : attendre tous les instruments nécessaires avant de démarrer le transport, ou les précharger dès l'ouverture et chaque modification du projet ?
+attendre tous les instruments nécessaires avant de démarrer le transport
 - Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
-- Lorsqu'une lecture commence au milieu d'une note déjà engagée, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
 - Que devient chacune des deux têtes de lecture après une fin naturelle, un `stop` gracieux ou un `stop` immédiat ?
+  quelque le soit le mode de stop, stop() laisse les têtes de lecture en place.
 - Déplacer la tête correspondant au transport actif doit-il provoquer immédiatement une nouvelle session de même portée, ou seulement fixer le point de départ du prochain appel à `playProject()` ou `playClip()` ?
+provoquer immédiatement une nouvelle session de même portée
 - Fermer le piano roll ou ouvrir un autre clip pendant un transport `CLIP` doit-il arrêter ce transport immédiatement ou le laisser continuer sur son clip d'origine ?
-- Si une occurrence est déplacée au-delà de la tête pendant que son contexte est en drainage, faut-il conserver le contexte jusqu'au silence ou l'arrêter immédiatement avant d'en ouvrir un nouveau à sa nouvelle position ?
-
+  le laisser continuer sur son clip d'origine
+  
 ## Arborescence cible
 
 Cette arborescence documente les frontières actuelles. Elle exprime des responsabilités et non l'obligation de créer un fichier autonome pour chaque type.
