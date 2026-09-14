@@ -261,13 +261,23 @@ Si une occurrence du clip commence au tick global `10000`, ces bornes locales co
 
 Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement une occurrence déjà active et déplace un changement local situé plus loin dans le clip qu'elle référence. Le nouveau `transientProject`, projection applicative du geste, devient immédiatement l’`effectiveProject` et alimente simultanément la présentation et l’audio.
 
-Le `PlaybackService` recalcule le transport depuis cette borne sans ouvrir une nouvelle session, puis demande :
+Le `PlaybackService` consulte l’horloge de la session :
 
 ```ts
-replaceScheduledCommands(transportSessionId, 5, replacementCommands);
+const { now, safeAt } = audioEngine.getClock(transportSessionId);
 ```
 
-Le moteur retire les anciennes commandes non exécutées dont `at >= 5` et installe atomiquement `replacementCommands`.
+Si `safeAt` vaut `5.04` secondes, il recalcule le transport depuis cette borne sans ouvrir une nouvelle session, puis demande :
+
+```ts
+replaceSchedule(transportSessionId, {
+  from: safeAt,
+  audioCommands: replacementCommands,
+  contextCompletions: replacementCompletions
+});
+```
+
+Le moteur conserve les événements antérieurs à `safeAt`, retire atomiquement les commandes et fins de contexte remplaçables à partir de cette borne, puis installe les deux nouvelles collections.
 
 Si l'ancien et le nouveau début global de la note restent avant la tête, tandis que sa fin reste après, l'occurrence de note audible est conservée et seul son `NOTE_OFF` est replanifié. Si le déplacement de la `ClipOccurrence` place l'attaque après la tête, l'occurrence de note reçoit un `NOTE_OFF` à la borne et sa future attaque est replanifiée. Une note auparavant inactive qui couvre désormais la tête reçoit un `NOTE_ON` à cette borne.
 
@@ -401,6 +411,35 @@ Les voix de la répétition `1` ne sont jamais renommées en répétition `2`. E
 Si seul `repeatCount` passe ensuite de `3` à `2`, les répétitions `0` et `1` ne changent ni de frontière ni d’indice. La répétition terminale `2` est supprimée, ses commandes futures sont annulées et ses éventuelles voix actives sont relâchées.
 
 Une augmentation ultérieure de `repeatCount` ajoute au contraire de nouveaux indices terminaux sans modifier ceux qui existent déjà.
+
+## Cas 22 — Horloge sûre et fin simultanée d’un contexte
+
+Une session est en cours à `now = 4.98` secondes. Le moteur retourne `safeAt = 5.04` : les événements antérieurs à cette borne sont déjà engagés et ne peuvent plus être remplacés de façon fiable.
+
+Le service fournit une mise à jour contenant :
+
+```ts
+{
+  from: 5.04,
+  audioCommands: [
+    { kind: "NOTE_OFF", contextId: oldContext, at: 6.0, occurrenceId: oldVoice },
+    { kind: "NOTE_ON", contextId: newContext, at: 6.0, occurrenceId: newVoice, /* … */ }
+  ],
+  contextCompletions: [
+    { contextId: oldContext, at: 6.0 }
+  ]
+}
+```
+
+À `6.0` secondes, le moteur exécute dans cet ordre :
+
+1. le `NOTE_OFF` de `oldVoice` ;
+2. la fin structurelle de `oldContext`, qui peut alors passer à `DRAINING` ;
+3. le `NOTE_ON` de `newVoice` dans `newContext`.
+
+Un `NOTE_ON` visant `oldContext` au même instant serait refusé, puisque sa fin structurelle précède les attaques. Le nouveau contexte reste en revanche indépendant et son attaque est valide.
+
+Si une édition déplace ultérieurement cette fin et que son ancienne borne est toujours supérieure ou égale au nouveau `safeAt`, `replaceSchedule` remplace atomiquement l’ancienne `ContextCompletion`. Si cette borne est déjà engagée ou exécutée, le contexte ne peut pas être réactivé : le service ouvre un nouveau contexte.
 
 ## Référence des contrats
 
