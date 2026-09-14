@@ -54,7 +54,8 @@ Le premier périmètre comprend :
 - l'édition du contenu d'un clip dans un piano roll ;
 - la lecture du projet depuis sa tête globale ou depuis un tick global explicite ;
 - la lecture isolée du clip édité depuis sa tête locale ou depuis un tick local explicite ;
-- la préécoute ponctuelle d'une note du clip édité ;
+- la préécoute soutenue d’une hauteur avec l’instrument du clip édité ;
+- la préécoute brève et simultanée des hauteurs uniques d’une sélection de notes ;
 - un catalogue d'instruments échantillonnés intégrés et non éditables, rendus par `smplr`.
 
 Il ne comprend pas :
@@ -725,7 +726,7 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures et u
 
 ### PlaybackService
 
-`PlaybackService` orchestre le transport global du projet, le transport local du clip édité et les préécoutes de notes, puis produit les commandes audio correspondantes.
+`PlaybackService` orchestre le transport global du projet, le transport local du clip édité, la préécoute d’une hauteur et celle d’une sélection, puis produit les commandes audio correspondantes.
 
 #### Projet effectif et modification en temps réel
 
@@ -757,15 +758,25 @@ Cette replanification est une conséquence applicative du geste d'édition, pas 
 ```ts
 type StopMode = "GRACEFUL" | "IMMEDIATE";
 
-interface NotePreviewHandle {
+interface PreviewPitchHandle {
   release(): void;
+}
+
+interface PreviewSelectionHandle {
+  stop(): void;
 }
 
 playProject(tick?: Tick): Promise<void>;
 playClip(tick?: Tick): Promise<void>;
 setProjectPlayhead(tick: Tick): void;
 setClipPlayhead(tick: Tick): void;
-preview(noteId: NoteId): NotePreviewHandle;
+previewPitch(
+  pitch: Pitch,
+  velocity?: Velocity
+): PreviewPitchHandle;
+previewSelection(
+  noteIds: readonly NoteId[]
+): PreviewSelectionHandle;
 stop(mode?: StopMode): void;
 ```
 
@@ -793,20 +804,41 @@ Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous 
 
 `setProjectPlayhead(tick)` et `setClipPlayhead(tick)` valident et déplacent la tête correspondante. Si cette tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — le déplacement demande une nouvelle session de même portée au tick demandé, soumise à la même barrière de préparation des instruments que le démarrage. Sinon, il prépare seulement le prochain appel à `playProject()` ou `playClip()`.
 
-#### Préécoute d'une note
+#### Préécoutes du piano roll
 
-`preview(noteId)` résout exclusivement la note dans `clipEditor.clipId`, utilise le `Clip.instrumentId` correspondant, déclenche immédiatement une audition soutenue et retourne un `NotePreviewHandle`. L'appel est invalide sans clip édité ou si la note n'appartient pas à ce clip. La durée persistante de la note ne détermine pas celle de cette audition : celle-ci se poursuit jusqu'au relâchement du handle ou jusqu'à une durée maximale de sécurité.
+Les deux préécoutes utilisent l’instrument du clip actuellement édité, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
 
-Cette opération :
+##### Préécoute d’une hauteur
 
-- ne déplace ni la tête globale ni la tête locale ;
-- ne parcourt aucun autre clip ;
-- ouvre en interne une session `NOTE_PREVIEW` indépendante ;
-- peut coexister avec le transport et avec d'autres préécoutes de notes.
+`previewPitch(pitch, velocity?)` joue une hauteur explicite, qu’une `Note` correspondante existe ou non dans le clip. La vélocité reçoit une valeur de préécoute par défaut lorsqu’elle est omise.
 
-`NotePreviewHandle.release()` relâche uniquement l'occurrence de note créée par l'appel correspondant. L'opération est idempotente. La release et le tail peuvent ensuite se terminer naturellement.
+L’audition est soutenue jusqu’à `PreviewPitchHandle.release()` ou jusqu’à une durée maximale de sécurité. `release()` est idempotente et relâche uniquement la voix créée par cet appel ; sa release et son tail peuvent ensuite se terminer naturellement. La présentation conserve le handle entre `pointerdown` et `pointerup` ou `pointercancel`.
 
-Pour l’audition d’une note existante, la présentation appelle `preview(noteId)` au début du geste, conserve le handle, puis appelle `release()` à sa fin, notamment lors de `pointerup` ou `pointercancel`. Elle ne reçoit aucun identifiant de session ou de contexte audio.
+##### Préécoute d’une sélection
+
+`previewSelection(noteIds)` résout les notes dans le clip édité depuis l’`effectiveProject`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
+
+Le `PreviewSelectionHandle` reste toutefois actif pendant le geste afin de suivre les transformations. À chaque remplacement de l’`effectiveProject`, le service compare la hauteur de chaque `NoteId` sélectionné avec sa valeur précédente :
+
+- si aucune hauteur sélectionnée n’a changé, notamment pendant un déplacement seulement temporel, aucune attaque n’est produite ;
+- dès que la hauteur d’au moins une note sélectionnée change, toute attaque précédente encore active est relâchée, puis l’ensemble complet des hauteurs actuelles est de nouveau dédupliqué et réattaqué brièvement ;
+- les hauteurs inchangées sont donc elles aussi rejouées ;
+- plusieurs notes partageant désormais le même `Pitch` ne produisent qu’une seule voix.
+
+Le déclenchement dépend des hauteurs portées par les identités sélectionnées, et non seulement de l’ensemble dédupliqué final. Ainsi, une note peut changer de hauteur et imposer une réattaque complète même si les doublons produisent finalement le même ensemble de `Pitch`.
+
+Les mises à jour reçues dans un même cycle sûr de planification sont coalescées : seule la projection la plus récente déclenche l’attaque. `PreviewSelectionHandle.stop()` est idempotente, cesse d’observer le geste, annule toute attaque encore en attente et relâche les voix brèves encore actives.
+
+##### Préparation de l’instrument
+
+L’application demande le préchargement de l’instrument dès l’ouverture du piano roll. Si sa banque n’est pas encore disponible lors d’une préécoute, le handle est néanmoins retourné immédiatement et représente l’intention annulable :
+
+- après chargement, `previewPitch` ne produit son `NOTE_ON` que si son handle n’a pas déjà été relâché ;
+- pour `previewSelection`, seule la projection de hauteurs la plus récente est attaquée si le handle est encore actif ;
+- un `release()` ou un `stop()` antérieur à la fin du chargement empêche toute attaque tardive ;
+- un échec de chargement ne transforme jamais le handle en voix active.
+
+La stratégie de remontée d’un échec technique de chargement par l’API publique reste traitée avec les autres erreurs publiques.
 
 #### Planification selon la portée
 
@@ -854,22 +886,26 @@ La lecture utilise trois niveaux d'identité opaques et transitoires :
 
 | Identité | Portée |
 | --- | --- |
-| `PlaybackSessionId` | Un transport de projet, un transport de clip ou une préécoute de note |
+| `PlaybackSessionId` | Un transport de projet, un transport de clip ou une préécoute |
 | `PlaybackContextId` | Une unité audio isolée appartenant à une session |
 | `NoteOccurrenceId` | Une attaque précise dans un contexte |
 
-Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions. Deux notes issues de clips associés au même instrument, avec la même hauteur et le même instant, restent ainsi indépendantes.
+Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions et des réattaques complètes d’une sélection. Deux notes issues de clips associés au même instrument, avec la même hauteur et le même instant, restent ainsi indépendantes, sauf la déduplication explicite propre à `previewSelection`.
 
-Un nouveau contexte est créé à chaque activation d'une occurrence dans un transport `PROJECT`, pour le clip isolé d'un transport `CLIP`, et pour chaque préécoute de note. Les répétitions d'une même occurrence réutilisent son contexte et son instance d'instrument, mais produisent de nouvelles occurrences de notes. Deux occurrences simultanées référençant le même `ClipId` possèdent toujours des contextes distincts.
+Un nouveau contexte est créé à chaque activation d'une occurrence dans un transport `PROJECT`, pour le clip isolé d'un transport `CLIP`, pour chaque `previewPitch` et pour une préécoute de sélection. Les répétitions d'une même occurrence réutilisent son contexte et son instance d'instrument, mais produisent de nouvelles occurrences de notes. Deux occurrences simultanées référençant le même `ClipId` possèdent toujours des contextes distincts.
 
 Les identifiants persistants `ClipId`, `ClipOccurrenceId` et `NoteId` restent connus du domaine et du service. Ils ne sont pas transmis au moteur audio.
 
-Ces identités d'exécution appartiennent au langage interne du port `AudioEngine` et ne sont jamais exposées à la présentation. Le `NotePreviewHandle` public n'est pas une identité audio : il expose uniquement la capacité de relâcher l'audition qui l'a créé.
+Ces identités d'exécution appartiennent au langage interne du port `AudioEngine` et ne sont jamais exposées à la présentation. `PreviewPitchHandle` et `PreviewSelectionHandle` exposent uniquement le contrôle nécessaire à leur audition.
 
 #### Sessions et concurrence
 
 ```ts
-type PlaybackSessionKind = "PROJECT" | "CLIP" | "NOTE_PREVIEW";
+type PlaybackSessionKind =
+  | "PROJECT"
+  | "CLIP"
+  | "PITCH_PREVIEW"
+  | "SELECTION_PREVIEW";
 
 type ActiveTransport =
   | { kind: "PROJECT"; sessionId: PlaybackSessionId; playhead: Tick }
@@ -880,13 +916,14 @@ type ActiveTransport =
 | --- | --- | --- |
 | Transport global | `PROJECT` | Mutuellement exclusif avec `CLIP` |
 | Transport local | `CLIP` | Mutuellement exclusif avec `PROJECT` |
-| Audition | `NOTE_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
+| Touche du piano roll | `PITCH_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
+| Sélection manipulée | `SELECTION_PREVIEW` | Au plus une session de sélection ; peut coexister avec le transport et les préécoutes de hauteur |
 
 Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `playClip` retire ce rôle au transport précédent et annule ses attaques futures lorsque la nouvelle portée est prête à démarrer. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif. Les deux têtes de lecture restent indépendantes.
 
-`preview(noteId)` ne remplace jamais le transport. Relâcher son handle produit le `NOTE_OFF` de son occurrence, termine structurellement son contexte et laisse ses releases et tails se drainer. Si le handle n'est pas relâché par la fin du geste, la durée maximale de sécurité applique automatiquement le même comportement.
+`previewPitch` et `previewSelection` ne remplacent jamais le transport. Démarrer une nouvelle préécoute de sélection arrête la précédente. Relâcher ou arrêter leurs handles termine structurellement leur session sans affecter les autres auditions.
 
-`stop(mode)` arrête l'unique transport actif, qu'il soit `PROJECT` ou `CLIP`, immobilise sa tête à la position courante et n'affecte aucune préécoute de note. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. S'il n'existe aucun transport actif, l'opération est sans effet.
+`stop(mode)` arrête l'unique transport actif, qu'il soit `PROJECT` ou `CLIP`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. S'il n'existe aucun transport actif, l'opération est sans effet.
 
 Le mode par défaut est `GRACEFUL` :
 
@@ -1059,7 +1096,7 @@ La définition choisit l'instrument ou le preset `smplr` employé. Elle ne décr
 
 ### PlaybackSession
 
-`PlaybackSession` est l'état technique transitoire d'un transport de projet, d'un transport de clip ou d'une préécoute de note. Elle possède les contextes ouverts pour cette opération et permet leur arrêt collectif.
+`PlaybackSession` est l'état technique transitoire d'un transport de projet, d'un transport de clip, d’une préécoute de hauteur ou d’une préécoute de sélection. Elle possède les contextes ouverts pour cette opération et permet leur arrêt collectif.
 
 Une session remplacée ne devient pas elle-même `DRAINING`. Elle subsiste uniquement comme propriétaire de contextes éventuellement en drainage, puis est détruite lorsqu'ils sont tous `DISPOSED`.
 
@@ -1113,7 +1150,7 @@ Si une occurrence est déplacée au-delà de la tête alors que son ancien conte
 
 Un contexte de clip correspond soit à l'activation audio d'une `ClipOccurrence` dans un transport `PROJECT`, soit à la lecture isolée du clip édité dans un transport `CLIP`. Dans le premier cas, le `ClipOccurrenceId`, le `ClipId` référencé et leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve seulement l'association entre le `ClipId` édité et l'unique contexte de la session. Deux occurrences du même clip ouvertes simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de cet instrument pendant la lecture reste un contrat à préciser dans les questions ouvertes.
 
-Une préécoute de note utilise le même type de contexte. Le `PlaybackService` conserve l'association interne entre le `NotePreviewHandle`, la session, le contexte et l'occurrence correspondants ; aucun descripteur supplémentaire n'est nécessaire.
+Les deux formes de préécoute utilisent le même type de contexte. Le `PlaybackService` conserve les associations internes entre leurs handles publics, leurs sessions, leurs contextes et leurs occurrences sonores ; aucun descripteur supplémentaire n'est nécessaire.
 
 ### InstrumentInstance
 
@@ -1173,7 +1210,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Transport et contrat audio
 
-- **Préécoute :** `preview(noteId)` exige une note existante, alors qu’une touche du piano roll représente une hauteur qui peut être absente du clip. Faut-il une entrée par hauteur et vélocité dans le contexte du clip édité ? Comment préparer une banque absente tout en retournant un handle immédiatement relâchable ?
 - **Changement d’instrument :** comment remplacer l’unique instance d’un contexte tout en conservant les releases de l’ancien instrument ? Faut-il ouvrir un nouveau contexte et drainer l’ancien ? Que faire tant que la nouvelle banque n’est pas prête ?
 - **Préparation asynchrone :** comment propager les erreurs de chargement, invalider un démarrage dépassé par un nouvel appel ou un `stop`, et tenir compte d’un projet modifié pendant l’attente ? Un seek vers une banque non chargée suit la même barrière ; préciser son état visible pendant l’attente.
 - **Horloge et fin structurelle :** comment le service obtient-il l’horloge et une borne sûre du moteur ? `completeContext` doit-il être horodaté pour éviter qu’un appel anticipé annule des commandes encore nécessaires ? Quel ordre garantir aux `NOTE_OFF` et `NOTE_ON` simultanés ?
