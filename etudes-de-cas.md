@@ -441,6 +441,43 @@ Un `NOTE_ON` visant `oldContext` au même instant serait refusé, puisque sa fin
 
 Si une édition déplace ultérieurement cette fin et que son ancienne borne est toujours supérieure ou égale au nouveau `safeAt`, `replaceSchedule` remplace atomiquement l’ancienne `ContextCompletion`. Si cette borne est déjà engagée ou exécutée, le contexte ne peut pas être réactivé : le service ouvre un nouveau contexte.
 
+## Cas 23 — Fin naturelle et départ aux bornes
+
+Un projet possède une fin structurelle au tick `11520`. Lorsque sa session atteint cette borne, la tête globale vaut exactement `11520`, l’`ActiveTransport` disparaît et les contextes peuvent continuer en `DRAINING` pendant leurs tails.
+
+- `playProject()` sans argument replace alors la tête à `0` et redémarre la lecture ;
+- `playProject(11520)` conserve la tête à la fin et n’ouvre aucune session ;
+- `playProject(11521)` retourne une erreur de validation ;
+- un projet vide conserve sa tête à `0` et n’ouvre aucune session.
+
+Le même comportement s’applique à `playClip()` et `playClip(tick)` avec `clip.duration`, à l’exception qu’un clip possède toujours une durée strictement positive.
+
+## Cas 24 — Raccourcissement derrière la tête
+
+Un transport `CLIP` se trouve au tick local `6000`. Une édition valide réduit `clip.duration` de `7680` à `4800` ticks.
+
+L’application ramène immédiatement la tête locale à `4800`. Le service obtient la première borne `safeAt`, annule les attaques futures encore remplaçables, relâche les voix actives à cette borne et supprime l’`ActiveTransport`. Les contextes possédant encore des releases ou tails passent à `DRAINING`.
+
+Si la nouvelle durée avait été `7000`, la tête serait restée à `6000` et le transport aurait continué jusqu’à sa nouvelle fin replanifiée. Si aucun transport n’avait été actif, seul le clamp de la tête aurait été nécessaire.
+
+## Cas 25 — Suppression du clip lu isolément
+
+Le clip non placé `Esquisse` est ouvert dans le piano roll et joué par une session `CLIP`. Comme aucune `ClipOccurrence` ne le référence, l’utilisateur peut demander sa suppression.
+
+Avant de produire le nouveau projet, le cas d’usage :
+
+1. arrête gracieusement la session `CLIP` ;
+2. annule ses attaques futures et relâche ses voix actives ;
+3. supprime l’`ActiveTransport` ;
+4. arrête les préécoutes liées à `Esquisse` ;
+5. annule son éventuel changement d’instrument en préparation ;
+6. ferme son `ClipEditorState` et fait disparaître sa tête locale ;
+7. supprime enfin le clip du projet.
+
+Les contextes peuvent terminer leurs tails en `DRAINING`, mais la session ne continue pas à lire une copie orpheline du clip. Une tête locale n’est jamais transférée au prochain clip ouvert.
+
+Supprimer un clip non placé pendant un transport `PROJECT` n’affecte pas ce transport, car aucune occurrence de ce clip ne participe à sa portée.
+
 ## Référence des contrats
 
 Les règles communes, les signatures des ports et les questions encore ouvertes sont centralisées dans [architecture.md](architecture.md#playbackservice). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
