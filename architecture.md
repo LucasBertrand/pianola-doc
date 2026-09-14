@@ -648,6 +648,7 @@ interface PendingInstrumentChange {
 interface ProjectState {
   project: Project;
   transientProject?: TransientProject;
+  effectiveProjectRevision: number;
   pendingInstrumentChange?: PendingInstrumentChange;
 }
 
@@ -658,6 +659,8 @@ const effectiveProject: Project | TransientProject =
 `project` est la version courante faisant autorité dans l'éditeur. Elle respecte les invariants du domaine et peut comporter des modifications validées qui n'ont pas encore été sauvegardées. Le terme ne doit donc pas être remplacé par `persistedProject`.
 
 `TransientProject` appartient à l'application. Il constitue une projection complète de `project` après application visuelle et sonore du geste, mais n'est pas un `Project` du domaine. Il peut notamment contenir provisoirement des chevauchements de notes de même hauteur. Il ne peut être ni sauvegardé, ni transmis à une opération exigeant un agrégat valide.
+
+`effectiveProjectRevision` est un compteur monotone applicatif, incrémenté chaque fois que `project`, `transientProject` ou leur résolution effective change. Il permet aux préparations asynchrones de détecter qu’un plan a été calculé depuis une projection dépassée.
 
 `effectiveProject` est une valeur dérivée, jamais un troisième état stocké :
 
@@ -863,29 +866,127 @@ Cette replanification est une conséquence applicative du geste d'édition, pas 
 ```ts
 type StopMode = "GRACEFUL" | "IMMEDIATE";
 
+type TransportRequestOutcome =
+  | "STARTED"
+  | "POSITIONED"
+  | "NO_CONTENT"
+  | "SUPERSEDED"
+  | "CANCELLED";
+
+type PreviewReadyOutcome =
+  | "STARTED"
+  | "CANCELLED";
+
+type PlaybackValidationError = ValidationError<
+  "NO_CLIP_EDITED" | "CLIP_NOT_FOUND" | "TICK_OUT_OF_RANGE",
+  {
+    tick?: Tick;
+    clipId?: ClipId;
+    endTick?: Tick;
+  }
+>;
+
+type PreviewValidationError = ValidationError<
+  "NO_CLIP_EDITED" | "PITCH_OUT_OF_RANGE" |
+  "EMPTY_SELECTION" | "NOTE_NOT_IN_EDITED_CLIP",
+  {
+    pitch?: number;
+    noteIds?: readonly NoteId[];
+    clipId?: ClipId;
+  }
+>;
+
+interface InstrumentPreparationError {
+  kind: "PREPARATION_ERROR";
+  code: "INSTRUMENT_LOAD_FAILED";
+  instrumentIds: readonly InstrumentId[];
+}
+
+type PlaybackRequestError =
+  | PlaybackValidationError
+  | InstrumentPreparationError;
+
 interface PreviewPitchHandle {
+  ready: Promise<
+    Result<PreviewReadyOutcome, InstrumentPreparationError>
+  >;
+
   release(): void;
 }
 
 interface PreviewSelectionHandle {
+  ready: Promise<
+    Result<PreviewReadyOutcome, InstrumentPreparationError>
+  >;
+
   stop(): void;
 }
 
-playProject(tick?: Tick): Promise<void>;
-playClip(tick?: Tick): Promise<void>;
-setProjectPlayhead(tick: Tick): void;
-setClipPlayhead(tick: Tick): void;
+playProject(
+  tick?: Tick
+): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
+
+playClip(
+  tick?: Tick
+): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
+
+seekProject(
+  tick: Tick
+): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
+
+seekClip(
+  tick: Tick
+): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
+
 previewPitch(
   pitch: Pitch,
   velocity?: Velocity
-): PreviewPitchHandle;
+): Result<PreviewPitchHandle, PreviewValidationError>;
+
 previewSelection(
   noteIds: readonly NoteId[]
-): PreviewSelectionHandle;
+): Result<PreviewSelectionHandle, PreviewValidationError>;
+
 stop(mode?: StopMode): void;
 ```
 
-`Tick` est un entier positif ou nul validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
+`Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
+
+Les erreurs de validation sont des échecs applicatifs attendus et synchrones lorsqu’ils peuvent être déterminés avant toute préparation. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
+
+`SUPERSEDED` et `CANCELLED` sont des résultats normaux d’orchestration : ils ne doivent pas produire de message d’erreur utilisateur.
+
+#### Préparation asynchrone des transports
+
+Le service conserve au plus une requête de transport en préparation :
+
+```ts
+interface PendingTransportRequest {
+  id: TransportRequestId;
+  kind: "PLAY_PROJECT" | "PLAY_CLIP" | "SEEK_PROJECT" | "SEEK_CLIP";
+  targetTick: Tick;
+  clipId?: ClipId;
+  effectiveProjectRevision: number;
+  status: "PREPARING";
+}
+```
+
+Chaque `playProject`, `playClip`, `seekProject` ou `seekClip` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
+
+`stop(mode)` invalide la requête en attente en plus d’arrêter l’éventuel transport actif. Sa promesse se résout avec `ok("CANCELLED")`. Le service transmet un signal d’annulation au chargement lorsque l’infrastructure le permet, mais l’identité de requête reste la protection obligatoire contre les réponses tardives.
+
+La requête capture `effectiveProjectRevision` avant de déterminer les instruments nécessaires. Après chaque préparation réussie, le service compare cette révision à la valeur courante :
+
+1. si elles sont égales et que la requête est toujours courante, il planifie et ouvre la session ;
+2. si elles diffèrent, il relit le dernier `effectiveProject`, revalide le tick et recalcule la portée ;
+3. les banques déjà préparées sont réutilisées et seules les banques supplémentaires sont chargées ;
+4. le contrôle recommence avant le démarrage.
+
+Une modification continue du projet ne publie donc jamais une session construite depuis une ancienne projection. Si le tick est devenu supérieur à la nouvelle fin, la requête retourne `err(TICK_OUT_OF_RANGE)`. S’il est exactement à la fin, elle retourne `ok("NO_CONTENT")` sans ouvrir de session.
+
+Lors d’un seek sur le transport actif, la tête sonore actuelle continue d’avancer pendant la préparation. La destination demandée est affichée séparément comme un repère provisoire en chargement ; elle ne devient pas encore la tête effective. Lorsque la préparation réussit, l’ancienne session est remplacée gracieusement et la tête saute à la destination.
+
+Sans transport actif, un seek valide déplace immédiatement la tête immobile. Il retourne `ok("POSITIONED")` et ne prépare aucune banque avant le prochain `play`.
 
 #### Lecture du projet
 
@@ -911,7 +1012,7 @@ Ce transport :
 
 Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les occurrences susceptibles d'être lues entre le tick de départ et la fin du projet ; pour `CLIP`, seulement l'instrument du clip ciblé. La promesse se résout lorsque le transport a effectivement démarré, ou immédiatement lorsqu’aucune session ne doit être ouverte. Aucun transport ne commence avec une banque requise manquante.
 
-`setProjectPlayhead(tick)` et `setClipPlayhead(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — un déplacement avant la fin demande une nouvelle session de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport. Sinon, il prépare seulement le prochain appel sans argument.
+`seekProject(tick)` et `seekClip(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — un déplacement avant la fin crée une requête asynchrone de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport et retourne `ok("NO_CONTENT")`. Lorsque la portée est inactive, le seek déplace seulement la tête et retourne `ok("POSITIONED")`.
 
 #### Fin de portée après modification
 
@@ -976,14 +1077,17 @@ Les mises à jour reçues dans un même cycle sûr de planification sont coalesc
 
 ##### Préparation de l’instrument
 
-L’application demande le préchargement de l’instrument dès l’ouverture du piano roll. Si sa banque n’est pas encore disponible lors d’une préécoute, le handle est néanmoins retourné immédiatement et représente l’intention annulable :
+L’application demande le préchargement de l’instrument dès l’ouverture du piano roll. `previewPitch` et `previewSelection` effectuent d’abord leur validation synchrone et retournent `err(PreviewValidationError)` sans handle lorsque l’entrée est invalide.
+
+Lorsqu’un handle est retourné, il l’est immédiatement, même si la banque n’est pas encore disponible. Sa propriété `ready` expose l’issue asynchrone de la préparation :
 
 - après chargement, `previewPitch` ne produit son `NOTE_ON` que si son handle n’a pas déjà été relâché ;
 - pour `previewSelection`, seule la projection de hauteurs la plus récente est attaquée si le handle est encore actif ;
-- un `release()` ou un `stop()` antérieur à la fin du chargement empêche toute attaque tardive ;
-- un échec de chargement ne transforme jamais le handle en voix active.
+- un `release()` ou un `stop()` antérieur à la fin du chargement fait résoudre `ready` avec `ok("CANCELLED")` et empêche toute attaque tardive ;
+- un échec de chargement fait résoudre `ready` avec `err(InstrumentPreparationError)` et ne crée aucune voix ;
+- une attaque effectivement créée fait résoudre `ready` avec `ok("STARTED")`.
 
-La stratégie de remontée d’un échec technique de chargement par l’API publique reste traitée avec les autres erreurs publiques.
+Le handle représente ainsi une intention immédiatement annulable, tandis que `ready` décrit son démarrage technique différé.
 
 #### Planification selon la portée
 
@@ -1068,7 +1172,7 @@ Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `pl
 
 `previewPitch` et `previewSelection` ne remplacent jamais le transport. Démarrer une nouvelle préécoute de sélection arrête la précédente. Relâcher ou arrêter leurs handles termine structurellement leur session sans affecter les autres auditions.
 
-`stop(mode)` arrête l'unique transport actif, qu'il soit `PROJECT` ou `CLIP`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. S'il n'existe aucun transport actif, l'opération est sans effet.
+`stop(mode)` invalide d’abord toute `PendingTransportRequest`, puis arrête l'unique transport actif, qu'il soit `PROJECT` ou `CLIP`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. S'il n'existe aucun transport actif, l'opération est sans effet.
 
 Le mode par défaut est `GRACEFUL` :
 
@@ -1392,8 +1496,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Transport et contrat audio
 
-- **Préparation asynchrone :** comment propager les erreurs de chargement, invalider un démarrage dépassé par un nouvel appel ou un `stop`, et tenir compte d’un projet modifié pendant l’attente ? Un seek vers une banque non chargée suit la même barrière ; préciser son état visible pendant l’attente.
-- **Erreurs publiques :** quelles signatures de résultat employer pour les appels invalides de lecture, seek et préécoute, actuellement présentés avec `void`, `Promise<void>` ou un handle ? Distinguer validation applicative et erreur technique de chargement.
 
 ### Ressources et persistance
 
@@ -1456,9 +1558,9 @@ Les modules de temps et de hauteur sont déclarés directement sous `domain/`. C
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/Selection.ts`.
 
-`ProjectState` conserve le `project` validé, son éventuel `transientProject`, brouillon applicatif du geste, et une éventuelle demande de changement d’instrument en préparation. `effectiveProject` est la résolution dérivée utilisée par la présentation et l’audio ; ce nom ne lui confère pas les invariants du `Project` domaine et ne nécessite ni fichier ni état autonome.
+`ProjectState` conserve le `project` validé, son éventuel `transientProject`, la révision monotone du projet effectif et une éventuelle demande de changement d’instrument en préparation. `effectiveProject` est la résolution dérivée utilisée par la présentation et l’audio ; ce nom ne lui confère pas les invariants du `Project` domaine et ne nécessite ni fichier ni état autonome.
 
-`PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand`, `ContextCompletion`, `PlaybackSchedule`, `PlaybackClock` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
+`PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand`, `ContextCompletion`, `PlaybackSchedule`, `PlaybackClock` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui. `TransportRequestId`, `PendingTransportRequest` et les résultats publics de lecture appartiennent à `PlaybackService`.
 
 Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou des comportements indépendants.
 
