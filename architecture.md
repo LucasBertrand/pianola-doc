@@ -407,7 +407,7 @@ interface Scale {
 }
 ```
 
-La fondamentale de `Chord` et la tonique de `Scale` sont toujours explicites. Il n'existe ni référence par degré, ni tonalité englobante permettant de les déduire. Un accord entièrement absent se représente par l'absence de `ChordSection`, jamais par une `root` facultative.
+La fondamentale de `Chord` et la tonique de `Scale` sont toujours explicites. Il n'existe ni référence par degré, ni contexte supérieur implicite permettant de les déduire. Un accord entièrement absent se représente par l'absence de `ChordSection`, jamais par une `root` facultative.
 
 Le catalogue initial comprend :
 
@@ -1221,7 +1221,7 @@ src/
     └── stores/
 ```
 
-`Tempo.ts` déclare uniquement le value object global `Tempo`. `Meter.ts` déclare ensemble `Meter`, `MeterChange` et `MeterSection`. `Scale.ts` déclare `RootNote`, `Scale`, `ScaleChange`, `ScaleSection` et le catalogue des `ScaleTypeId`. `Chord.ts` réutilise `RootNote` et déclare `Chord`, `ChordChange`, `ChordSection` ainsi que le catalogue des `ChordTypeId`.
+`Tempo.ts` déclare uniquement le value object global `Tempo`. `Meter.ts` déclare ensemble `Meter`, `MeterChange` et `MeterSection`. `Pitch.ts` déclare `Pitch` et le value object commun `RootNote`. `Scale.ts` déclare `Scale`, `ScaleChange`, `ScaleSection` et le catalogue des `ScaleTypeId`. `Chord.ts` réutilise `RootNote` et déclare `Chord`, `ChordChange`, `ChordSection` ainsi que le catalogue des `ChordTypeId`.
 
 `domain/Result.ts` déclare `Result`, ses helpers génériques et la forme générique `ValidationError`. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
 
@@ -1229,7 +1229,7 @@ src/
 
 Les modules de temps et de hauteur sont déclarés directement sous `domain/`. Cette organisation physique ne fusionne pas leurs concepts.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `RootNote` est partagé par `Scale` et `Chord` et reste déclaré dans `domain/Scale.ts`.
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `RootNote` est partagé par `Scale` et `Chord` et reste déclaré dans `domain/Pitch.ts`.
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/Selection.ts`.
 
