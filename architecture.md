@@ -745,7 +745,7 @@ Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` 
 
 Valider un brouillon sans en modifier la projection sonore ne doit provoquer ni nouvelle planification ni rupture. L'abandonner entraîne la même réconciliation que toute autre modification du projet effectif.
 
-La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipOccurrenceId, indice de répétition, NoteId)` à la tête globale. Pour un transport `CLIP`, elle compare les notes du `clipId` attaché à la session à son curseur local :
+La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipOccurrenceId, repeatIndex, NoteId)` à la tête globale. Pour un transport `CLIP`, elle compare les notes du `clipId` attaché à la session à son curseur local :
 
 | Avant | Après | Comportement |
 | --- | --- | --- |
@@ -757,6 +757,36 @@ La réconciliation dépend de la portée du transport actif. Pour un transport `
 Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d'une `ClipOccurrence`. Déplacer le début d'une note ou d'une occurrence de clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Clip` source déclenche la réconciliation séparément pour chacune de ses occurrences actives ou planifiées. Dans un transport `CLIP`, la même modification est réconciliée une seule fois dans le contexte local du clip attaché à la session.
 
 Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
+
+##### Réconciliation des répétitions
+
+Dans un transport `PROJECT`, chaque occurrence sonore issue d’une répétition est identifiée par :
+
+```text
+(ClipOccurrenceId, repeatIndex, NoteId)
+```
+
+`repeatIndex` est l’indice stable de la répétition qui a produit l’attaque. Une voix déjà créée ne change jamais d’indice et n’est jamais réattribuée à une autre répétition.
+
+Modifier `clip.duration` recalcule le début global de chaque répétition :
+
+```text
+repeatStart =
+  occurrence.start + repeatIndex * clip.duration
+```
+
+Pour chaque identité après ce recalcul :
+
+- si son nouvel intervalle couvre encore la tête et que ses données d’attaque sont inchangées, sa voix est conservée et son `NOTE_OFF` est replanifié ;
+- si son intervalle ne couvre plus la tête, sa voix est relâchée ;
+- si une autre répétition couvre désormais la tête, une nouvelle occurrence sonore possédant son propre `repeatIndex` est attaquée ;
+- deux identités ne sont jamais fusionnées, même lorsqu’elles produisent la même note au même instant.
+
+Modifier seulement `repeatCount` ne déplace et ne renumérote aucune frontière existante. Une augmentation ajoute des répétitions terminales et leurs événements futurs. Une diminution annule les répétitions terminales supprimées et relâche leurs éventuelles voix actives ; les indices conservés restent inchangés.
+
+Le redimensionnement par le bord gauche modifie à la fois `start` et `repeatCount`. Le déplacement de `start` recalcule alors toutes les frontières globales selon les règles ordinaires de réconciliation, tandis que le changement de `repeatCount` ajoute ou retire seulement les indices terminaux.
+
+Pour un transport `CLIP`, aucune de ces règles de répétition ne s’applique : il ignore les occurrences et lit directement le clip jusqu’à `clip.duration`.
 
 ##### Changement d’instrument préparé
 
@@ -1246,7 +1276,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 - **Horloge et fin structurelle :** comment le service obtient-il l’horloge et une borne sûre du moteur ? `completeContext` doit-il être horodaté pour éviter qu’un appel anticipé annule des commandes encore nécessaires ? Quel ordre garantir aux `NOTE_OFF` et `NOTE_ON` simultanés ?
 - **Erreurs publiques :** quelles signatures de résultat employer pour les appels invalides de lecture, seek et préécoute, actuellement présentés avec `void`, `Promise<void>` ou un handle ? Distinguer validation applicative et erreur technique de chargement.
 - **Têtes et portée :** que devient la tête à la fin naturelle, après un raccourcissement du contenu ou lors d’un départ à la fin ou au-delà ? Que devient une session `CLIP` si son clip non placé est supprimé pendant la lecture ?
-- **Réconciliation des répétitions :** comment rattacher les voix en cours aux répétitions après modification de `clip.duration` ou de `repeatCount`, lorsque les frontières des répétitions se déplacent ?
 
 ### Ressources et persistance
 
