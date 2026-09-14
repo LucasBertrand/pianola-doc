@@ -59,13 +59,13 @@ Le premier périmètre comprend :
 - l'édition du contenu d'un clip dans un piano roll ;
 - la lecture du projet depuis la tête de lecture ou depuis le début global d'un clip ;
 - la préécoute ponctuelle d'une note ;
-- le mute et le solo persistants des instruments ;
 - un catalogue d'instruments échantillonnés intégrés et non éditables, rendus par `smplr`.
 
 Il ne comprend pas :
 
 - des pistes instrumentales : une ligne n'impose aucun instrument aux clips qu'elle contient ;
 - une chronologie de tempo : une seule valeur s'applique au projet entier ;
+- les contrôles globaux d'audibilité par instrument ;
 - les automations et événements de contrôle ;
 - la création, l'import ou l'édition d'instruments par l'utilisateur ;
 - un état audio transitoire sauvegardé dans le projet.
@@ -119,8 +119,6 @@ Attributs possibles :
 - `name` ;
 - `tempo` ;
 - `clips` ;
-- `mutedInstrumentIds` ;
-- `soloedInstrumentIds` ;
 - `createdAt` ;
 - `updatedAt`.
 
@@ -131,14 +129,11 @@ Responsabilités et invariants :
 - posséder exactement un `Tempo` ;
 - garantir l'unicité des `ClipId` ;
 - permettre l'ajout, le déplacement, la duplication et la suppression de clips ;
-- conserver les intentions de mute et de solo associées aux instruments ;
 - accepter un projet vide.
 
 Le tempo ne possède ni position, ni changement programmé. Il s'applique uniformément à toute la timeline et convertit les ticks globaux ou locaux en secondes.
 
 La durée structurelle du projet est dérivée de la fin globale la plus tardive. Elle vaut zéro lorsque le projet ne contient aucun clip.
-
-Les ensembles `mutedInstrumentIds` et `soloedInstrumentIds` sont des données persistantes du projet. Ils référencent les instruments sans modifier les objets partagés du catalogue.
 
 ### ClipPlacement
 
@@ -239,12 +234,6 @@ Une `Note` sauvegarde uniquement cet identifiant, et non une référence directe
 `Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni configuration d'échantillons, ni état de voix, ni objet du moteur audio.
 
 Les instruments sont définis avant la compilation et ne sont pas éditables par l'utilisateur. La politique de chargement d'un `InstrumentId` devenu indisponible sera définie avec la persistance.
-
-Le mute et le solo ne sont pas des propriétés de l'`Instrument` partagé. Le `Project` conserve les `InstrumentId` concernés afin d'exprimer une intention de lecture propre au document.
-
-Un instrument est audible lorsqu'il n'est pas muté et qu'aucun solo n'est actif, ou lorsqu'il appartient lui-même à l'ensemble des instruments solo. Si un identifiant est simultanément muté et solo, le mute est prioritaire.
-
-Cette règle s'applique à toutes les notes portant cet `InstrumentId`, quels que soient leur clip, leur répétition, leur ligne ou leur `PlaybackContext`. Elle filtre la production sonore sans modifier les positions ni les durées de la composition.
 
 ### Temps musical
 
@@ -606,8 +595,7 @@ Cette opération :
 - ne déplace pas la tête de lecture ;
 - ne parcourt aucun autre clip ;
 - ouvre en interne une session `NOTE_PREVIEW` indépendante ;
-- peut coexister avec le transport et avec d'autres préécoutes de notes ;
-- respecte le mute et le solo de son `InstrumentId`, comme dans tout autre contexte.
+- peut coexister avec le transport et avec d'autres préécoutes de notes.
 
 `NotePreviewHandle.release()` relâche uniquement l'occurrence créée par l'appel correspondant. L'opération est idempotente. La release et le tail peuvent ensuite se terminer naturellement.
 
@@ -646,17 +634,6 @@ command.at = replanAt
 La borne conserve la `ProjectPosition` atteinte sous l'ancien tempo, puis la nouvelle valeur s'applique à toute la portion future.
 
 Lorsqu'une lecture commence au milieu d'un clip, le service calcule sa position locale en tenant compte de la répétition correspondante. La politique applicable aux notes ayant commencé avant cette position reste une question ouverte.
-
-#### Audibilité des instruments
-
-Le `PlaybackService` consulte les ensembles persistants `mutedInstrumentIds` et `soloedInstrumentIds` du projet avant de produire les commandes audio.
-
-Le mute et le solo :
-
-- s'appliquent par `InstrumentId`, indépendamment des clips, lignes et contextes ;
-- ne changent ni les placements, ni les durées, ni les chevauchements ;
-- empêchent seulement la production des commandes correspondant aux notes inaudibles ;
-- s'appliquent également à `preview(noteId)`.
 
 #### Identités d'exécution
 
@@ -802,7 +779,6 @@ Dans cette représentation :
 | Position verticale | `ClipPlacement.line` sauvegardé |
 | Blocs chevauchants | Clips lus simultanément |
 | Tête de lecture verticale | `ProjectPosition` utilisée par `play()` |
-| Mise en sourdine visuelle | État mute ou solo, sans changement de géométrie |
 
 Une ligne ne possède aucun instrument implicite. Deux clips d'une même ligne peuvent utiliser des instruments différents ; un clip peut lui-même contenir plusieurs instruments. Déplacer un clip verticalement ne change donc jamais le son.
 
@@ -812,8 +788,6 @@ La grille applique directement la sémantique du transport :
 - `play(clipId)` déplace la tête au début sauvegardé du clip puis démarre la lecture globale ;
 - tous les clips traversés par la tête appartiennent au même instant de lecture ;
 - `preview(noteId)` ne déplace ni la tête ni la grille.
-
-Le mute et le solo modifient uniquement l'apparence et l'audibilité des notes concernées ; les blocs conservent leurs positions et leurs dimensions.
 
 La présentation affiche toujours l'`effectiveProject`. Pendant un geste, le déplacement global ou vertical provisoire d'un clip est donc immédiatement visible et audible. Les coordonnées validées appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
@@ -980,7 +954,6 @@ Quelques relations structurantes :
 - `Project.clips` possède directement tous les clips sauvegardés ;
 - `Clip.placement` conserve le début global et la ligne ;
 - `Note.instrumentId` référence un instrument sans importer sa définition technique ;
-- `Project.mutedInstrumentIds` et `Project.soloedInstrumentIds` conservent les intentions d'audibilité par instrument ;
 - `transientProject` remplace provisoirement `project` sans constituer un type du domaine ;
 - `effectiveProject` résout cette substitution pour la présentation et le `PlaybackService` ;
 - seule la valeur `project` est proposée à la persistance ;
@@ -1002,7 +975,6 @@ Quelques relations structurantes :
 - Quelle politique appliquer lorsqu'un instrument `smplr` requis n'est pas encore chargé : attendre tous les instruments nécessaires avant de démarrer le transport, ou les précharger dès l'ouverture et chaque modification du projet ?
 - Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
 - Lorsqu'une lecture commence au milieu d'une note déjà engagée, faut-il ignorer cette note, la réattaquer pour sa durée restante ou reconstruire son état par une politique de note chase ?
-- Lorsqu'un mute ou un solo change pendant que des occurrences de l'instrument concerné sont actives ou déjà planifiées, faut-il les relâcher, les laisser se terminer ou replanifier la fenêtre courante ?
 - Que devient exactement la tête de lecture après une fin naturelle, un `stop` gracieux ou un `stop` immédiat ?
 - Déplacer la tête pendant un transport actif doit-il provoquer immédiatement une nouvelle session `PROJECT`, ou seulement fixer le point de départ du prochain appel à `play()` ?
 - Si un clip est déplacé au-delà de la tête pendant qu'un de ses tails est en drainage, faut-il conserver le contexte jusqu'au silence ou l'arrêter immédiatement avant d'en ouvrir un nouveau à sa nouvelle position ?

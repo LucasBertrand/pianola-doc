@@ -85,15 +85,13 @@ block-beta
 
 `Groove A` et `Groove B` partagent une ligne, mais leur succession résulte exclusivement de leurs placements. `Ligne de basse` chevauche les deux grooves, puis s'arrête une seconde avant `Groove B`. La conclusion commence au tick `11520` parce que cette valeur est sauvegardée, non parce qu'un élément précédent la déclenche.
 
-## Cas 4 — Lignes, mute et solo par instrument
+## Cas 4 — Lignes sans association instrumentale
 
-Le clip `Couplet`, ligne `0`, contient des notes de piano et de basse. Le clip `Contrechant`, ligne `3`, contient des notes de piano et de cordes. Leurs intervalles globaux se chevauchent.
+Le clip `Couplet`, ligne `0`, contient des notes de piano et de basse. Le clip `Contrechant`, ligne `3`, contient des notes de piano et de cordes. Leurs intervalles globaux se chevauchent et les quatre parties peuvent donc être audibles simultanément.
 
-Lorsque `piano` est muté, ses notes sont silencieuses dans les deux clips. Les notes de basse et de cordes restent audibles. Lorsque `piano` est le seul instrument solo, ses notes restent audibles dans les deux clips et les autres instruments sont silencieux.
+Déplacer `Contrechant` sur la ligne `0` ne modifie aucune note, aucun `InstrumentId` et aucune commande audio. Les deux clips continuent de jouer simultanément selon leurs seuls intervalles temporels.
 
-Les clips conservent leurs placements, leurs durées et leurs contextes. Les lignes `0` et `3` n'imposent aucun instrument et ne participent pas à l'audibilité.
-
-Si `piano` est à la fois muté et solo, le mute est prioritaire. Une préécoute de note utilisant cet instrument applique la même règle.
+Une ligne est uniquement une coordonnée d'organisation. Elle n'impose pas d'instrument et ne crée ni bus, ni filtre, ni contexte audio commun entre les clips qui l'occupent.
 
 ## Cas 5 — Deux clips utilisent le même instrument
 
@@ -284,7 +282,6 @@ calculateInterval(clip: Clip): {
 - `preview(noteId)` auditionne uniquement une note, sans déplacer la tête ni remplacer le transport ;
 - une seule session `PROJECT` peut constituer le transport actif ;
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
-- les mute et solo persistants filtrent les notes par `InstrumentId` dans tous les contextes, sans modifier la grille ;
 - `stop(mode)` arrête uniquement le transport actif et n'affecte aucune préécoute de note ;
 - chaque activation de clip et chaque préécoute de note reçoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistrée qu'à l'ouverture du contexte ;
