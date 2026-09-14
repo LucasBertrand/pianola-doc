@@ -378,6 +378,30 @@ Les releases et tails du piano peuvent donc coexister temporairement avec les no
 
 Si la préparation échoue, aucun contexte n’est remplacé et l’`InstrumentId` du clip reste celui du piano.
 
+## Cas 21 — Réconciliation après modification d’une répétition
+
+Une occurrence commence au tick global `0`, référence un clip de `3840` ticks et possède un `repeatCount` de `3`.
+
+| `repeatIndex` | Intervalle initial |
+| ---: | --- |
+| 0 | `[0, 3840)` |
+| 1 | `[3840, 7680)` |
+| 2 | `[7680, 11520)` |
+
+À la tête globale `7000`, les voix en cours appartiennent à la répétition `1`. La durée du clip est ensuite réduite à `3000` ticks :
+
+| `repeatIndex` | Intervalle recalculé |
+| ---: | --- |
+| 0 | `[0, 3000)` |
+| 1 | `[3000, 6000)` |
+| 2 | `[6000, 9000)` |
+
+Les voix de la répétition `1` ne sont jamais renommées en répétition `2`. Elles sont conservées uniquement si leur propre intervalle de note recalculé couvre encore la tête ; sinon elles sont relâchées. Les notes de la répétition `2` qui couvrent désormais le tick `7000` produisent de nouvelles occurrences sonores identifiées par `(occurrenceId, 2, noteId)`.
+
+Si seul `repeatCount` passe ensuite de `3` à `2`, les répétitions `0` et `1` ne changent ni de frontière ni d’indice. La répétition terminale `2` est supprimée, ses commandes futures sont annulées et ses éventuelles voix actives sont relâchées.
+
+Une augmentation ultérieure de `repeatCount` ajoute au contraire de nouveaux indices terminaux sans modifier ceux qui existent déjà.
+
 ## Référence des contrats
 
 Les règles communes, les signatures des ports et les questions encore ouvertes sont centralisées dans [architecture.md](architecture.md#playbackservice). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
