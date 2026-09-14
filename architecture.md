@@ -22,7 +22,7 @@ Pianola sépare quatre responsabilités :
 
 | Couche | Responsabilité | Exemples |
 | --- | --- | --- |
-| Domaine | Représenter la composition et garantir ses invariants musicaux. | `Project`, `Clip`, `ClipOccurrence`, `Note`, temps musical et pitch |
+| Domaine | Représenter la composition, garantir ses invariants et expliciter ses échecs attendus. | `Project`, `Clip`, `Note`, `Result`, temps musical et pitch |
 | Application | Orchestrer l'édition et la lecture à partir du domaine. | état de l'éditeur, cas d'usage, ports |
 | Infrastructure | Réaliser les capacités techniques demandées par l'application. | Web Audio, catalogue concret, persistance |
 | Présentation | Afficher la grille et traduire les gestes utilisateur. | blocs de clips, piano roll, inspecteur |
@@ -114,6 +114,59 @@ Les lignes ne sont ni des pistes, ni des conteneurs, ni des canaux audio. Dans l
 | `MeterChange` | Entity interne | Placer une métrique sur la chronologie locale d'un clip |
 | `HarmonyChange` | Entity interne | Placer un accord ou une gamme sur la chronologie locale d'un clip |
 | `KeyChange` | Entity interne | Placer une tonalité sur la chronologie locale d'un clip |
+
+### Result et validation du domaine
+
+Le domaine représente toute validation attendue par un `Result<T, E>` explicite :
+
+```ts
+type Result<T, E> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+type ValidationError<
+  Code extends string,
+  Details extends object
+> = {
+  kind: "VALIDATION_ERROR";
+  code: Code;
+  details: Details;
+};
+```
+
+Les branches sont discriminées par `ok`. Des helpers purs `ok(value)` et `err(error)` peuvent construire les deux variantes ; `map` et `flatMap` peuvent les composer sans extraire prématurément une valeur.
+
+Chaque module déclare près de ses invariants ses propres codes et détails, puis compose les unions nécessaires. Il n'existe pas d'erreur générique contenant seulement un texte. Exemples :
+
+```ts
+type TempoValidationError = ValidationError<
+  "TEMPO_OUT_OF_RANGE" | "TEMPO_PRECISION_EXCEEDED",
+  { received: number; min: number; max: number; decimals: number }
+>;
+
+type NoteCollision = {
+  manipulatedNoteId: NoteId;
+  conflictingNoteIds: readonly NoteId[];
+};
+
+type NoteCollisionError = ValidationError<"NOTE_OVERLAP", NoteCollision>;
+```
+
+Les `code` sont stables et indépendants de la langue. `details` contient uniquement les données structurées nécessaires pour comprendre et traiter l'échec ; le domaine ne produit aucun message destiné à l'utilisateur.
+
+Les constructeurs capables de créer un état invalide restent privés. Les factories de Value Objects et d'entités, la reconstitution d'un agrégat et les opérations qui peuvent violer un invariant retournent un `Result` :
+
+```ts
+Tempo.create(bpm: number): Result<Tempo, TempoValidationError>;
+Clip.create(input: CreateClipInput): Result<Clip, ClipValidationError>;
+Project.create(input: CreateProjectInput): Result<Project, ProjectValidationError>;
+project.moveClipOccurrences(command: MoveClipOccurrencesCommand): Result<Project, ProjectEditError>;
+clip.editNote(command: EditNoteCommand): Result<Clip, NoteEditError>;
+```
+
+Une branche `ok: false` ne modifie jamais l'objet d'origine et ne publie aucun état partiel. Dans le premier périmètre, une opération retourne la première erreur selon un ordre de validation déterministe ; l'accumulation de plusieurs erreurs pourra être ajoutée sans changer la forme de `Result`.
+
+Les violations prévisibles d'une règle métier ne lèvent pas d'exception. Les exceptions restent réservées aux défauts de programmation et aux défaillances techniques inattendues ; elles ne sont pas converties artificiellement en `ValidationError`.
 
 ### Project
 
@@ -517,6 +570,7 @@ Appliquer un projet transitoire ne le sauvegarde pas. Une application du projet 
 Les cas d'usage d'édition :
 
 - traduisent les gestes en commandes explicites ;
+- construisent et composent les Value Objects par leurs `Result` sans forcer une valeur invalide ;
 - choisissent la sélection adaptée à la portée de l'action ;
 - résolvent les références vers les entités du projet ;
 - appliquent si nécessaire la quantification ;
@@ -537,6 +591,8 @@ Exemples :
 - associer un instrument disponible à un clip.
 
 La substitution du projet transitoire est commune à tous les gestes d'édition. Chaque geste reste porté par un cas d'usage explicite, qui peut transformer atomiquement plusieurs types d'éléments lorsqu'ils participent à une même intention utilisateur.
+
+Un cas d'usage propage explicitement une erreur de domaine ou la traduit vers une erreur applicative plus contextuelle. Il ne la remplace jamais par une exception et ne met à jour `ProjectState` que depuis la branche `ok: true`.
 
 Un déplacement d'occurrences reçoit par exemple un delta temporel global et un delta de ligne. Les occurrences sélectionnées conservent leurs positions relatives :
 
@@ -570,17 +626,11 @@ Les cas d'usage qui créent ou modifient une note acceptent un mode facultatif :
 ```ts
 type NoteCollisionResolution = "SLICE" | "MERGE";
 
-interface NoteCollision {
-  manipulatedNoteId: NoteId;
-  conflictingNoteIds: readonly NoteId[];
-}
-
-type NoteEditResult =
-  | { kind: "APPLIED"; project: Project }
-  | { kind: "COLLISION"; collision: NoteCollision };
+type NoteEditError = NoteValidationError | NoteCollisionError;
+type NoteEditResult = Result<Project, NoteEditError>;
 ```
 
-La première tentative est effectuée sans `NoteCollisionResolution`. Si le résultat quantifié ferait chevaucher la note manipulée avec une ou plusieurs notes de même hauteur, le cas d'usage retourne `COLLISION` sans publier de `transientProject`. La présentation demande alors à l'utilisateur `SLICE` ou `MERGE`, puis rejoue la même intention avec le mode choisi. Le domaine ne dépend donc d'aucune interaction utilisateur et aucun état intermédiaire invalide n'est créé.
+La première tentative est effectuée sans `NoteCollisionResolution`. Si le résultat quantifié ferait chevaucher la note manipulée avec une ou plusieurs notes de même hauteur, le cas d'usage retourne `err(noteCollisionError)` avec le code `NOTE_OVERLAP`, sans publier de `transientProject`. La présentation demande alors à l'utilisateur `SLICE` ou `MERGE`, puis rejoue la même intention avec le mode choisi. Le domaine ne dépend donc d'aucune interaction utilisateur et aucun état intermédiaire invalide n'est créé.
 
 `SLICE` donne priorité à la note manipulée et conserve son identité, son intervalle et sa vélocité. Chaque note existante de même hauteur est remplacée par la différence entre son intervalle et celui de la note manipulée :
 
@@ -590,7 +640,7 @@ La première tentative est effectuée sans `NoteCollisionResolution`. Si le rés
 
 `MERGE` calcule l'union de l'intervalle de la note manipulée et de toutes les notes de même hauteur qui entrent en collision, transitivement. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la note manipulée ; les notes existantes absorbées sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
 
-Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes avant de publier le résultat. `SLICE` comme `MERGE` forme une seule transformation atomique et une seule future unité d'annulation.
+Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes. Il retourne `ok(clip)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le clip d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique et une seule future unité d'annulation.
 
 Les services seront nommés et ajoutés dans `application/use-cases/` lorsque leurs responsabilités précises seront établies.
 
@@ -902,7 +952,9 @@ La présentation affiche toujours l'`effectiveProject`. Ouvrir un bloc dans le p
 
 Le piano roll peut afficher simultanément des notes de hauteurs différentes. Après quantification d'une création ou d'une transformation, une collision n'existe que si deux notes de même hauteur se chevauchent avec une durée strictement positive.
 
-Lorsque le cas d'usage retourne `COLLISION`, la présentation conserve le projet effectif précédent et affiche les deux choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement : l'utilisateur décide pour cette collision. La réponse rejoue la commande initiale avec la résolution explicite ; l'éditeur affiche ensuite uniquement le résultat valide et atomique.
+Lorsque le cas d'usage retourne `ok: false` avec le code `NOTE_OVERLAP`, la présentation conserve le projet effectif précédent, lit les identifiants conflictuels dans `error.details` et affiche les deux choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement : l'utilisateur décide pour cette collision. La réponse rejoue la commande initiale avec la résolution explicite ; l'éditeur affiche ensuite uniquement la valeur d'un `Result` réussi.
+
+Pour les autres erreurs de validation, la présentation effectue une correspondance exhaustive sur `error.code` et construit elle-même le message localisé. Elle ne reçoit jamais une chaîne métier déjà formatée par le domaine.
 
 ---
 
@@ -1047,6 +1099,8 @@ Le premier périmètre repose sur les nœuds Web Audio natifs employés par `smp
 
 L'infrastructure de persistance chargera et sauvegardera l'agrégat `Project` complet à travers les futurs ports applicatifs dédiés.
 
+La reconstitution depuis des données sauvegardées passe par les mêmes factories que la création interactive. Un document syntaxiquement lisible mais contraire aux invariants produit donc un `Result` en erreur de validation plutôt qu'un agrégat partiellement valide. Les erreurs d'accès, de décodage ou de stockage restent des erreurs techniques du port de persistance et ne sont pas déguisées en erreurs métier.
+
 La sauvegarde contient notamment le tempo unique du projet, les contenus `Clip`, ainsi que le `clipId`, le `start`, la `line` et le `repeatCount` de chaque `ClipOccurrence`. Les secondes affichées restent dérivées et ne sont pas sauvegardées parallèlement aux ticks.
 
 Seul le `project` courant validé peut être sauvegardé. `transientProject` et `effectiveProject` appartiennent à l'orchestration applicative et ne traversent jamais le port de persistance. Une demande de sauvegarde effectuée pendant une manipulation enregistre donc le dernier `project` validé, sans adopter implicitement le projet transitoire.
@@ -1067,6 +1121,7 @@ La stratégie applicable lorsqu'un `Clip.instrumentId` sauvegardé ne peut plus 
 Quelques relations structurantes :
 
 - `Project.tempo` fournit l'unique tempo de la composition ;
+- `Result` transporte explicitement la valeur valide ou l'erreur typée produite par le domaine ;
 - `Project.clips` possède les contenus musicaux partagés ;
 - `Project.clipOccurrences` possède les blocs placés dans la grille ;
 - `ClipOccurrence.clipId` référence son contenu, tandis que `start`, `line` et `repeatCount` décrivent uniquement son emploi global ;
@@ -1096,6 +1151,9 @@ Cette arborescence documente les frontières actuelles. Elle exprime des respons
 ```text
 src/
 ├── domain/
+│   ├── common/
+│   │   ├── Result.ts
+│   │   └── ValidationError.ts
 │   ├── Project.ts
 │   ├── Clip.ts
 │   ├── ClipOccurrence.ts
@@ -1139,6 +1197,8 @@ src/
 ```
 
 `Tempo.ts` déclare uniquement le value object global `Tempo`. `Meter.ts` déclare ensemble `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Tonic`, `Key`, `KeyChange` et `KeySection`. `Harmony.ts` déclare `ChordRoot`, `ScaleRoot`, `TonalDegree`, `Chord`, `Scale`, `Harmony`, `HarmonyChange` et `HarmonySection`.
+
+`domain/common/Result.ts` déclare `Result` et ses helpers génériques. `domain/common/ValidationError.ts` déclare seulement la forme générique d'une erreur de validation. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
 
 `Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `ClipOccurrence.ts` déclare `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`.
 

@@ -305,7 +305,7 @@ Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisate
 
 Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-La première tentative ne modifie ni `project` ni `transientProject`. Elle retourne `COLLISION` avec `note-m` comme note manipulée et `note-a` comme note conflictuelle. La présentation demande alors un mode de résolution.
+La première tentative ne modifie ni `project` ni `transientProject`. Elle retourne `{ ok: false, error }` avec le code `NOTE_OVERLAP`, `note-m` comme note manipulée et `note-a` comme note conflictuelle dans `error.details`. La présentation demande alors un mode de résolution.
 
 Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -318,6 +318,28 @@ Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle
 Avec `MERGE`, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation.
 
 Une note `C4` commençant exactement au tick `1920` serait seulement contiguë au résultat : les intervalles semi-ouverts ne déclenchent alors ni question ni résolution automatique.
+
+## Cas 19 — Validation par `Result`
+
+Une tentative de création de tempo à `1000.0` BPM appelle la factory du Value Object :
+
+```ts
+const result = Tempo.create(1000.0);
+// {
+//   ok: false,
+//   error: {
+//     kind: "VALIDATION_ERROR",
+//     code: "TEMPO_OUT_OF_RANGE",
+//     details: { received: 1000.0, min: 20.0, max: 999.9, decimals: 1 }
+//   }
+// }
+```
+
+Aucun `Tempo` invalide n'est construit. Le cas d'usage conserve le tempo précédent et la présentation traduit le code stable vers son propre message.
+
+De même, déplacer une occurrence sur une ligne où elle en chevaucherait une autre retourne un `ProjectEditError`. Le `Project` d'origine reste intact et aucun `transientProject` n'est publié. Une opération valide retourne au contraire `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer l'état courant.
+
+La lecture d'une sauvegarde suit le même chemin de validation. Une référence vers un clip absent produit une erreur métier typée, tandis qu'un échec d'accès au stockage reste une erreur technique distincte.
 
 ## Conséquences pour le PlaybackService
 
