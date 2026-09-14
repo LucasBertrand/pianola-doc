@@ -1169,7 +1169,7 @@ src/
 │   │   ├── EditorState.ts
 │   │   ├── ProjectState.ts
 │   │   ├── Selection.ts
-│   │   └── GridResolution.ts
+│   │   └── grid.ts
 │   ├── use-cases/
 │   │   └── PlaybackService.ts
 │   └── ports/
