@@ -223,7 +223,7 @@ Un clip possède successivement les changements de gamme suivants :
 | `0` | `D DORIAN` |
 | `3840` | `A MINOR_PENTATONIC` |
 
-Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucune tonalité englobante. La première `ScaleSection` couvre `[0, 3840)` et la seconde `[3840, clip.duration)`.
+Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucun contexte supérieur implicite. La première `ScaleSection` couvre `[0, 3840)` et la seconde `[3840, clip.duration)`.
 
 Les occurrences du clip peuvent être placées n’importe où dans la grille. Leur ligne et leur éventuel chevauchement avec d’autres occurrences ne changent pas ces analyses locales.
 
