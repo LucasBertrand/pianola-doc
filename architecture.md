@@ -856,7 +856,7 @@ stop(mode?: StopMode): void;
 
 #### Lecture du clip édité
 
-`playClip()` exige un `clipEditor` et utilise le `clipId` ainsi que la tête locale conservée dans `clipEditor.playhead`. Si cette tête se trouve à `clip.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Pour un clip de durée nulle, il laisse la tête à `0`, n’ouvre aucune session et sa promesse se résout normalement.
+`playClip()` exige un `clipEditor` et utilise le `clipId` ainsi que la tête locale conservée dans `clipEditor.playhead`. Si cette tête se trouve à `clip.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un clip possède toujours une durée strictement positive.
 
 `playClip(tick)` valide explicitement le tick dans `[0, clip.duration]` et place la tête à cette position. Si `tick === clip.duration`, aucune session n’est ouverte ; si `tick > clip.duration`, l’appel retourne une erreur de validation.
 
