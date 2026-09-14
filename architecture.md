@@ -246,7 +246,31 @@ occurrenceEnd = occurrence.start
               + clip.duration * occurrence.repeatCount
 ```
 
-Déplacer une occurrence modifie seulement son `start` ou sa `line`. Dupliquer un bloc crée une nouvelle `ClipOccurrenceId` qui conserve le même `clipId` ; les deux blocs restent donc liés au même contenu. Le premier périmètre ne permet ni de délier une occurrence, ni de transformer une occurrence liée en copie indépendante.
+Déplacer une occurrence modifie seulement son `start` ou sa `line`. La redimensionner depuis la grille globale ne modifie jamais la durée du clip partagé : elle ajoute ou retire uniquement des répétitions complètes en modifiant son `repeatCount`.
+
+Le bord droit conserve `start` et détermine le nouveau nombre de répétitions depuis sa position quantifiée :
+
+```text
+repeatCount = max(
+  1,
+  round((quantizedRightEdge - occurrence.start) / clip.duration)
+)
+```
+
+Le bord gauche conserve l’ancienne fin globale et modifie atomiquement `start` et `repeatCount` :
+
+```text
+previousEnd = occurrence.start + clip.duration * occurrence.repeatCount
+repeatCount = max(
+  1,
+  round((previousEnd - quantizedLeftEdge) / clip.duration)
+)
+start = previousEnd - clip.duration * repeatCount
+```
+
+Dans les deux cas, le bord effectivement retenu s’aimante à une frontière de répétition complète. Chaque répétition recommence au tick local `0` ; aucune durée partielle ni aucun décalage de phase propre à l’occurrence n’est introduit. L’opération reste soumise aux bornes globales et à l’absence de chevauchement avec les autres occurrences de la ligne.
+
+Dupliquer un bloc crée une nouvelle `ClipOccurrenceId` qui conserve le même `clipId` ; les deux blocs restent donc liés au même contenu. Le premier périmètre ne permet ni de délier une occurrence, ni de transformer une occurrence liée en copie indépendante.
 
 Les intervalles de deux occurrences d'une même ligne sont semi-ouverts et ne peuvent pas se chevaucher avec une durée strictement positive ; des bornes contiguës restent valides. La ligne n'intervient toutefois jamais dans la planification audio : les occurrences qui se chevauchent sur des lignes différentes sont lues simultanément.
 
@@ -516,7 +540,7 @@ Attribut possible :
 
 - `snapStepTicks`.
 
-Elle permet de convertir un geste en position ou durée quantifiée avant l'appel au domaine. Le déplacement et le redimensionnement global des occurrences utilisent obligatoirement `EditorState.projectGridResolution`, dans le référentiel global et sans dépendre d'une métrique. Le piano roll utilise séparément `ClipEditorState.gridResolution`, dans le référentiel local du clip. Les deux instances emploient la même unité `Tick`, mais aucune égalité de pas ni dépendance structurelle n'est imposée entre elles.
+Elle permet de convertir un geste en position ou durée quantifiée avant l'appel au domaine. Le déplacement et le redimensionnement global des occurrences utilisent obligatoirement `EditorState.projectGridResolution`, dans le référentiel global et sans dépendre d'une métrique. Pour un redimensionnement, la position quantifiée du bord est ensuite convertie en un `repeatCount` entier ; le bord effectif s’aligne donc sur la frontière de répétition complète la plus proche. Le piano roll utilise séparément `ClipEditorState.gridResolution`, dans le référentiel local du clip. Les deux instances emploient la même unité `Tick`, mais aucune égalité de pas ni dépendance structurelle n'est imposée entre elles.
 
 Les sélections et la résolution ne sont pas sauvegardées comme des données musicales. Leur persistance éventuelle relève des préférences ou de la restauration de session.
 
@@ -1101,7 +1125,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Édition et invariants
 
-- **Redimensionnement global :** le bord d’un bloc modifie-t-il la durée du clip partagé ou son `repeatCount` entier ? Comment convertir le geste quantifié sans introduire une durée propre à l’occurrence ?
 - **Bornes et valeurs :** fixer la limite des lignes, les plages de `Pitch` et `Velocity`, les métriques et altérations acceptées, ainsi que les limites numériques sûres des ticks et répétitions. Un changement peut-il être placé exactement à `clip.duration` ?
 - **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
 - **Harmonie :** quels `ChordTypeId`, `ScaleTypeId` et modes de `Key` retenir, et comment classer leurs compatibilités ? Faut-il pouvoir interrompre `Harmony` comme `Key` avec une valeur `null` ?
