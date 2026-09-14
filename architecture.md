@@ -405,7 +405,7 @@ Un clip possède trois collections ordonnées de changements :
 
 | Changement | Valeur | Changement initial au tick `0` | Positions suivantes |
 | --- | --- | --- | --- |
-| `MeterChange` | `Meter` | Obligatoire | Frontière de mesure locale |
+| `MeterChange` | `Meter` | Obligatoire | Début d’une nouvelle mesure locale ; peut tronquer la précédente |
 | `KeyChange` | `Key` ou `null` | Facultatif | N'importe quel tick local du clip |
 | `HarmonyChange` | `Harmony` | Facultatif | N'importe quel tick local du clip |
 
@@ -440,7 +440,7 @@ fullMeasureCount = floor(sectionDuration / ticksPerMeasure)
 trailingMeasureDuration = sectionDuration % ticksPerMeasure
 ```
 
-Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. À la fin du clip, cette représentation est nécessaire lorsque sa durée n’est pas un multiple de la mesure. Pour une section non terminale, la compatibilité entre conservation des ticks et obligation de placer le changement suivant sur une frontière de mesure reste à décider ; voir les questions ouvertes.
+Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Cette mesure tronquée est valide aussi bien à la fin du clip qu’avant un `MeterChange`. Chaque `MeterChange` termine immédiatement la section précédente, même au milieu de sa mesure théorique, puis commence une nouvelle mesure complète dans la nouvelle métrique.
 
 Une `HarmonySection` dont le `Chord` ou la `Scale` utilise `DEGREE` peut produire plusieurs résolutions successives lorsqu'elle traverse des `KeySection`. Pour l'analyse d'une note, les intervalles pertinents sont donc dérivés de l'union des frontières de `KeySection`, d'`HarmonySection` et du `TimeRange` de la note.
 
@@ -649,7 +649,7 @@ Changer une métrique exprime explicitement l'une de deux intentions :
 
 | Politique | Effet |
 | --- | --- |
-| `PRESERVE_DURATION` | Conserve les ticks des notes, des changements et de la fin de section. Le nombre de mesures est recalculé. |
+| `PRESERVE_DURATION` | Conserve les ticks des notes, des changements et de la fin de section. Le nombre de mesures complètes est recalculé et une dernière mesure tronquée est autorisée. |
 | `PRESERVE_MEASURE_COUNT` | Recalcule la borne de fin selon la nouvelle longueur de mesure. |
 
 Dans le premier périmètre, `PRESERVE_MEASURE_COUNT` s'applique à un clip vide ou à une section terminale vide, afin de ne pas imposer de déplacement en cascade aux sections suivantes.
@@ -1101,7 +1101,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Édition et invariants
 
-- **Métrique :** après `PRESERVE_DURATION`, que faire si un `MeterChange` suivant ne tombe plus sur une frontière de mesure ? Refuser la modification ou autoriser explicitement une mesure tronquée à cette frontière ?
 - **Redimensionnement global :** le bord d’un bloc modifie-t-il la durée du clip partagé ou son `repeatCount` entier ? Comment convertir le geste quantifié sans introduire une durée propre à l’occurrence ?
 - **Bornes et valeurs :** fixer la limite des lignes, les plages de `Pitch` et `Velocity`, les métriques et altérations acceptées, ainsi que les limites numériques sûres des ticks et répétitions. Un changement peut-il être placé exactement à `clip.duration` ?
 - **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
