@@ -10,7 +10,7 @@ Sauf indication contraire, le projet utilise un tempo unique de 120,0 BPM et une
 durationSeconds = (durationTicks / 960) * (60 / 120)
 ```
 
-La métrique, la tonalité et l'harmonie restent locales à chaque clip. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
+La métrique ainsi que les contextes indépendants de gamme et d’accord restent locaux à chaque clip. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
 
 La durée structurelle d'une occurrence et celle du projet suivent les règles suivantes :
 
@@ -193,56 +193,51 @@ Les commandes suivantes choisissent une position sans changer la portée du tran
 
 Si une note de `Percussions` a commencé avant deux secondes mais couvre encore cette position, la note chase minimale la réattaque au démarrage et programme son relâchement pour sa durée restante. Aucun état antérieur d'enveloppe ou de voix n'est reconstruit.
 
-## Cas 10 — Accord `ROOT` et changement de tonalité
+## Cas 10 — Contextes simultanés de gamme et d’accord
 
-Un clip de 7680 ticks contient un unique `HarmonyChange` au tick local `0`. Son `Harmony` est un accord défini par `ROOT D` et `MINOR_SEVENTH`. La `Key` est do majeur au tick `0`, puis fa majeur au tick `3840`.
+Un clip de 7680 ticks possède un `ScaleChange` `C IONIAN` au tick local `0` et un `ChordChange` `D MINOR_SEVENTH` au tick `1920`.
 
-| Intervalle local | `Key` active | `Harmony` persistante | Accord résolu |
-| --- | --- | --- | --- |
-| 0 à 3840 | do majeur | `CHORD · ROOT D · MINOR_SEVENTH` | `Dm7` |
-| 3840 à 7680 | fa majeur | `CHORD · ROOT D · MINOR_SEVENTH` | `Dm7` |
+| Intervalle local | Gamme active | Accord actif |
+| --- | --- | --- |
+| `[0, 1920)` | do ionien | aucun |
+| `[1920, 7680)` | do ionien | `Dm7` |
 
-La référence `ROOT` conserve la fondamentale orthographiée. Le `KeyChange` ne modifie donc ni l'accord sauvegardé ni l'accord résolu. Il modifie seulement sa relation à la tonalité active.
+Le changement d’accord ne ferme ni ne remplace la `ScaleSection`. Les deux chronologies sont indépendantes et leurs sections se chevauchent à partir du tick `1920`.
 
-Le placement global de ses occurrences et le tempo du projet n'affectent pas cette résolution locale.
+Le placement global des occurrences et le tempo du projet n’affectent pas ces contextes locaux.
 
-## Cas 11 — Accord `DEGREE` résolu par la tonalité
+## Cas 11 — Suggestions d’accords guidées par la gamme
 
-Le clip possède la même chronologie de tonalité que le cas précédent, mais son unique `Harmony` est définie par `DEGREE II` et `MINOR_SEVENTH`.
+Un clip utilise la gamme `C IONIAN`. Lors de l’ajout d’un accord, l’éditeur compare les classes de hauteur de chaque accord du catalogue avec celles de la gamme active.
 
-| Intervalle local | `Key` active | Intention persistante | Accord résolu |
-| --- | --- | --- | --- |
-| 0 à 3840 | do majeur | `CHORD · DEGREE II · MINOR_SEVENTH` | `Dm7` |
-| 3840 à 7680 | fa majeur | `CHORD · DEGREE II · MINOR_SEVENTH` | `Gm7` |
+Les accords dont toutes les notes appartiennent à `C IONIAN`, notamment `C MAJOR`, `D MINOR`, `E MINOR`, `F MAJOR`, `G MAJOR`, `A MINOR` et `B DIMINISHED`, sont proposés avant les accords extérieurs. À compatibilité égale, l’ordre stable du catalogue s’applique.
 
-L'intention persistante est le deuxième degré mineur septième. Au tick local `3840`, le `KeyChange` suffit à faire évoluer l'accord résolu sans créer de nouvel `HarmonyChange`.
-
-Le `ChordTypeId` reste inchangé. La tonalité détermine uniquement la fondamentale correspondant au degré ; elle ne remplace pas automatiquement la qualité choisie.
+Cette suggestion ne constitue pas une contrainte. L’utilisateur peut créer, par exemple, `D♭ MAJOR` dans ce contexte. Sa fondamentale explicite et son `ChordTypeId` sont sauvegardés tels quels.
 
 ## Cas 12 — Gammes modales et pentatoniques
 
-Deux clips illustrent les deux références possibles d'une `Harmony` de variante `SCALE`. Leur `Key` locale passe de do majeur à fa majeur au tick `3840`.
+Un clip possède successivement les changements de gamme suivants :
 
-| Clip | `Harmony` persistante | Sous do majeur | Sous fa majeur |
-| --- | --- | --- | --- |
-| `Modal fixe` | `SCALE · ROOT D · DORIAN` | ré dorien | ré dorien |
-| `Pentatonique relative` | `SCALE · DEGREE VI · MINOR_PENTATONIC` | la pentatonique mineure | ré pentatonique mineure |
+| Tick local | `Scale` |
+| --- | --- |
+| `0` | `D DORIAN` |
+| `3840` | `A MINOR_PENTATONIC` |
 
-Dans `Modal fixe`, la collection reste inchangée. Dans `Pentatonique relative`, aucune tonique de gamme n'est sauvegardée : le sixième degré est résolu depuis la `Key` active.
+Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucune tonalité englobante. La première `ScaleSection` couvre `[0, 3840)` et la seconde `[3840, clip.duration)`.
 
-Les deux clips peuvent être placés n'importe où dans la grille. Leur ligne et leur éventuel chevauchement sur des lignes différentes ne changent pas ces analyses.
+Les occurrences du clip peuvent être placées n’importe où dans la grille. Leur ligne et leur éventuel chevauchement avec d’autres occurrences ne changent pas ces analyses locales.
 
-## Cas 13 — Note tenue à travers `KeyChange` et `HarmonyChange`
+## Cas 13 — Note tenue à travers les deux chronologies
 
-Une note `E4` commence au tick local `960` et se termine au tick `5280`. Elle traverse un changement d'harmonie au tick `1920`, puis un changement simultané de tonalité et d'harmonie au tick `3840`.
+Une note `E4` commence au tick local `960` et se termine au tick `5280`. Le clip possède `C IONIAN` au tick `0`, un accord `C MAJOR` au tick `1920`, puis des changements simultanés vers `A MINOR_PENTATONIC` et `A MINOR` au tick `3840`.
 
-| Intervalle analysé | `Key` active | `Harmony` active | Résolution | Rôle de `E4` |
+| Intervalle analysé | Gamme active | Accord actif | Appartenance à la gamme | Appartenance à l’accord |
 | --- | --- | --- | --- | --- |
-| 960 à 1920 | do majeur | `CHORD · ROOT C · MAJOR_TRIAD` | `C` majeur | tierce de l'accord |
-| 1920 à 3840 | do majeur | `SCALE · DEGREE II · DORIAN` | ré dorien | deuxième degré de la gamme |
-| 3840 à 5280 | fa majeur | `CHORD · DEGREE V · DOMINANT_SEVENTH` | `C7` | tierce de l'accord |
+| `[960, 1920)` | do ionien | aucun | `SCALE_TONE` | `NO_CHORD` |
+| `[1920, 3840)` | do ionien | do majeur | `SCALE_TONE` | `CHORD_TONE` |
+| `[3840, 5280)` | la pentatonique mineure | la mineur | `SCALE_TONE` | `CHORD_TONE` |
 
-Au tick `3840`, les nouvelles valeurs de `Key` et d'`Harmony` s'appliquent ensemble. La note persistante conserve un seul `TimeRange`. Les trois intervalles sont uniquement des vues d'analyse dérivées.
+Les frontières des `ScaleSection` et `ChordSection` sont réunies avec celles du `TimeRange` pour produire ces portions. La note persistante conserve néanmoins un seul intervalle et n’est jamais découpée.
 
 Si une occurrence du clip commence au tick global `10000`, ces bornes locales correspondent aux ticks globaux `10960`, `11920`, `13840` et `15280`. Les objets locaux ne sont pas réécrits pour autant.
 
@@ -281,17 +276,20 @@ Ouvrir l'un ou l'autre bloc dans le piano roll édite le même clip `Ostinato`. 
 
 Déplacer `ostinato-b`, changer sa ligne ou son `repeatCount` ne modifie pas `ostinato-a`, car ces propriétés appartiennent à chaque `ClipOccurrence`. Dupliquer `ostinato-a` crée une troisième occurrence liée au même `clipId`. Le premier périmètre ne propose aucune commande pour rendre cette occurrence unique ou la délier.
 
-## Cas 16 — Interruption explicite de la tonalité
+## Cas 16 — Contexte initial chromatique et accord facultatif
 
-Un clip possède un `KeyChange` vers do majeur au tick `0`, un `KeyChange` portant `null` au tick `3840`, puis un `KeyChange` vers fa majeur au tick `5760`.
+À sa création, un clip possède obligatoirement un `ScaleChange` `C CHROMATIC` au tick `0`. Ce changement initial ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée.
 
-| Intervalle local | Valeur du changement | Tonalité active |
+Le clip ne possède initialement aucun `ChordChange`. Si un premier accord `F MAJOR_SEVENTH` est ajouté au tick `3840` :
+
+| Intervalle local | Gamme active | Accord actif |
 | --- | --- | --- |
-| `[0, 3840)` | do majeur | do majeur |
-| `[3840, 5760)` | `null` | aucune |
-| `[5760, clip.duration)` | fa majeur | fa majeur |
+| `[0, 3840)` | do chromatique | aucun |
+| `[3840, clip.duration)` | do chromatique | `Fmaj7` |
 
-Une `Harmony` définie par `ROOT` peut traverser l'intervalle sans tonalité, car sa fondamentale ou sa tonique reste autonome. Une `Harmony` définie par `DEGREE` ne peut ni commencer avant le tick `3840` et le traverser, ni être créée dans `[3840, 5760)` : son invariant exige une `Key` active sur toute sa section.
+La gamme chromatique contient toutes les classes de hauteur : toute note y est `SCALE_TONE`. Avant le premier accord, son rôle d’accord vaut `NO_CHORD`. Après le changement, son rôle dépend de son appartenance à `Fmaj7`.
+
+Aucun marqueur n’accepte `null` ou `CLEAR`. La dernière gamme et, après son apparition, le dernier accord restent actifs jusqu’à la fin du clip.
 
 ## Cas 17 — Préchargement, seek et fermeture du piano roll
 
