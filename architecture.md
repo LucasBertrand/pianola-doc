@@ -1156,7 +1156,6 @@ src/
 │   │   └── ValidationError.ts
 │   ├── Project.ts
 │   ├── Clip.ts
-│   ├── ClipOccurrence.ts
 │   ├── Instrument.ts
 │   ├── Note.ts
 │   ├── time/
@@ -1200,7 +1199,7 @@ src/
 
 `domain/common/Result.ts` déclare `Result` et ses helpers génériques. `domain/common/ValidationError.ts` déclare seulement la forme générique d'une erreur de validation. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
 
-`Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `ClipOccurrence.ts` déclare `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`.
+`Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `Clip.ts` regroupe `Clip`, `ClipId`, `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`. Cette colocalisation ne change pas leur responsabilité : `ClipOccurrence` reste une entité de placement possédée par `Project` et ne devient pas une partie du contenu local du clip.
 
 `Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `Tonic` reste un value object distinct déclaré dans `domain/pitch/Key.ts`.
 
