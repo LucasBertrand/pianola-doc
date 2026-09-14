@@ -142,7 +142,10 @@ type NoteCollision = {
   conflictingNoteIds: readonly NoteId[];
 };
 
-type NoteCollisionError = ValidationError<"NOTE_OVERLAP", NoteCollision>;
+type NoteCollisionError = ValidationError<
+  "NOTE_OVERLAP",
+  { collisions: readonly NoteCollision[] }
+>;
 ```
 
 Les `code` sont stables et indépendants de la langue. `details` contient uniquement les données structurées nécessaires pour comprendre et traiter l'échec ; le domaine ne produit aucun message destiné à l'utilisateur.
@@ -290,15 +293,19 @@ type NoteCollisionResolution = "SLICE" | "MERGE";
 
 La détection et la résolution sont des règles pures du domaine, orchestrées par `Clip` qui valide la collection complète. Elles peuvent rester dans `Clip.ts` ; un module dédié ne devient utile que si leur complexité le justifie. Le cas d’usage obtient le choix utilisateur auprès de la présentation et transmet ce mode au domaine.
 
-`SLICE` donne priorité à la note manipulée et conserve son identité, son intervalle et sa vélocité. Chaque note existante de même hauteur est remplacée par la différence entre son intervalle et celui de la note manipulée :
+Une commande collective fournit ses `manipulatedNoteIds` dans un ordre stable. Cet ordre définit la priorité de résolution sans introduire de `primaryNoteId` supplémentaire.
+
+`SLICE` donne priorité à la première note manipulée, puis à chacune des suivantes dans l’ordre de la commande. Chaque note conserve son identité, son intervalle et sa vélocité tant qu’elle n’est pas découpée par une note manipulée plus prioritaire. Les notes non manipulées sont moins prioritaires que toutes les notes manipulées. Toute note moins prioritaire de même hauteur est remplacée par la différence entre son intervalle et celui de la note prioritaire :
 
 - une partie entièrement couverte est supprimée ;
-- un chevauchement sur un bord raccourcit la note existante ;
-- une note existante qui contient entièrement la note manipulée est scindée en deux fragments ; le fragment gauche conserve son `NoteId` et sa vélocité, tandis que le fragment droit reçoit un nouveau `NoteId` avec la même vélocité.
+- un chevauchement sur un bord raccourcit la note moins prioritaire ;
+- une note moins prioritaire qui contient entièrement la note prioritaire est scindée en deux fragments ; le fragment gauche conserve son `NoteId` et sa vélocité, tandis que le fragment droit reçoit un nouveau `NoteId` avec la même vélocité.
 
-`MERGE` calcule l'union de l'intervalle de la note manipulée et de toutes les notes de même hauteur qui entrent en collision, transitivement. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la note manipulée ; les notes existantes absorbées sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
+`MERGE` calcule séparément l'union de chaque groupe transitif de notes de même hauteur en collision. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la première note manipulée du groupe selon l’ordre de la commande ; les autres notes du groupe sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
 
-Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes. Il retourne `ok(clip)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le clip d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique.
+Une détection collective retourne une seule `NoteCollisionError` dont `details.collisions` contient toutes les collisions, dans l’ordre stable des notes manipulées. Chaque entrée associe une note manipulée à tous ses `conflictingNoteIds`, qu’ils désignent des notes manipulées ou non manipulées.
+
+Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes. Il retourne `ok(clip)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le clip d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique sur l’ensemble de la commande.
 
 ### Instrument
 
@@ -1095,7 +1102,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 ### Édition et invariants
 
 - **Métrique :** après `PRESERVE_DURATION`, que faire si un `MeterChange` suivant ne tombe plus sur une frontière de mesure ? Refuser la modification ou autoriser explicitement une mesure tronquée à cette frontière ?
-- **Résolution collective :** quand plusieurs notes manipulées entrent en collision entre elles, quelle priorité appliquer à `SLICE` et quelle identité conserver avec `MERGE` ? Comment représenter toutes ces collisions dans l’erreur actuellement centrée sur une seule note ?
 - **Redimensionnement global :** le bord d’un bloc modifie-t-il la durée du clip partagé ou son `repeatCount` entier ? Comment convertir le geste quantifié sans introduire une durée propre à l’occurrence ?
 - **Bornes et valeurs :** fixer la limite des lignes, les plages de `Pitch` et `Velocity`, les métriques et altérations acceptées, ainsi que les limites numériques sûres des ticks et répétitions. Un changement peut-il être placé exactement à `clip.duration` ?
 - **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
