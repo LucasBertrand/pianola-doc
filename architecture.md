@@ -1304,9 +1304,13 @@ Lors d'un `NOTE_ON`, l'instance déclenche la note à l'instant `at`. Le contrô
 
 ### Ressources d'échantillons partagées
 
-Le moteur possède un chargeur `smplr` partagé. Les échantillons téléchargés et décodés sont ainsi mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
+Les banques `smplr` font partie des ressources statiques distribuées et versionnées avec chaque version de l’application. Pianola ne dépend d’aucun catalogue distant ni d’un téléchargement dynamique depuis un fournisseur externe pour résoudre un instrument intégré.
 
-Le chargeur travaille à la demande d'un transport, mais son préchargement constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont téléchargées et décodées avant l'ouverture de la session. Le cache partagé évite de recommencer ce travail lors des lectures suivantes.
+Chaque `InstrumentDefinition` référence uniquement les chemins internes des échantillons livrés avec l’application. Une mise à jour de banque est donc publiée comme une nouvelle version de l’application et reste cohérente avec le catalogue compilé correspondant.
+
+Le moteur possède un chargeur `smplr` partagé. Le chargement des ressources distribuées et leur décodage sont mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
+
+Le chargeur travaille à la demande d’un transport ou d’une préécoute, mais sa préparation constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont chargées et décodées avant l’ouverture de la session. Le cache mémoire partagé évite de recommencer le décodage lors des lectures suivantes. Le cache HTTP éventuel des ressources statiques relève du mécanisme ordinaire de distribution de l’application et non d’un catalogue de banques téléchargées à la demande.
 
 ### WebAudioEngine
 
@@ -1355,7 +1359,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Ressources et persistance
 
-- Les banques `smplr` sont-elles distribuées avec l’application ou téléchargées puis mises en cache ?
 - Quelle politique adopter au chargement pour un `InstrumentId` indisponible ? Ce point sera traité avec les ports et le format de persistance.
 
 ## Arborescence cible
