@@ -596,9 +596,16 @@ Une session `CLIP` reste attachée au `clipId` avec lequel elle a été ouverte.
 L'application distingue le projet courant validé d'un éventuel projet transitoire représentant le brouillon du geste en cours.
 
 ```ts
+interface PendingInstrumentChange {
+  requestId: string;
+  clipId: ClipId;
+  instrumentId: InstrumentId;
+}
+
 interface ProjectState {
   project: Project;
   transientProject?: TransientProject;
+  pendingInstrumentChange?: PendingInstrumentChange;
 }
 
 const effectiveProject: Project | TransientProject =
@@ -618,6 +625,8 @@ const effectiveProject: Project | TransientProject =
 - il n'est jamais transmis tel quel à la persistance.
 
 Un seul projet transitoire peut exister à la fois. Chaque actualisation est recalculée depuis `project` et l'intention initiale du geste, non depuis la projection précédente, afin d'éviter l'accumulation d'arrondis.
+
+`pendingInstrumentChange` représente séparément une demande de changement d’instrument dont la banque est encore en préparation. Elle ne modifie ni `project`, ni `transientProject`, ni `effectiveProject`. Son `requestId` empêche une réponse de chargement devenue obsolète d’appliquer un choix que l’utilisateur a depuis remplacé ou annulé.
 
 Le cycle expose conceptuellement trois opérations :
 
@@ -747,7 +756,30 @@ La réconciliation dépend de la portée du transport actif. Pour un transport `
 
 Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d'une `ClipOccurrence`. Déplacer le début d'une note ou d'une occurrence de clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Clip` source déclenche la réconciliation séparément pour chacune de ses occurrences actives ou planifiées. Dans un transport `CLIP`, la même modification est réconciliée une seule fois dans le contexte local du clip attaché à la session.
 
-Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Changer le `Clip.instrumentId` applique la même règle à toutes ses notes audibles : dans toutes ses occurrences actives pour `PROJECT`, ou dans la portée locale pour `CLIP`. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
+Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
+
+##### Changement d’instrument préparé
+
+Changer le `Clip.instrumentId` est une opération asynchrone préparée avant de modifier le projet effectif. L’application crée un `pendingInstrumentChange` et appelle `AudioEngine.prepareInstruments([instrumentId])`. Jusqu’à la réussite de cette préparation :
+
+- l’ancien `InstrumentId` reste dans `effectiveProject` ;
+- les contextes existants continuent de jouer et de recevoir leurs attaques avec l’ancien instrument ;
+- la présentation montre le nouveau choix comme étant en chargement, sans le présenter comme déjà appliqué ;
+- une annulation ou une nouvelle demande invalide la précédente par son `requestId`.
+
+Si le chargement échoue, la demande est supprimée, le projet et l’audio restent inchangés, et l’échec technique est remonté selon le contrat public retenu.
+
+Lorsque la banque est prête, le changement de `instrumentId` et le basculement audio sont appliqués à la même borne sûre de planification. Pour chaque contexte actif jouant ce clip :
+
+1. le service ouvre un nouveau `PlaybackContext` dans la même `PlaybackSession` ;
+2. il annule les attaques futures de l’ancien contexte et relâche ses occurrences actives ;
+3. l’ancien contexte passe à `DRAINING` afin de conserver ses releases et tails ;
+4. le nouveau contexte reçoit les attaques futures avec le nouvel instrument ;
+5. toute note couvrant encore la tête est réattaquée dans le nouveau contexte.
+
+Dans un transport `PROJECT`, cette substitution est effectuée séparément pour chaque occurrence active du clip. Dans un transport `CLIP`, elle concerne uniquement son contexte local. Si le clip n’est pas actif, aucun contexte n’est ouvert : le projet est mis à jour après préparation et le nouvel instrument sera utilisé à sa prochaine lecture.
+
+Le nouveau contexte appartient à la session existante ; aucun second transport et aucune nouvelle origine temporelle ne sont créés. Un contexte `DRAINING` ne reçoit jamais de nouvelle attaque.
 
 Au choix de `SLICE` ou `MERGE`, le résultat valide remplace la projection provisoire comme une modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`.
 
@@ -984,7 +1016,7 @@ interface AudioEngine {
 }
 ```
 
-`prepareInstruments` résout et charge toutes les ressources demandées. `PlaybackService` attend sa réussite avant `openSession` ; le chargement reste ainsi technique sans déplacer dans l'application les définitions `smplr`.
+`prepareInstruments` résout et charge toutes les ressources demandées. `PlaybackService` attend sa réussite avant `openSession`. Lors d’un changement d’instrument en cours de session, il attend également cette réussite avant de modifier `effectiveProject`, d’ouvrir les nouveaux contextes et de drainer les anciens. Le chargement reste ainsi technique sans déplacer dans l'application les définitions `smplr`.
 
 `openContext` enregistre une seule fois la relation entre le contexte et sa session propriétaire. Chaque `AudioCommand` transporte donc uniquement son `contextId`.
 
@@ -1140,7 +1172,7 @@ stateDiagram-v2
 
 `completeContext` exprime la fin structurelle décidée par le `PlaybackService`. Le moteur annule les commandes encore futures du contexte, relâche ses occurrences actives et passe à `DRAINING` si un signal peut encore être produit ; sinon il passe directement à `DISPOSED`.
 
-Un arrêt `GRACEFUL` suit la même sortie vers `DRAINING`, mais peut survenir avant la fin structurelle. Un arrêt `IMMEDIATE` annule les commandes futures, coupe la sortie et conduit directement à `DISPOSED` depuis tout état non détruit.
+Un arrêt `GRACEFUL` suit la même sortie vers `DRAINING`, mais peut survenir avant la fin structurelle. Le remplacement préparé d’un instrument utilise également cette sortie pour l’ancien contexte, tandis que le nouveau contexte est ouvert dans la même session. Un arrêt `IMMEDIATE` annule les commandes futures, coupe la sortie et conduit directement à `DISPOSED` depuis tout état non détruit.
 
 Le moteur réalise seul la transition `DRAINING -> DISPOSED`, lorsqu'aucune voix ni aucun tail ne peut encore produire de signal, ou lorsque la durée maximale de sécurité est atteinte. Il notifie alors la session propriétaire, qui est elle-même détruite dès que tous ses contextes sont `DISPOSED`.
 
@@ -1210,7 +1242,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Transport et contrat audio
 
-- **Changement d’instrument :** comment remplacer l’unique instance d’un contexte tout en conservant les releases de l’ancien instrument ? Faut-il ouvrir un nouveau contexte et drainer l’ancien ? Que faire tant que la nouvelle banque n’est pas prête ?
 - **Préparation asynchrone :** comment propager les erreurs de chargement, invalider un démarrage dépassé par un nouvel appel ou un `stop`, et tenir compte d’un projet modifié pendant l’attente ? Un seek vers une banque non chargée suit la même barrière ; préciser son état visible pendant l’attente.
 - **Horloge et fin structurelle :** comment le service obtient-il l’horloge et une borne sûre du moteur ? `completeContext` doit-il être horodaté pour éviter qu’un appel anticipé annule des commandes encore nécessaires ? Quel ordre garantir aux `NOTE_OFF` et `NOTE_ON` simultanés ?
 - **Erreurs publiques :** quelles signatures de résultat employer pour les appels invalides de lecture, seek et préécoute, actuellement présentés avec `void`, `Promise<void>` ou un handle ? Distinguer validation applicative et erreur technique de chargement.
@@ -1279,7 +1310,7 @@ Les modules de temps et de hauteur sont déclarés directement sous `domain/`. C
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/Selection.ts`.
 
-`ProjectState` conserve le `project` validé et son éventuel `transientProject`, brouillon applicatif du geste. `effectiveProject` est la résolution dérivée utilisée par la présentation et l’audio ; ce nom ne lui confère pas les invariants du `Project` domaine et ne nécessite ni fichier ni état autonome.
+`ProjectState` conserve le `project` validé, son éventuel `transientProject`, brouillon applicatif du geste, et une éventuelle demande de changement d’instrument en préparation. `effectiveProject` est la résolution dérivée utilisée par la présentation et l’audio ; ce nom ne lui confère pas les invariants du `Project` domaine et ne nécessite ni fichier ni état autonome.
 
 `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
 
