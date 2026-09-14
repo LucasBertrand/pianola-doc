@@ -583,13 +583,17 @@ Les deux espaces d'édition possèdent des têtes de lecture applicatives, trans
 | Projet | `EditorState.projectPlayhead` | Tick global depuis le début du projet |
 | Clip | `EditorState.clipEditor.playhead` | Tick local depuis le début du clip édité |
 
-Leur position initiale est le tick `0`. Seule la tête correspondant au transport actif avance tant que son espace d'édition reste ouvert ; l'autre conserve sa position. Fournir un tick à `playProject` ou `playClip` déplace la tête correspondante avant de démarrer la lecture.
+Leur position initiale est le tick `0`. Seule la tête correspondant au transport actif avance tant que son espace d'édition reste ouvert ; l'autre conserve sa position. Fournir un tick à `playProject` ou `playClip` déplace la tête correspondante avant de tenter la lecture.
+
+Pour une portée dont la fin structurelle vaut `endTick`, une tête accepte l’intervalle fermé `[0, endTick]`, mais une lecture exige un départ dans `[0, endTick)`. Le tick final est donc une position valide sans contenu restant. Un tick strictement supérieur à `endTick` produit une erreur de validation et n’est jamais silencieusement ramené dans les bornes.
 
 Les deux têtes restent indépendantes. Une position globale ne détermine pas implicitement une position locale, car un même clip peut être utilisé par plusieurs occurrences et répétitions. Une éventuelle synchronisation visuelle lors de l'ouverture d'une occurrence relève d'une action explicite de présentation.
 
-Déplacer la tête correspondant au transport actif est un seek : le `PlaybackService` remplace gracieusement la session courante par une nouvelle session de même portée au tick demandé. Déplacer la tête inactive modifie seulement le point de départ du prochain transport de cette portée. `stop(GRACEFUL)` et `stop(IMMEDIATE)` immobilisent la tête active à sa position courante sans réinitialiser aucune tête.
+Déplacer la tête correspondant au transport actif vers une position strictement antérieure à la fin est un seek : le `PlaybackService` remplace gracieusement la session courante par une nouvelle session de même portée au tick demandé. La déplacer exactement à la fin provoque la fin naturelle du transport sans ouvrir de nouvelle session. Déplacer la tête inactive modifie seulement le point de départ du prochain transport de cette portée.
 
-Une session `CLIP` reste attachée au `clipId` avec lequel elle a été ouverte. Fermer le piano roll ou ouvrir un autre clip ne l'arrête pas. Si son `ClipEditorState` disparaît ou change de clip, sa position courante reste un curseur d'exécution interne à l'`ActiveTransport` et ne déplace pas la tête locale du nouvel éditeur.
+`stop(GRACEFUL)` et `stop(IMMEDIATE)` immobilisent la tête active à sa position courante sans réinitialiser aucune tête. À la fin naturelle, la tête est placée exactement sur `endTick`, l’`ActiveTransport` disparaît et les contextes peuvent continuer en `DRAINING` jusqu’à la fin de leurs releases et tails.
+
+Une session `CLIP` reste attachée au `clipId` avec lequel elle a été ouverte. Fermer le piano roll ou ouvrir un autre clip ne l'arrête pas. Si son `ClipEditorState` disparaît ou change de clip, sa position courante reste un curseur d'exécution interne à l'`ActiveTransport` et ne déplace pas la tête locale du nouvel éditeur. La suppression du clip attaché suit toutefois la politique d’arrêt explicite décrite avec la portée `CLIP`.
 
 #### Projet transitoire
 
@@ -846,13 +850,17 @@ stop(mode?: StopMode): void;
 
 #### Lecture du projet
 
-`playProject()` prépare puis ouvre une session `PROJECT` depuis `EditorState.projectPlayhead`.
-`playProject(tick)` valide le tick dans le référentiel global, place la tête du projet à cette position, puis prépare la même lecture globale.
+`playProject()` utilise `EditorState.projectPlayhead`. Si cette tête se trouve à la fin structurelle du projet, l’appel la replace au tick `0` avant de préparer la lecture. Pour un projet vide, il laisse la tête à `0`, n’ouvre aucune session et sa promesse se résout normalement.
+
+`playProject(tick)` valide explicitement le tick dans `[0, project.duration]` et place la tête à cette position. Si `tick === project.duration`, aucune session n’est ouverte ; si `tick > project.duration`, l’appel retourne une erreur de validation.
 
 #### Lecture du clip édité
 
-`playClip()` exige un `clipEditor`, puis prépare une session `CLIP` pour son `clipId` depuis la tête locale conservée dans `clipEditor.playhead`.
-`playClip(tick)` valide le tick dans les bornes locales du clip, place cette tête, puis prépare la lecture. Ce transport :
+`playClip()` exige un `clipEditor` et utilise le `clipId` ainsi que la tête locale conservée dans `clipEditor.playhead`. Si cette tête se trouve à `clip.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Pour un clip de durée nulle, il laisse la tête à `0`, n’ouvre aucune session et sa promesse se résout normalement.
+
+`playClip(tick)` valide explicitement le tick dans `[0, clip.duration]` et place la tête à cette position. Si `tick === clip.duration`, aucune session n’est ouverte ; si `tick > clip.duration`, l’appel retourne une erreur de validation.
+
+Ce transport :
 
 - lit uniquement le contenu du clip édité ;
 - ignore ses `ClipOccurrence`, leurs positions, leurs lignes et leurs `repeatCount` ;
@@ -862,9 +870,45 @@ stop(mode?: StopMode): void;
 
 `PROJECT` et `CLIP` sont deux portées d'un même transport exclusif. Démarrer l'une remplace gracieusement l'autre sans modifier la tête inactive.
 
-Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les occurrences susceptibles d'être lues entre le tick de départ et la fin du projet ; pour `CLIP`, seulement l'instrument du clip ciblé. La promesse se résout lorsque le transport a effectivement démarré. Aucun transport ne commence avec une banque requise manquante.
+Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les occurrences susceptibles d'être lues entre le tick de départ et la fin du projet ; pour `CLIP`, seulement l'instrument du clip ciblé. La promesse se résout lorsque le transport a effectivement démarré, ou immédiatement lorsqu’aucune session ne doit être ouverte. Aucun transport ne commence avec une banque requise manquante.
 
-`setProjectPlayhead(tick)` et `setClipPlayhead(tick)` valident et déplacent la tête correspondante. Si cette tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — le déplacement demande une nouvelle session de même portée au tick demandé, soumise à la même barrière de préparation des instruments que le démarrage. Sinon, il prépare seulement le prochain appel à `playProject()` ou `playClip()`.
+`setProjectPlayhead(tick)` et `setClipPlayhead(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — un déplacement avant la fin demande une nouvelle session de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport. Sinon, il prépare seulement le prochain appel sans argument.
+
+#### Fin de portée après modification
+
+Lorsqu’une édition raccourcit la portée, sa tête est ramenée dans les nouvelles bornes :
+
+```text
+newPlayhead = min(currentPlayhead, newEndTick)
+```
+
+Si un transport actif reste strictement avant `newEndTick`, il continue avec ses commandes et `ContextCompletion` replanifiées.
+
+Si sa tête se trouve à la nouvelle fin ou au-delà :
+
+- l’état applicatif place immédiatement la tête sur `newEndTick` ;
+- le service annule les attaques futures remplaçables ;
+- il relâche les voix actives à la première borne `safeAt` disponible ;
+- les contextes passent à `DRAINING` s’ils possèdent encore des releases ou tails ;
+- l’`ActiveTransport` est supprimé.
+
+Si la portée est inactive, seul le clamp de sa tête est nécessaire. L’allongement ultérieur d’une portée ne déplace jamais automatiquement sa tête.
+
+#### Suppression du clip attaché à une session
+
+Un clip ne peut être supprimé du domaine que s’il n’est référencé par aucune `ClipOccurrence`. Si ce clip est actuellement joué par une session `CLIP`, le cas d’usage orchestre avant sa suppression :
+
+1. l’arrêt `GRACEFUL` de la session et l’annulation de ses attaques futures ;
+2. le relâchement de ses voix actives et le drainage éventuel de ses contextes ;
+3. la suppression de l’`ActiveTransport` ;
+4. l’arrêt de ses `PITCH_PREVIEW` et `SELECTION_PREVIEW` ;
+5. l’annulation de tout `pendingInstrumentChange` visant ce clip ;
+6. la fermeture du `ClipEditorState` s’il cible encore ce clip ;
+7. la suppression du clip dans le nouveau `project`.
+
+La tête locale appartient au `ClipEditorState` supprimé : elle n’est ni conservée sans clip, ni transférée au prochain clip ouvert. Les tails de l’ancienne session peuvent continuer à se drainer après la suppression sans maintenir le clip dans l’agrégat.
+
+Supprimer un clip non placé pendant un transport `PROJECT` n’a aucun effet sur cette session, puisqu’aucune occurrence ne peut le rendre audible.
 
 #### Préécoutes du piano roll
 
@@ -1308,7 +1352,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 - **Préparation asynchrone :** comment propager les erreurs de chargement, invalider un démarrage dépassé par un nouvel appel ou un `stop`, et tenir compte d’un projet modifié pendant l’attente ? Un seek vers une banque non chargée suit la même barrière ; préciser son état visible pendant l’attente.
 - **Erreurs publiques :** quelles signatures de résultat employer pour les appels invalides de lecture, seek et préécoute, actuellement présentés avec `void`, `Promise<void>` ou un handle ? Distinguer validation applicative et erreur technique de chargement.
-- **Têtes et portée :** que devient la tête à la fin naturelle, après un raccourcissement du contenu ou lors d’un départ à la fin ou au-delà ? Que devient une session `CLIP` si son clip non placé est supprimé pendant la lecture ?
 
 ### Ressources et persistance
 
