@@ -1165,11 +1165,10 @@ src/
 │   ├── Key.ts
 │   └── Harmony.ts
 ├── application/
-│   ├── editor/
-│   │   ├── EditorState.ts
-│   │   ├── ProjectState.ts
-│   │   ├── Selection.ts
-│   │   └── grid.ts
+│   ├── EditorState.ts
+│   ├── ProjectState.ts
+│   ├── Selection.ts
+│   ├── Grid.ts
 │   ├── use-cases/
 │   │   └── PlaybackService.ts
 │   └── ports/
@@ -1201,7 +1200,7 @@ Les modules de temps et de hauteur sont déclarés directement sous `domain/`. C
 
 `Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `Tonic` reste un value object distinct déclaré dans `domain/Key.ts`.
 
-`ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
+`ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/Selection.ts`.
 
 `ProjectState` conserve le `project` validé et son éventuel `transientProject`. `effectiveProject` est une résolution dérivée de cet état et ne nécessite ni fichier ni type autonome.
 
