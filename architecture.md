@@ -164,6 +164,41 @@ Une branche `ok: false` ne modifie jamais l'objet d'origine et ne publie aucun �
 
 Les violations prévisibles d'une règle métier ne lèvent pas d'exception. Les exceptions restent réservées aux défauts de programmation et aux défaillances techniques inattendues ; elles ne sont pas converties artificiellement en `ValidationError`.
 
+### Bornes numériques et valeurs élémentaires
+
+Le premier périmètre fixe les limites suivantes :
+
+```ts
+const MAX_LINE_COUNT = 128;
+const MAX_TICK = 2_147_483_647;
+const MAX_REPEAT_COUNT = 65_535;
+```
+
+| Valeur | Domaine valide |
+| --- | --- |
+| `LineIndex` | entier de `0` à `127` inclus |
+| `Pitch.midiNumber` | entier de `0` à `127` inclus |
+| `Velocity` | entier de `1` à `127` inclus |
+| `Meter.beatsPerMeasure` | entier de `1` à `32` inclus |
+| `Meter.beatUnit` | `1`, `2`, `4`, `8`, `16`, `32` ou `64` |
+| `RootNote.letter` | `A`, `B`, `C`, `D`, `E`, `F` ou `G` |
+| `RootNote.accidental` | `FLAT`, `NATURAL` ou `SHARP` |
+| `Tick` | entier de `0` à `MAX_TICK` inclus |
+| `Duration.ticks` | entier de `1` à `MAX_TICK` inclus |
+| `repeatCount` | entier de `1` à `MAX_REPEAT_COUNT` inclus |
+
+`Velocity = 0` n’est pas une vélocité persistante valide : Pianola représente le relâchement par une commande `NOTE_OFF` explicite. Les doubles altérations ne font pas partie du catalogue initial ; leur ajout futur étendra `Accidental` sans modifier la représentation de `RootNote`.
+
+Toute factory valide également les résultats composés, pas seulement leurs opérandes. Les calculs temporels suivants doivent notamment rester inférieurs ou égaux à `MAX_TICK` :
+
+```text
+timeRange.start + timeRange.duration
+occurrence.start + clip.duration * occurrence.repeatCount
+ticksPerMeasure = beatsPerMeasure * (3840 / beatUnit)
+```
+
+Une valeur reçue hors de ces bornes produit une `ValidationError` typée. Aucun arrondi, clamp ou débordement silencieux n’est effectué par le domaine. Les opérations de présentation peuvent proposer une valeur corrigée, mais doivent la soumettre explicitement comme une nouvelle intention.
+
 ### Project
 
 `Project` représente le document musical complet ouvert dans l'application.
@@ -235,9 +270,9 @@ Attributs possibles :
 - `line` ;
 - `repeatCount`.
 
-`start` est un `Tick` interprété depuis le début du projet. `line` est un `LineIndex` compris entre `0` inclus et la limite fixe de sécurité exclue. Les lignes n'ont dans le premier périmètre ni identité, ni métadonnées, ni cycle de vie propre. Une occurrence référence exactement un `Clip` existant et ne duplique jamais son contenu local.
+`start` est un `Tick` interprété depuis le début du projet. `line` est un `LineIndex` compris entre `0` et `127` inclus, conformément à `MAX_LINE_COUNT = 128`. Les lignes n'ont dans le premier périmètre ni identité, ni métadonnées, ni cycle de vie propre. Une occurrence référence exactement un `Clip` existant et ne duplique jamais son contenu local.
 
-`repeatCount` vaut `1` par défaut. Il accepte uniquement un entier strictement positif et indique le nombre total de lectures contiguës du clip référencé. Chaque répétition recommence au tick local `0`.
+`repeatCount` vaut `1` par défaut. Il accepte un entier de `1` à `MAX_REPEAT_COUNT = 65_535` et indique le nombre total de lectures contiguës du clip référencé. Chaque répétition recommence au tick local `0`.
 
 La fin globale structurelle est calculée ainsi :
 
@@ -292,7 +327,7 @@ Invariants :
 - la position locale de début est positive ou nulle ;
 - la durée est strictement positive ;
 - la note se termine au plus tard à la fin locale du clip ;
-- la hauteur et la vélocité restent dans leurs plages valides ;
+- `Pitch.midiNumber` reste entre `0` et `127`, et `Velocity` entre `1` et `127` ;
 - deux notes de même `Pitch` ne se chevauchent jamais avec une durée strictement positive dans un même clip ;
 - son rôle dans l’accord ou la gamme active est dérivé et n’est pas sauvegardé ;
 - une note extérieure à l’accord ou à la gamme active reste valide.
@@ -356,11 +391,11 @@ Les battements, mesures et secondes sont des représentations dérivées. La gri
 
 | Value Object | Représentation | Règles principales |
 | --- | --- | --- |
-| `Tick` | entier | Entier positif ou nul ; son contexte d'emploi détermine s'il est global ou local |
-| `Duration` | `ticks` | Entier strictement positif |
+| `Tick` | entier | De `0` à `MAX_TICK` inclus ; son contexte d'emploi détermine s'il est global ou local |
+| `Duration` | `ticks` | De `1` à `MAX_TICK` inclus |
 | `TimeRange` | `start`, `duration` | Intervalle local dont `start` est un `Tick`, utilisé notamment par une note |
 | `Tempo` | `bpm` | Une décimale, de `20.0` à `999.9` BPM inclus |
-| `Meter` | `beatsPerMeasure`, `beatUnit` | Permet de calculer les frontières de mesure locales |
+| `Meter` | `beatsPerMeasure`, `beatUnit` | Numérateur de `1` à `32` ; dénominateur parmi `1, 2, 4, 8, 16, 32, 64` |
 
 Avec une résolution de 960 ticks par noire :
 
@@ -388,7 +423,7 @@ Ces objets décrivent la hauteur des notes et leur contexte harmonique local. Il
 | Value Object | Représentation | Règles principales |
 | --- | --- | --- |
 | `Pitch` | `midiNumber` | Le nom et l'octave peuvent être dérivés |
-| `RootNote` | `letter`, `accidental` | Fondamentale orthographiée sans octave ; classe chromatique dérivée |
+| `RootNote` | `letter`, `accidental` | Lettre de `A` à `G` ; altération `FLAT`, `NATURAL` ou `SHARP` ; classe chromatique dérivée |
 | `Chord` | `root`, `typeId` | Accord possédant obligatoirement une fondamentale explicite |
 | `Scale` | `root`, `typeId` | Gamme possédant obligatoirement une tonique explicite |
 | `Harmony` | `kind`, `chord` ou `scale` | Contexte exclusif contenant un accord ou une gamme |
@@ -461,12 +496,14 @@ Chaque changement possède une identité, une position locale et sa nouvelle val
 - la nouvelle valeur s'applique à partir de la position du changement, incluse ;
 - un changement peut être déplacé ou modifié sans perdre son identité ;
 - un changement ferme la section précédente du même type et commence la suivante ;
-- un changement reste compris dans les bornes locales du clip ;
+- un changement peut être placé de `0` à `clip.duration` inclus ;
 - aucun changement n'accepte `null` ni une variante `CLEAR`.
 
 Le `HarmonyChange` initial au tick `0` ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée par un accord ou une autre gamme. `SCALE · C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
 
 Chaque nouveau `HarmonyChange` remplace indifféremment l’accord ou la gamme précédente. Il est donc impossible qu’un `Chord` et une `Scale` soient actifs simultanément ou que deux marqueurs harmoniques occupent le même tick.
+
+Un changement placé exactement à `clip.duration` est valide et persistant. Il n’affecte aucune note et ne produit aucun événement audio tant que la durée ne change pas. Si le clip est allongé, il devient automatiquement le début de la nouvelle section terminale. Si un raccourcissement placerait un changement au-delà de la nouvelle durée, l’opération doit également déplacer ou supprimer ce changement, faute de quoi la validation échoue.
 
 Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
 
@@ -490,7 +527,9 @@ trailingMeasureDuration = sectionDuration % ticksPerMeasure
 
 Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Cette mesure tronquée est valide aussi bien à la fin du clip qu’avant un `MeterChange`. Chaque `MeterChange` termine immédiatement la section précédente, même au milieu de sa mesure théorique, puis commence une nouvelle mesure complète dans la nouvelle métrique.
 
-Grâce au changement initial obligatoire, une `HarmonySection` couvre toujours chaque tick du clip. Pour analyser une note, les intervalles pertinents sont dérivés de l'union des frontières de `HarmonySection` et du `TimeRange` de la note. Chaque portion expose un rôle exclusif :
+Une section dérivée peut être vide : un changement placé à `clip.duration` produit l’intervalle semi-ouvert `[clip.duration, clip.duration)`. Les calculs d’intersection et la planification l’ignorent naturellement ; aucune valeur n’est active au tick final, situé hors de l’intervalle sonore du clip.
+
+Grâce au changement initial obligatoire, une `HarmonySection` couvre toujours chaque tick de `[0, clip.duration)`. Pour analyser une note, les intervalles pertinents sont dérivés de l'union des frontières de `HarmonySection` et du `TimeRange` de la note. Chaque portion expose un rôle exclusif :
 
 ```ts
 type NoteHarmonyRole =
@@ -1349,7 +1388,6 @@ Ces points ne sont pas des décisions actées. Les contrats concernés restent �
 
 ### Édition et invariants
 
-- **Bornes et valeurs :** fixer la limite des lignes, les plages de `Pitch` et `Velocity`, les métriques et altérations acceptées, ainsi que les limites numériques sûres des ticks et répétitions. Un changement peut-il être placé exactement à `clip.duration` ?
 - **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
 
 ### Transport et contrat audio
@@ -1410,7 +1448,7 @@ src/
 
 `domain/Result.ts` déclare `Result`, ses helpers génériques et la forme générique `ValidationError`. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
 
-`Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `Clip.ts` regroupe `Clip`, `ClipId`, `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`. Cette colocalisation ne change pas leur responsabilité : `ClipOccurrence` reste une entité de placement possédée par `Project` et ne devient pas une partie du contenu local du clip.
+`Tick.ts` déclare l’unité entière bornée commune aux positions globales et locales ainsi que `MAX_TICK`. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `Clip.ts` porte `MAX_LINE_COUNT` et `MAX_REPEAT_COUNT` avec les invariants qui les utilisent. `Clip.ts` regroupe `Clip`, `ClipId`, `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`. Cette colocalisation ne change pas leur responsabilité : `ClipOccurrence` reste une entité de placement possédée par `Project` et ne devient pas une partie du contenu local du clip.
 
 Les modules de temps et de hauteur sont déclarés directement sous `domain/`. Cette organisation physique ne fusionne pas leurs concepts.
 
