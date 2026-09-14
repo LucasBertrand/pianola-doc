@@ -114,19 +114,21 @@ block-beta
     space noteB["Note B · piano"] space:2
 ```
 
-## Cas 6 — Remplacement du transport et préécoute concurrente
+## Cas 6 — Transports global et local, avec préécoute concurrente
 
-L'occurrence `Motif` commence au tick global `3840`. Un transport est actif lorsque l'utilisateur appelle `play(motifOccurrence.id)`.
+Le projet est lu depuis sa tête globale dans une session `PROJECT`. Le clip source `Motif` est parallèlement ouvert dans le piano roll ; sa tête locale est restée au tick `960`.
 
-Le nouvel appel place la tête à ce début sauvegardé et ouvre une nouvelle session `PROJECT`. Le `PlaybackService` retire immédiatement le rôle de transport à `project-session-a`, annule ses attaques futures, relâche ses occurrences actives selon le mode `GRACEFUL` et ouvre `project-session-b`. Il n'existe jamais deux transports actifs.
+Lorsque l'utilisateur appelle `playClip()`, le `PlaybackService` retire immédiatement le rôle de transport à `project-session-a`, annule ses attaques futures et relâche ses occurrences actives selon le mode `GRACEFUL`. Il ouvre ensuite `clip-session-b` de type `CLIP` au tick local `960`. La tête globale conserve sa position.
 
 | Étape | Session | Type | État |
 | --- | --- | --- | --- |
-| Lecture initiale | `project-session-a` | `PROJECT` | transport actif |
-| Nouvel appel à `play` | `project-session-a` | `PROJECT` | inactive ; contextes éventuellement `DRAINING` |
-| Nouvel appel à `play` | `project-session-b` | `PROJECT` | nouveau transport actif |
+| Lecture de l'arrangement | `project-session-a` | `PROJECT` | transport actif |
+| Appel à `playClip()` | `project-session-a` | `PROJECT` | inactive ; contextes éventuellement `DRAINING` |
+| Appel à `playClip()` | `clip-session-b` | `CLIP` | nouveau transport actif |
 
-Pendant ce transport, l'utilisateur maintient une touche du piano roll :
+La session `CLIP` lit directement le contenu local de `Motif` jusqu'à sa durée structurelle. Elle ignore toutes ses occurrences, leurs positions globales et leurs répétitions.
+
+Pendant ce transport local, l'utilisateur maintient une touche du piano roll :
 
 ```ts
 const notePreview = preview(noteId);
@@ -135,9 +137,11 @@ const notePreview = preview(noteId);
 notePreview.release();
 ```
 
-`preview(noteId)` ouvre en interne une session `NOTE_PREVIEW` sans remplacer `project-session-b`. La présentation reçoit seulement un `NotePreviewHandle`.
+`preview(noteId)` résout la note dans le clip `Motif` actuellement édité et ouvre une session `NOTE_PREVIEW` sans remplacer `clip-session-b`. La présentation reçoit seulement un `NotePreviewHandle`.
 
 `release()` produit le `NOTE_OFF` de l'occurrence correspondante, termine structurellement son contexte et laisse sa release et son tail se drainer. Une durée maximale de sécurité applique le même relâchement si la fin du geste n'est pas reçue. Plusieurs préécoutes peuvent se chevaucher et être relâchées indépendamment.
+
+Un appel ultérieur à `playProject(occurrence.start)` remplace à son tour le transport `CLIP`, déplace uniquement la tête globale et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
 
 ## Cas 7 — Répétitions et occurrences de notes
 
@@ -181,12 +185,12 @@ Les commandes suivantes choisissent une position sans changer la portée du tran
 
 | Commande | Résultat |
 | --- | --- |
-| `play()`, tête à 0 | Lit tout le projet depuis son début. |
-| `play(pianoOccurrence.id)` | Place la tête à 2 s ; `Piano`, `Basse` et la partie encore active de `Percussions` participent au transport. |
-| `play(basseOccurrence.id)` | Produit le même point de départ que `play(pianoOccurrence.id)`. |
-| `play(conclusionOccurrence.id)` | Place la tête à 6 s et lit la fin du projet. |
+| `playProject()`, tête globale à 0 | Lit tout le projet depuis son début. |
+| `playProject(pianoOccurrence.start)` | Place la tête globale à 2 s ; `Piano`, `Basse` et la partie encore active de `Percussions` participent au transport. |
+| `playProject(basseOccurrence.start)` | Produit le même point de départ, car les deux occurrences commencent au même tick. |
+| `playProject(conclusionOccurrence.start)` | Place la tête globale à 6 s et lit la fin du projet. |
 
-L'identifiant d'occurrence passé à `play` sert seulement à retrouver son `start`. Un `ClipId` serait ambigu dès que le même contenu est placé plusieurs fois. Une note possède uniquement une action `preview(noteId)`, qui ne déplace pas la tête et ne modifie pas le transport.
+`playProject` reçoit directement un `Tick` global. Le bouton d'une occurrence lui transmet son `start`, sans transmettre l'identité de l'occurrence au transport. `playClip(tick?)` utilise au contraire un tick local au clip édité. `preview(noteId)` ne déplace aucune tête et ne modifie pas le transport.
 
 Le traitement d'une note ayant commencé avant la position choisie reste soumis à la politique de note chase à définir.
 
@@ -245,7 +249,7 @@ Si une occurrence du clip commence au tick global `10000`, ces bornes locales co
 
 ## Cas 14 — Replanification du projet transitoire
 
-Un transport est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement une occurrence déjà active et déplace un changement local situé plus loin dans le clip qu'elle référence. Le nouveau `transientProject` devient immédiatement l'`effectiveProject`.
+Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement une occurrence déjà active et déplace un changement local situé plus loin dans le clip qu'elle référence. Le nouveau `transientProject` devient immédiatement l'`effectiveProject`.
 
 Le `PlaybackService` recalcule le transport depuis cette borne sans ouvrir une nouvelle session, puis demande :
 
@@ -259,7 +263,9 @@ Si l'ancien et le nouveau début global de la note restent avant la tête, tandi
 
 Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Changer l'instrument du clip applique cette règle à chacune de ses notes audibles dans toutes ses occurrences actives. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
 
-Le déplacement du changement local participe au même recalcul atomique. Le `PlaybackSessionId`, l'origine temporelle et la position musicale du transport ne changent pas.
+Le déplacement du changement local participe au même recalcul atomique. Le `PlaybackSessionId`, l'origine temporelle et le tick global du transport ne changent pas.
+
+Si le transport actif était `CLIP` sur ce même clip, le service ignorerait le déplacement de la `ClipOccurrence` et réconcilierait uniquement le contenu local depuis la tête du clip. Une modification d'un autre clip n'affecterait pas cette session.
 
 ## Cas 15 — Plusieurs occurrences liées au même clip
 
@@ -285,8 +291,8 @@ calculateInterval(
   occurrence: ClipOccurrence,
   clip: Clip
 ): {
-  start: ProjectPosition;
-  end: ProjectPosition;
+  start: Tick;
+  end: Tick;
 }
 ```
 
@@ -294,17 +300,18 @@ calculateInterval(
 - chaque `ClipOccurrence` calcule ses événements à partir de son `start`, de son `repeatCount` et des positions locales du `Clip` référencé ; chaque `NOTE_ON` reçoit l'`instrumentId` unique de ce clip ;
 - toutes les occurrences dont les intervalles se chevauchent sont actives simultanément, quelle que soit leur ligne ou leur référence source ;
 - un changement de ligne n'entraîne aucune replanification sonore ;
-- `play()` commence à la position actuelle de la tête ;
-- `play(occurrenceId)` place la tête au début global sauvegardé de l'occurrence, puis lit le projet depuis cette position ;
-- toutes les occurrences actives à la position choisie participent au transport ;
-- `preview(noteId)` auditionne uniquement une note, sans déplacer la tête ni remplacer le transport ;
-- une seule session `PROJECT` peut constituer le transport actif ;
+- `playProject()` commence à la tête globale, tandis que `playProject(tick)` la déplace avant de lire le projet ;
+- le bouton d'une occurrence appelle `playProject(occurrence.start)` et toutes les occurrences actives à ce tick participent au transport ;
+- `playClip()` commence à la tête locale du clip édité, tandis que `playClip(tick)` la déplace avant de lire ce seul clip ;
+- le transport `CLIP` ignore les placements et répétitions des occurrences, mais conserve le tempo unique du projet ;
+- `preview(noteId)` résout uniquement une note du clip édité, sans déplacer les têtes ni remplacer le transport ;
+- une seule session `PROJECT` ou `CLIP` peut constituer le transport actif ;
 - les sessions `NOTE_PREVIEW` peuvent coexister entre elles et avec le transport actif ;
 - `stop(mode)` arrête uniquement le transport actif et n'affecte aucune préécoute de note ;
-- chaque activation de `ClipOccurrence` et chaque préécoute de note reçoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
+- chaque activation de `ClipOccurrence`, chaque transport local de clip et chaque préécoute de note reçoivent un `PlaybackContextId` transitoire distinct des identifiants persistants ;
 - deux occurrences du même `Clip` possèdent des contextes audio indépendants ;
 - chaque `AudioCommand` porte ce `contextId`, tandis que la relation entre contexte et session n'est enregistrée qu'à l'ouverture du contexte ;
 - chaque attaque, y compris lors d'une répétition, reçoit un `NoteOccurrenceId` unique ;
-- une modification du projet transitoire remplace atomiquement les commandes futures du transport actif, sans changer sa session ni son origine temporelle ;
+- une modification du projet transitoire remplace atomiquement les commandes futures selon la portée `PROJECT` ou `CLIP` du transport actif, sans changer sa session ni son origine temporelle ;
 - la fin structurelle permet aux autres occurrences de poursuivre leur lecture pendant que l'infrastructure conserve éventuellement un contexte en `DRAINING` ;
 - le tempo, les contenus `Clip` et les propriétés globales des `ClipOccurrence` sont persistants ; les identifiants d'exécution ne le sont jamais.
