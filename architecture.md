@@ -1151,9 +1151,7 @@ Cette arborescence documente les frontières actuelles. Elle exprime des respons
 ```text
 src/
 ├── domain/
-│   ├── common/
-│   │   ├── Result.ts
-│   │   └── ValidationError.ts
+│   ├── Result.ts
 │   ├── Project.ts
 │   ├── Clip.ts
 │   ├── Instrument.ts
@@ -1195,7 +1193,7 @@ src/
 
 `Tempo.ts` déclare uniquement le value object global `Tempo`. `Meter.ts` déclare ensemble `Meter`, `MeterChange` et `MeterSection`. `Key.ts` déclare `Tonic`, `Key`, `KeyChange` et `KeySection`. `Harmony.ts` déclare `ChordRoot`, `ScaleRoot`, `TonalDegree`, `Chord`, `Scale`, `Harmony`, `HarmonyChange` et `HarmonySection`.
 
-`domain/common/Result.ts` déclare `Result` et ses helpers génériques. `domain/common/ValidationError.ts` déclare seulement la forme générique d'une erreur de validation. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
+`domain/Result.ts` déclare `Result`, ses helpers génériques et la forme générique `ValidationError`. Les codes, les détails et leurs unions restent placés près des invariants qu'ils décrivent afin d'éviter un catalogue central dépendant de tout le domaine.
 
 `Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `Clip.ts` regroupe `Clip`, `ClipId`, `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`. Cette colocalisation ne change pas leur responsabilité : `ClipOccurrence` reste une entité de placement possédée par `Project` et ne devient pas une partie du contenu local du clip.
 
