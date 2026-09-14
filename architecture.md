@@ -35,13 +35,6 @@ flowchart LR
     Infrastructure --> Domain
 ```
 
-Le sens des dépendances de code pointe vers l'intérieur :
-
-- le domaine ne connaît aucune autre couche ;
-- l'application dépend du domaine et définit les ports dont elle a besoin ;
-- l'infrastructure dépend du domaine et des ports applicatifs qu'elle implémente ;
-- la présentation déclenche les cas d'usage et observe leur résultat.
-
 ## Périmètre fonctionnel
 
 Pianola est destiné à l'écriture et au processus initial de composition, pas à la production audio.
@@ -161,7 +154,7 @@ Tempo.create(bpm: number): Result<Tempo, TempoValidationError>;
 Clip.create(input: CreateClipInput): Result<Clip, ClipValidationError>;
 Project.create(input: CreateProjectInput): Result<Project, ProjectValidationError>;
 project.moveClipOccurrences(command: MoveClipOccurrencesCommand): Result<Project, ProjectEditError>;
-clip.editNote(command: EditNoteCommand): Result<Clip, NoteEditError>;
+clip.editNote(command: EditNoteCommand): Result<Clip, ClipValidationError>;
 ```
 
 Une branche `ok: false` ne modifie jamais l'objet d'origine et ne publie aucun état partiel. Dans le premier périmètre, une opération retourne la première erreur selon un ordre de validation déterministe ; l'accumulation de plusieurs erreurs pourra être ajoutée sans changer la forme de `Result`.
@@ -288,6 +281,24 @@ Lorsqu'une note traverse un `KeyChange` ou un `HarmonyChange`, son `TimeRange` e
 Les événements instantanés `NoteOn` et `NoteOff` ne sont pas des objets persistants du domaine. Ils sont produits par le service de lecture.
 
 `Velocity` ne possède actuellement aucun usage indépendant de `Note`. Son type et ses règles sont déclarés dans `domain/Note.ts`.
+
+### Résolution des collisions de notes
+
+```ts
+type NoteCollisionResolution = "SLICE" | "MERGE";
+```
+
+La détection et la résolution sont des règles pures du domaine, orchestrées par `Clip` qui valide la collection complète. Elles peuvent rester dans `Clip.ts` ; un module dédié ne devient utile que si leur complexité le justifie. Le cas d’usage obtient le choix utilisateur auprès de la présentation et transmet ce mode au domaine.
+
+`SLICE` donne priorité à la note manipulée et conserve son identité, son intervalle et sa vélocité. Chaque note existante de même hauteur est remplacée par la différence entre son intervalle et celui de la note manipulée :
+
+- une partie entièrement couverte est supprimée ;
+- un chevauchement sur un bord raccourcit la note existante ;
+- une note existante qui contient entièrement la note manipulée est scindée en deux fragments ; le fragment gauche conserve son `NoteId` et sa vélocité, tandis que le fragment droit reçoit un nouveau `NoteId` avec la même vélocité.
+
+`MERGE` calcule l'union de l'intervalle de la note manipulée et de toutes les notes de même hauteur qui entrent en collision, transitivement. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la note manipulée ; les notes existantes absorbées sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
+
+Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes. Il retourne `ok(clip)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le clip d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique.
 
 ### Instrument
 
@@ -422,7 +433,7 @@ fullMeasureCount = floor(sectionDuration / ticksPerMeasure)
 trailingMeasureDuration = sectionDuration % ticksPerMeasure
 ```
 
-Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Le changement suivant constitue alors une frontière explicite et commence une nouvelle mesure.
+Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. À la fin du clip, cette représentation est nécessaire lorsque sa durée n’est pas un multiple de la mesure. Pour une section non terminale, la compatibilité entre conservation des ticks et obligation de placer le changement suivant sur une frontière de mesure reste à décider ; voir les questions ouvertes.
 
 Une `HarmonySection` dont le `Chord` ou la `Scale` utilise `DEGREE` peut produire plusieurs résolutions successives lorsqu'elle traverse des `KeySection`. Pour l'analyse d'une note, les intervalles pertinents sont donc dérivés de l'union des frontières de `KeySection`, d'`HarmonySection` et du `TimeRange` de la note.
 
@@ -430,17 +441,9 @@ Une `HarmonySection` dont le `Chord` ou la `Scale` utilise `DEGREE` peut produir
 
 `Project` est la racine de l'unique agrégat constituant le document de composition sauvegardé.
 
-Il possède :
-
-- son tempo unique ;
-- tous ses clips et toutes leurs occurrences ;
-- les notes appartenant à chaque clip ;
-- les changements appartenant à chaque chronologie locale ;
-- ses informations de sauvegarde.
-
 Les entités internes conservent des identifiants stables afin d'être ciblées par l'éditeur et les cas d'usage. Elles ne possèdent cependant ni repository ni cycle de persistance autonomes.
 
-Une opération peut être déléguée à un `Clip` pour préserver ses invariants locaux, mais l'entité est toujours atteinte depuis le `Project` chargé.
+Une opération peut être déléguée à un `Clip` pour préserver ses invariants locaux. Le `Project` valide ensuite le résultat complet avant publication : modifier la durée d’un clip peut notamment provoquer une collision entre ses occurrences et d’autres blocs de leurs lignes. Une validation locale réussie ne suffit donc pas à accepter l’édition de l’agrégat.
 
 Les `Instrument` sont extérieurs à cet agrégat et sont fournis par un catalogue.
 
@@ -619,28 +622,17 @@ Les références peuvent désigner simultanément des notes et des changements d
 
 Les identifiants des entités déplacées sont conservés. Lorsqu'une transformation provisoire crée des entités, leurs identifiants sont générés une seule fois pour le geste, restent stables pendant ses actualisations et sont conservés si le projet transitoire est appliqué.
 
-#### Résolution des collisions de notes
+#### Orchestration des collisions
 
 Les cas d'usage qui créent ou modifient une note acceptent un mode facultatif :
 
 ```ts
-type NoteCollisionResolution = "SLICE" | "MERGE";
-
-type NoteEditError = NoteValidationError | NoteCollisionError;
-type NoteEditResult = Result<Project, NoteEditError>;
+type NoteEditResult = Result<Project, ProjectEditError>; // validation de l’agrégat
 ```
 
-La première tentative est effectuée sans `NoteCollisionResolution`. Si le résultat quantifié ferait chevaucher la note manipulée avec une ou plusieurs notes de même hauteur, le cas d'usage retourne `err(noteCollisionError)` avec le code `NOTE_OVERLAP`, sans publier de `transientProject`. La présentation demande alors à l'utilisateur `SLICE` ou `MERGE`, puis rejoue la même intention avec le mode choisi. Le domaine ne dépend donc d'aucune interaction utilisateur et aucun état intermédiaire invalide n'est créé.
+La première tentative est effectuée sans `NoteCollisionResolution`. Si le résultat quantifié ferait chevaucher la note manipulée avec une ou plusieurs notes de même hauteur, le cas d'usage retourne `err(noteCollisionError)` avec le code `NOTE_OVERLAP`, sans remplacer le dernier projet effectif valide. La présentation demande alors à l'utilisateur `SLICE` ou `MERGE`, puis rejoue la même intention avec le mode choisi. Le domaine ne dépend donc d'aucune interaction utilisateur et aucun état intermédiaire invalide n'est créé.
 
-`SLICE` donne priorité à la note manipulée et conserve son identité, son intervalle et sa vélocité. Chaque note existante de même hauteur est remplacée par la différence entre son intervalle et celui de la note manipulée :
-
-- une partie entièrement couverte est supprimée ;
-- un chevauchement sur un bord raccourcit la note existante ;
-- une note existante qui contient entièrement la note manipulée est scindée en deux fragments ; le fragment gauche conserve son `NoteId` et sa vélocité, tandis que le fragment droit reçoit un nouveau `NoteId` avec la même vélocité.
-
-`MERGE` calcule l'union de l'intervalle de la note manipulée et de toutes les notes de même hauteur qui entrent en collision, transitivement. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la note manipulée ; les notes existantes absorbées sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
-
-Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes. Il retourne `ok(clip)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le clip d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique et une seule future unité d'annulation.
+Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-collisions-de-notes). Le cas d’usage soumet le clip résultant à la validation du `Project` avant de publier un état. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La résolution constitue une seule future unité d’annulation.
 
 Les services seront nommés et ajoutés dans `application/use-cases/` lorsque leurs responsabilités précises seront établies.
 
@@ -665,22 +657,22 @@ Lors de la création d'un clip, le cas d'usage reçoit un nombre de mesures et u
 
 Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe.
 
-Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` susceptible d'affecter sa portée invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service la recalcule depuis le nouvel `effectiveProject` et transmet les changements au moteur lors du prochain cycle de planification sûr. Une modification extérieure au clip d'un transport `CLIP` ne provoque aucune replanification.
+Lorsqu'un transport est déjà actif, chaque remplacement de `transientProject` susceptible d'affecter sa portée invalide la portion future de la planification construite depuis l'ancien projet effectif. Le service la recalcule depuis le nouvel `effectiveProject` et transmet les changements au moteur lors du prochain cycle de planification sûr. Pour `CLIP`, seules les modifications du clip attaché à la session et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
 
 Appliquer le projet transitoire ne change pas le contenu d'`effectiveProject` et ne doit donc provoquer ni nouvelle planification ni rupture sonore. L'abandonner entraîne la même réconciliation que toute autre modification transitoire.
 
-La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare chaque couple `(ClipOccurrence, Note)` à la tête globale. Pour un transport `CLIP`, elle compare directement les notes du clip édité à sa tête locale :
+La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipOccurrenceId, indice de répétition, NoteId)` à la tête globale. Pour un transport `CLIP`, elle compare les notes du `clipId` attaché à la session à son curseur local :
 
 | Avant | Après | Comportement |
 | --- | --- | --- |
-| L'occurrence de note est audible | La note couvre toujours la tête dans la portée active | Conserver l'occurrence de note et replanifier son `NOTE_OFF` |
+| L'occurrence de note est audible | La note couvre toujours la tête et ses données d’attaque sont inchangées | Conserver l'occurrence de note et replanifier son `NOTE_OFF` |
 | L'occurrence de note est audible | La note ne couvre plus la tête dans la portée active | Produire un `NOTE_OFF` à la borne de replanification |
 | La note n'est pas audible dans la portée active | Elle couvre désormais la tête | Créer une occurrence de note et produire un `NOTE_ON` à la borne |
 | La note n'est pas audible dans la portée active | Elle ne couvre toujours pas la tête | Replanifier uniquement ses éventuelles commandes futures |
 
-Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d'une `ClipOccurrence`. Déplacer le début d'une note ou d'une occurrence de clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Clip` source déclenche la réconciliation séparément pour chacune de ses occurrences actives ou planifiées. Dans un transport `CLIP`, la même modification est réconciliée une seule fois dans le contexte local du clip édité.
+Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d'une `ClipOccurrence`. Déplacer le début d'une note ou d'une occurrence de clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Clip` source déclenche la réconciliation séparément pour chacune de ses occurrences actives ou planifiées. Dans un transport `CLIP`, la même modification est réconciliée une seule fois dans le contexte local du clip attaché à la session.
 
-Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Changer le `Clip.instrumentId` applique la même règle à toutes ses notes audibles : dans toutes ses occurrences actives pour `PROJECT`, ou dans son unique contexte local pour `CLIP`. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
+Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Changer le `Clip.instrumentId` applique la même règle à toutes ses notes audibles : dans toutes ses occurrences actives pour `PROJECT`, ou dans la portée locale pour `CLIP`. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque.
 
 Une résolution `SLICE` ou `MERGE` devient audible seulement après production de son projet valide. Elle est réconciliée comme une unique modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`. Aucune planification n'est produite pour la tentative en collision qui a précédé le choix utilisateur.
 
@@ -725,7 +717,7 @@ stop(mode?: StopMode): void;
 
 Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les occurrences susceptibles d'être lues entre le tick de départ et la fin du projet ; pour `CLIP`, seulement l'instrument du clip ciblé. La promesse se résout lorsque le transport a effectivement démarré. Aucun transport ne commence avec une banque requise manquante.
 
-`setProjectPlayhead(tick)` et `setClipPlayhead(tick)` valident et déplacent la tête correspondante. Si cette tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — le déplacement remplace immédiatement la session par une nouvelle session de même portée au tick demandé. Sinon, il prépare seulement le prochain appel à `playProject()` ou `playClip()`.
+`setProjectPlayhead(tick)` et `setClipPlayhead(tick)` valident et déplacent la tête correspondante. Si cette tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — le déplacement demande une nouvelle session de même portée au tick demandé, soumise à la même barrière de préparation des instruments que le démarrage. Sinon, il prépare seulement le prochain appel à `playProject()` ou `playClip()`.
 
 #### Préécoute d'une note
 
@@ -740,7 +732,7 @@ Cette opération :
 
 `NotePreviewHandle.release()` relâche uniquement l'occurrence de note créée par l'appel correspondant. L'opération est idempotente. La release et le tail peuvent ensuite se terminer naturellement.
 
-Pour une touche du piano roll, la présentation appelle `preview(noteId)` au début du geste, conserve le handle, puis appelle `release()` à sa fin, notamment lors de `pointerup` ou `pointercancel`. Elle ne reçoit aucun identifiant de session ou de contexte audio.
+Pour l’audition d’une note existante, la présentation appelle `preview(noteId)` au début du geste, conserve le handle, puis appelle `release()` à sa fin, notamment lors de `pointerup` ou `pointercancel`. Elle ne reçoit aucun identifiant de session ou de contexte audio.
 
 #### Planification selon la portée
 
@@ -749,12 +741,12 @@ Pour un transport `PROJECT`, le service obtient directement l'intervalle global 
 ```text
 occurrenceInterval = [occurrence.start,
                       occurrence.start + clip.duration * occurrence.repeatCount)
-projectEnd = max(occurrenceInterval.end)
+projectEnd = max(occurrenceInterval.end), ou 0 sans occurrence
 ```
 
 Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément ; l'invariant de grille garantit simplement qu'ils se trouvent alors sur des lignes différentes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique, de tonalité et d'harmonie du clip.
 
-Pour un transport `CLIP`, le service parcourt directement les événements locaux du seul clip édité entre la tête locale et `clip.duration`. Aucun placement global ni `repeatCount` n'intervient.
+Pour un transport `CLIP`, le service parcourt les événements du `clipId` attaché à la session entre son curseur local et `clip.duration`. Aucun placement global ni `repeatCount` n'intervient.
 
 Le tempo unique du projet convertit les ticks en secondes dans les deux portées :
 
@@ -817,8 +809,6 @@ type ActiveTransport =
 | Audition | `NOTE_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
 
 Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `playClip` retire ce rôle au transport précédent et annule ses attaques futures lorsque la nouvelle portée est prête à démarrer. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif. Les deux têtes de lecture restent indépendantes.
-
-Fermer le piano roll ou ouvrir un autre clip ne modifie pas une session `CLIP` active : son `clipId`, son contexte et son curseur d'exécution restent ceux de l'ouverture. Le nouvel éditeur local possède sa propre tête. Un nouvel appel à `playClip()` remplace alors l'ancienne session par une lecture du clip désormais édité.
 
 `preview(noteId)` ne remplace jamais le transport. Relâcher son handle produit le `NOTE_OFF` de son occurrence, termine structurellement son contexte et laisse ses releases et tails se drainer. Si le handle n'est pas relâché par la fin du geste, la durée maximale de sécurité applique automatiquement le même comportement.
 
@@ -919,12 +909,14 @@ L'axe horizontal représente des `Tick` depuis le début du projet. Il est commu
 
 ```mermaid
 block-beta
-    columns 4
-    t0["0–2 s"] t1["2–4 s"] t2["4–6 s"] t3["6–8 s"]
-    intro["L0 · Introduction"] space:2 conclusion["L0 · Conclusion"]
-    space grooveA["L1 · Groove A"] grooveB["L1 · Groove B"] space
-    space bass["L2 · Basse"]:2 space
+    columns 5
+    t0["0–2 s"] t1["2–4 s"] t2["4–5 s"] t3["5–6 s"] t4["6–8 s"]
+    intro["L0 · Introduction"] space:3 conclusion["L0 · Conclusion"]
+    space grooveA["L1 · Groove A"] grooveB["L1 · Groove B"]:2 space
+    space bass["L2 · Basse"]:2 space:2
 ```
+
+Ce schéma reprend le cas 3 ; ses colonnes représentent des intervalles de durées différentes et ne constituent pas une échelle proportionnelle.
 
 Dans cette représentation :
 
@@ -937,14 +929,6 @@ Dans cette représentation :
 | Tête globale verticale | `EditorState.projectPlayhead`, utilisée par `playProject()` |
 
 Une ligne ne possède aucun instrument implicite. Deux occurrences successives d'une même ligne peuvent référencer des clips associés à des instruments différents. Chaque clip conserve toutefois un seul instrument pour toutes ses notes. Déplacer une occurrence verticalement ne change donc jamais le son, mais le geste est refusé si le bloc chevaucherait un autre bloc de la ligne cible.
-
-La grille applique directement la sémantique du transport :
-
-- `playProject()` commence à la tête globale affichée ;
-- `playProject(tick)` déplace cette tête au tick global demandé puis démarre la lecture globale ;
-- tous les clips traversés par la tête globale appartiennent au même instant de lecture ;
-- `playClip()` utilise la tête locale du piano roll et ignore les placements de la grille ;
-- `preview(noteId)` ne déplace aucune tête.
 
 La présentation affiche toujours l'`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `clipId`, crée le `ClipEditorState` avec une tête locale au tick `0` et édite le contenu source partagé ; toutes les occurrences correspondantes reflètent immédiatement la modification. Pendant un geste, le déplacement global ou vertical provisoire d'une occurrence est quantifié par la grille globale, puis immédiatement visible et audible s'il respecte l'absence de chevauchement sur la ligne cible. Les coordonnées validées appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
@@ -1053,7 +1037,7 @@ Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peu
 
 Si une occurrence est déplacée au-delà de la tête alors que son ancien contexte est déjà `DRAINING`, ce contexte conserve uniquement ses releases et tails jusqu'au silence. Il n'est ni réactivé ni coupé. Si le nouveau placement requiert des attaques futures, le service ouvre un autre contexte indépendant.
 
-Un contexte de clip correspond soit à l'activation audio d'une `ClipOccurrence` dans un transport `PROJECT`, soit à la lecture isolée du clip édité dans un transport `CLIP`. Dans le premier cas, le `ClipOccurrenceId`, le `ClipId` référencé et leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve seulement l'association entre le `ClipId` édité et l'unique contexte de la session. Deux occurrences du même clip ouvertes simultanément reçoivent toujours des contextes et des instances d'instrument indépendants.
+Un contexte de clip correspond soit à l'activation audio d'une `ClipOccurrence` dans un transport `PROJECT`, soit à la lecture isolée du clip édité dans un transport `CLIP`. Dans le premier cas, le `ClipOccurrenceId`, le `ClipId` référencé et leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve seulement l'association entre le `ClipId` édité et l'unique contexte de la session. Deux occurrences du même clip ouvertes simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de cet instrument pendant la lecture reste un contrat à préciser dans les questions ouvertes.
 
 Une préécoute de note utilise le même type de contexte. Le `PlaybackService` conserve l'association interne entre le `NotePreviewHandle`, la session, le contexte et l'occurrence correspondants ; aucun descripteur supplémentaire n'est nécessaire.
 
@@ -1071,27 +1055,13 @@ Lors d'un `NOTE_ON`, l'instance déclenche la note à l'instant `at`. Le contrô
 
 Le moteur possède un chargeur `smplr` partagé. Les échantillons téléchargés et décodés sont ainsi mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
 
-Le chargeur travaille à la demande d'un transport, mais son préchargement constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont téléchargées et décodées avant l'ouverture de la session. Le cache partagé évite de recommencer ce travail lors des lectures suivantes. Le premier périmètre n'ajoute aucun effet nécessitant un `AudioWorklet`.
+Le chargeur travaille à la demande d'un transport, mais son préchargement constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont téléchargées et décodées avant l'ouverture de la session. Le cache partagé évite de recommencer ce travail lors des lectures suivantes.
 
 ### WebAudioEngine
 
 Le moteur audio concret implémente `AudioEngine`, crée les instances `smplr` propres aux contextes et produit leur mixage dans l'`AudioContext` global.
 
-Il assure :
-
-- la gestion des sessions et contextes ;
-- le préchargement complet des instruments demandés avant le démarrage d'un transport ;
-- la résolution des instruments auprès de `StaticInstrumentCatalog` ;
-- la création d'une unique instance pour l'`InstrumentId` associé au clip de chaque `PlaybackContext` ;
-- la planification des commandes sur l'horloge de l'`AudioContext` ;
-- le remplacement atomique des commandes futures d'une session ;
-- l'association de chaque `NoteOccurrenceId` au contrôle d'arrêt de sa voix ;
-- l'annulation des commandes d'un contexte ou d'une session ;
-- le drainage puis la destruction des contextes ;
-- la mutualisation du chargement et du décodage des échantillons ;
-- les limites globales de sécurité et la sortie audio.
-
-`smplr` est utilisé uniquement comme moteur d'instrument. Son séquenceur n'est pas utilisé : le `PlaybackService` reste l'unique autorité qui transforme soit les occurrences placées, soit le contenu local du clip édité, en commandes horodatées.
+`smplr` est utilisé uniquement comme moteur d'instrument. Son séquenceur n'est pas utilisé : le `PlaybackService` reste l'unique autorité qui transforme soit les occurrences placées, soit le contenu local du clip attaché au transport, en commandes horodatées.
 
 Le premier périmètre repose sur les nœuds Web Audio natifs employés par `smplr` et ne nécessite aucun `AudioWorklet`. Tout l'état du moteur est transitoire et n'est jamais sauvegardé dans le `Project`.
 
@@ -1118,31 +1088,34 @@ La stratégie applicable lorsqu'un `Clip.instrumentId` sauvegardé ne peut plus 
 | Infrastructure | Domaine et ports applicatifs | composants et état de présentation |
 | Présentation | API applicative et modèles d'affichage | définitions et instances audio internes |
 
-Quelques relations structurantes :
-
-- `Project.tempo` fournit l'unique tempo de la composition ;
-- `Result` transporte explicitement la valeur valide ou l'erreur typée produite par le domaine ;
-- `Project.clips` possède les contenus musicaux partagés ;
-- `Project.clipOccurrences` possède les blocs placés dans la grille ;
-- `ClipOccurrence.clipId` référence son contenu, tandis que `start`, `line` et `repeatCount` décrivent uniquement son emploi global ;
-- `Clip.instrumentId` référence l'unique instrument de toutes les notes du clip sans importer sa définition technique ;
-- `transientProject` remplace provisoirement `project` sans constituer un type du domaine ;
-- `effectiveProject` résout cette substitution pour la présentation et le `PlaybackService` ;
-- seule la valeur `project` est proposée à la persistance ;
-- `PlaybackService` transforme les occurrences placées pour `PROJECT`, ou le contenu local du clip édité pour `CLIP`, en commandes pour `AudioEngine` ;
-- `InstrumentCatalog` expose les instruments disponibles à l'application ;
-- `StaticInstrumentCatalog` implémente ce port et fournit au moteur les définitions capables de créer les instances `smplr` ;
-- `PlaybackSession` possède des `PlaybackContext` ;
-- chaque contexte de lecture de clip possède au plus une `InstrumentInstance`, correspondant au `Clip.instrumentId`.
-
 ## Questions ouvertes
 
-- Lorsqu'un même geste manipule plusieurs notes de même hauteur qui entrent en collision entre elles, quelle note doit être prioritaire pour `SLICE` et quelle identité doit survivre à `MERGE` ?
-- Les résolutions des grilles globale et locale doivent-elles être configurées indépendamment, partager une valeur par défaut ou être reliées par une règle explicite ?
-- Quels `ChordTypeId` et `ScaleTypeId` appartiennent au premier périmètre, et selon quelles règles la `Key` active classe-t-elle les accords ou gammes compatibles proposés à l'utilisateur ?
-- Les banques d'échantillons utilisées par `smplr` doivent-elles être distribuées avec l'application ou chargées depuis une source distante puis mises en cache localement ?
-- Comment signaler à la présentation l'échec du préchargement d'un ou plusieurs instruments avant un transport ?
-- Que devient la tête active après la fin naturelle d'un transport : reste-t-elle à la fin ou revient-elle à son point de départ ?
+Ces points ne sont pas des décisions actées. Les contrats concernés restent à compléter avant leur implémentation.
+
+### Édition et invariants
+
+- **Métrique :** après `PRESERVE_DURATION`, que faire si un `MeterChange` suivant ne tombe plus sur une frontière de mesure ? Refuser la modification ou autoriser explicitement une mesure tronquée à cette frontière ?
+- **Résolution collective :** quand plusieurs notes manipulées entrent en collision entre elles, quelle priorité appliquer à `SLICE` et quelle identité conserver avec `MERGE` ? Comment représenter toutes ces collisions dans l’erreur actuellement centrée sur une seule note ?
+- **Redimensionnement global :** le bord d’un bloc modifie-t-il la durée du clip partagé ou son `repeatCount` entier ? Comment convertir le geste quantifié sans introduire une durée propre à l’occurrence ?
+- **Bornes et valeurs :** fixer la limite des lignes, les plages de `Pitch` et `Velocity`, les métriques et altérations acceptées, ainsi que les limites numériques sûres des ticks et répétitions. Un changement peut-il être placé exactement à `clip.duration` ?
+- **Grilles :** les résolutions globale et locale ont-elles des réglages indépendants, une valeur initiale commune ou un lien explicite ?
+- **Harmonie :** quels `ChordTypeId`, `ScaleTypeId` et modes de `Key` retenir, et comment classer leurs compatibilités ? Faut-il pouvoir interrompre `Harmony` comme `Key` avec une valeur `null` ?
+- **Geste en attente :** une collision pendant un glissement suspend-elle le geste ? Comment gérer son annulation, la commande en attente et les identifiants de fragments si les collisions changent pendant les actualisations ?
+
+### Transport et contrat audio
+
+- **Préécoute :** `preview(noteId)` exige une note existante, alors qu’une touche du piano roll représente une hauteur qui peut être absente du clip. Faut-il une entrée par hauteur et vélocité dans le contexte du clip édité ? Comment préparer une banque absente tout en retournant un handle immédiatement relâchable ?
+- **Changement d’instrument :** comment remplacer l’unique instance d’un contexte tout en conservant les releases de l’ancien instrument ? Faut-il ouvrir un nouveau contexte et drainer l’ancien ? Que faire tant que la nouvelle banque n’est pas prête ?
+- **Préparation asynchrone :** comment propager les erreurs de chargement, invalider un démarrage dépassé par un nouvel appel ou un `stop`, et tenir compte d’un projet modifié pendant l’attente ? Un seek vers une banque non chargée suit la même barrière ; préciser son état visible pendant l’attente.
+- **Horloge et fin structurelle :** comment le service obtient-il l’horloge et une borne sûre du moteur ? `completeContext` doit-il être horodaté pour éviter qu’un appel anticipé annule des commandes encore nécessaires ? Quel ordre garantir aux `NOTE_OFF` et `NOTE_ON` simultanés ?
+- **Erreurs publiques :** quelles signatures de résultat employer pour les appels invalides de lecture, seek et préécoute, actuellement présentés avec `void`, `Promise<void>` ou un handle ? Distinguer validation applicative et erreur technique de chargement.
+- **Têtes et portée :** que devient la tête à la fin naturelle, après un raccourcissement du contenu ou lors d’un départ à la fin ou au-delà ? Que devient une session `CLIP` si son clip non placé est supprimé pendant la lecture ?
+- **Réconciliation des répétitions :** comment rattacher les voix en cours aux répétitions après modification de `clip.duration` ou de `repeatCount`, lorsque les frontières des répétitions se déplacent ?
+
+### Ressources et persistance
+
+- Les banques `smplr` sont-elles distribuées avec l’application ou téléchargées puis mises en cache ?
+- Quelle politique adopter au chargement pour un `InstrumentId` indisponible ? Ce point sera traité avec les ports et le format de persistance.
 
 ## Arborescence cible
 
@@ -1207,3 +1180,4 @@ Les modules de temps et de hauteur sont déclarés directement sous `domain/`. C
 `PlaybackSessionId`, `PlaybackContextId`, `NoteOccurrenceId`, `PlaybackSessionKind`, `AudioCommand` et `StopMode` forment le langage du port `AudioEngine` et peuvent être déclarés avec lui.
 
 Un module `application/playback/` ne deviendra utile que si ce vocabulaire acquiert plusieurs consommateurs ou des comportements indépendants.
+
