@@ -1158,16 +1158,14 @@ src/
 │   ├── Clip.ts
 │   ├── Instrument.ts
 │   ├── Note.ts
-│   ├── time/
-│   │   ├── Tick.ts
-│   │   ├── Duration.ts
-│   │   ├── TimeRange.ts
-│   │   ├── Tempo.ts
-│   │   └── Meter.ts
-│   └── pitch/
-│       ├── Pitch.ts
-│       ├── Key.ts
-│       └── Harmony.ts
+│   ├── Tick.ts
+│   ├── Duration.ts
+│   ├── TimeRange.ts
+│   ├── Tempo.ts
+│   ├── Meter.ts
+│   ├── Pitch.ts
+│   ├── Key.ts
+│   └── Harmony.ts
 ├── application/
 │   ├── editor/
 │   │   ├── EditorState.ts
@@ -1201,7 +1199,9 @@ src/
 
 `Tick.ts` déclare l'unité entière positive ou nulle commune aux positions globales et locales. Leur référentiel est fixé par le champ ou l'opération qui reçoit le tick. `Clip.ts` regroupe `Clip`, `ClipId`, `ClipOccurrence`, `ClipOccurrenceId` et `LineIndex`. Cette colocalisation ne change pas leur responsabilité : `ClipOccurrence` reste une entité de placement possédée par `Project` et ne devient pas une partie du contenu local du clip.
 
-`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `Tonic` reste un value object distinct déclaré dans `domain/pitch/Key.ts`.
+Les modules de temps et de hauteur sont déclarés directement sous `domain/`. Cette organisation physique ne fusionne pas leurs concepts.
+
+`Instrument` et `InstrumentId` sont déclarés ensemble dans `domain/Instrument.ts`. `Velocity`, `NoteCollisionResolution` et les faits de collision restent déclarés avec `Note` ; les résultats d'un cas d'usage d'édition appartiennent à l'application. `Tonic` reste un value object distinct déclaré dans `domain/Key.ts`.
 
 `ClipContentSelection`, `ClipOccurrenceSelection` et leurs références peuvent rester réunies dans `application/editor/Selection.ts`.
 
