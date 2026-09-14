@@ -478,6 +478,29 @@ Les contextes peuvent terminer leurs tails en `DRAINING`, mais la session ne con
 
 Supprimer un clip non placé pendant un transport `PROJECT` n’affecte pas ce transport, car aucune occurrence de ce clip ne participe à sa portée.
 
+## Cas 26 — Bornes du domaine et changement au tick final
+
+Le premier périmètre accepte notamment :
+
+- la ligne `127`, mais refuse la ligne `128` ;
+- les hauteurs MIDI `0` et `127`, mais refuse `-1` et `128` ;
+- les vélocités `1` et `127`, mais refuse `0` et `128` ;
+- une métrique `32/64`, mais refuse `0/4`, `33/4` et `4/3` ;
+- `FLAT`, `NATURAL` et `SHARP`, mais pas encore les doubles altérations ;
+- un `repeatCount` de `65_535`, sous réserve que la fin globale calculée ne dépasse pas `MAX_TICK`.
+
+Une occurrence est refusée même lorsque ses valeurs individuelles sont valides si le calcul suivant dépasse `2_147_483_647` :
+
+```text
+occurrence.start + clip.duration * occurrence.repeatCount
+```
+
+Un clip se termine au tick `7680`. L’utilisateur ajoute un `HarmonyChange` exactement à cette position. Le changement est valide et sauvegardé, mais sa section vaut `[7680, 7680)` : elle n’affecte aucune note et ne produit aucun événement audio.
+
+Si le clip est ensuite allongé jusqu’au tick `11520`, ce même changement devient le début de la section `[7680, 11520)` sans être déplacé ni recréé.
+
+Un `MeterChange` placé à la fin suit la même règle. À l’inverse, raccourcir le clip en dessous d’un changement existant est refusé, sauf si le même geste déplace ou supprime également ce changement.
+
 ## Référence des contrats
 
 Les règles communes, les signatures des ports et les questions encore ouvertes sont centralisées dans [architecture.md](architecture.md#playbackservice). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
