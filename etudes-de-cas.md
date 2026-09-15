@@ -671,6 +671,16 @@ Dupliquer `score-a` seul crée un nouveau score éditable sans ajouter de clip. 
 
 Une destination de clip invalide ou une identité de score déjà utilisée fait échouer toute la transaction. Aucun clip et aucun score partiel ne sont publiés, et aucune entrée d’historique n’est créée.
 
+## Cas 41 — Réglages d’un score transitoire
+
+Le projet validé contient `score-a`, dont la résolution locale persistante vaut `120` ticks. Un geste crée un nouveau `score-b`. Tant que le geste n’est pas validé, `score-b` existe uniquement dans `transientProject` : `ProjectState.settings` reste associé au projet validé et ne contient aucune entrée pour `score-b`. L’édition provisoire de ce nouveau score utilise la valeur par défaut de `240` ticks.
+
+Si une sauvegarde intervient pendant le geste, le fichier contient seulement `score-a` et son réglage de `120` ticks. Le score et le réglage transitoires n’y apparaissent pas.
+
+Lorsque le geste est validé, `score-b` et son réglage de `240` ticks sont publiés atomiquement. Si le geste est annulé, aucun des deux ne subsiste.
+
+Dans une variante où `score-b` est une duplication indépendante de `score-a`, sa résolution de geste puis sa résolution publiée valent `120` ticks, valeur capturée depuis le score source au début de la commande. Une modification persistante de résolution ne peut cibler `score-b` qu’après son commit.
+
 ## Référence des contrats
 
 Les règles communes, les signatures des services et ports et les questions encore ouvertes sont centralisées dans [architecture.md](architecture.md). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
