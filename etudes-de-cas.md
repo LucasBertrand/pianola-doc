@@ -345,7 +345,7 @@ Dans un autre scénario, `playScore()` démarre le score `Motif`, puis l'utilisa
 
 Un score contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, le `ProjectCandidate` conservé dans `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
+Pendant le geste, le `ProjectCandidate` conservé dans `projectCandidate` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
 Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -355,7 +355,7 @@ Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`
 | Note manipulée | `C4` | `[960, 1440)` | conserve `note-m` | 100 |
 | Fragment droit | `C4` | `[1440, 1920)` | nouveau `NoteId` | 70 |
 
-Avec le choix `MERGE` soumis à la même décision, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `transientProject` et restauré `project` à l’écran comme dans l’audio.
+Avec le choix `MERGE` soumis à la même décision, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `projectCandidate` et restauré `project` à l’écran comme dans l’audio.
 
 Une note `C4` commençant exactement au tick `1920` serait seulement contiguë au résultat : les intervalles semi-ouverts ne déclenchent alors ni question ni résolution automatique.
 
@@ -673,7 +673,7 @@ Une destination de clip invalide ou une identité de score déjà utilisée fait
 
 ## Cas 41 — Réglages d’un score transitoire
 
-Le projet validé contient `score-a`, dont la résolution locale persistante vaut `120` ticks. Un geste crée un nouveau `score-b`. Tant que le geste n’est pas validé, `score-b` existe uniquement dans `transientProject` : `ProjectState.settings` reste associé au projet validé et ne contient aucune entrée pour `score-b`. L’édition provisoire de ce nouveau score utilise la valeur par défaut de `240` ticks.
+Le projet validé contient `score-a`, dont la résolution locale persistante vaut `120` ticks. Un geste crée un nouveau `score-b`. Tant que le geste n’est pas validé, `score-b` existe uniquement dans `projectCandidate` : `ProjectState.settings` reste associé au projet validé et ne contient aucune entrée pour `score-b`. L’édition provisoire de ce nouveau score utilise la valeur par défaut de `240` ticks.
 
 Si une sauvegarde intervient pendant le geste, le fichier contient seulement `score-a` et son réglage de `120` ticks. Le score et le réglage transitoires n’y apparaissent pas.
 
