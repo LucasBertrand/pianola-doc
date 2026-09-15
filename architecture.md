@@ -648,37 +648,47 @@ Une session `CLIP` reste attachée au `clipId` choisi à son ouverture. Fermer l
 `EditService` possède le cycle d’édition. La présentation lui transmet une intention sous forme de commande ; elle ne construit pas directement un agrégat ou un projet transitoire.
 
 ```ts
-interface EditingSession {
+interface EditSession {
   id: EditSessionId;
   baseProject: Project;
   command: ProjectEditCommand;
   commandRevision: number;
-  status: "EDITING";
+  phase: EditSessionPhase;
 }
 
-type PendingEditDecision = {
+type EditSessionPhase =
+  | { status: "EDITING" }
+  | {
+      status: "AWAITING_DECISION";
+      pendingDecision: ProjectEditDecisionRequest;
+    };
+
+interface PendingEditDecision<
+  Kind extends string,
+  Details,
+  Choice
+> {
   id: EditDecisionId;
-  kind: "NOTE_COLLISION";
-  collisions: readonly NoteCollision[];
-  choices: readonly NoteCollisionResolution[];
-};
-
-interface AwaitingEditDecisionSession {
-  id: EditSessionId;
-  baseProject: Project;
-  command: ProjectEditCommand;
-  commandRevision: number;
-  status: "AWAITING_DECISION";
-  pendingDecision: PendingEditDecision;
+  kind: Kind;
+  details: Details;
+  choices: readonly Choice[];
 }
 
-type EditSession = EditingSession | AwaitingEditDecisionSession;
+type ProjectEditDecisionRequest =
+  | PendingEditDecision<
+      "NOTE_COLLISION",
+      { collisions: readonly NoteCollision[] },
+      NoteCollisionResolution
+    >;
 
-type EditDecision = {
+interface EditDecision<Kind extends string, Choice> {
   decisionId: EditDecisionId;
-  kind: "NOTE_COLLISION";
-  choice: NoteCollisionResolution;
-};
+  kind: Kind;
+  choice: Choice;
+}
+
+type ProjectEditDecision =
+  | EditDecision<"NOTE_COLLISION", NoteCollisionResolution>;
 
 interface PendingEditPreparation {
   id: EditPreparationId;
@@ -711,9 +721,13 @@ Prévisualisation et validation réutilisent les mêmes calculs purs de transfor
 
 Une seule édition du document est ouverte à la fois, y compris pendant une décision attendue ou un chargement requis par cette édition. Toute autre édition, annulation d’historique, rétablissement ou ouverture de fichier retourne `EDIT_IN_PROGRESS` ; l’utilisateur termine ou annule d’abord le geste. Les commandes de transport et la sauvegarde du dernier `project` validé restent disponibles. Aucun retour asynchrone ne remplace la base d’un geste en cours.
 
-`AWAITING_DECISION` exprime seulement que la poursuite de l’édition exige un arbitrage utilisateur. La nature de cet arbitrage appartient à `PendingEditDecision`, union discriminée par `kind`. Le premier périmètre n’en définit qu’une variante, `NOTE_COLLISION`, mais de nouvelles variantes pourront ajouter leurs propres faits et choix sans ajouter de statut à `EditSession` ni de paramètre spécialisé à `commitEdit`.
+`EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
-`PendingEditDecision` contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `EditDecision` est l’union symétrique des réponses acceptées. Son `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; son `kind` permet un traitement exhaustif et interdit d’envoyer le choix d’un autre type d’arbitrage.
+`PendingEditDecision<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `ProjectEditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre ne contient que `NOTE_COLLISION`, mais une nouvelle décision ajoute une variante à cette union sans modifier `EditSession`, `EditSessionPhase` ou `commitEdit`.
+
+`EditDecision<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `ProjectEditDecision` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
+
+Une demande contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; le couple `kind` et `choice` interdit d’envoyer le choix d’un autre type d’arbitrage.
 
 `pendingEditPreparation` identifie la préparation requise par la commande courante. Une actualisation de cette commande ou l’annulation du geste invalide le résultat précédent par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
 
@@ -726,7 +740,7 @@ beginEdit(command: ProjectEditCommand): Result<void, ProjectEditError | EditVali
 updateEdit(command: ProjectEditCommand): Result<void, ProjectEditError | EditValidationError>;
 commitEdit(): Promise<Result<EditOutcome, EditError>>;
 submitEditDecision(
-  decision: EditDecision
+  decision: ProjectEditDecision
 ): Promise<Result<EditOutcome, EditError>>;
 cancelEdit(): void;
 
@@ -741,7 +755,7 @@ type EditError = ProjectEditError | EditValidationError | InstrumentPreparationE
 
 `beginEdit` capture la base ; `updateEdit` remplace la commande et recalcule sa projection. Une préparation éventuellement nécessaire est exposée par `pendingEditPreparation.ready` ; elle fournit son résultat technique même avant une demande de commit. Une nouvelle commande rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace pas la commande précédente ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, valide la commande finale contre la même base et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
 
-Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante de `PendingEditDecision`, place la session en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_COLLISION` contenant les collisions et les choix `SLICE` et `MERGE`.
+Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante de `ProjectEditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_COLLISION` dont `details.collisions` contient les conflits et dont `choices` contient `SLICE` et `MERGE`.
 
 La commande est figée jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, puis rejoue la même commande contre `baseProject` avec la politique de domaine correspondante. Si une future décision en entraîne une autre, le service peut remplacer `pendingDecision` et retourner de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
 
@@ -1425,7 +1439,7 @@ La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le
 
 Le piano roll peut afficher simultanément des notes de hauteurs différentes. Après quantification d'une création ou d'une transformation, une collision n'existe que si deux notes de même hauteur se chevauchent avec une durée strictement positive.
 
-Lorsque `commitEdit` retourne `ok("DECISION_REQUIRED")`, la présentation lit `EditSession.pendingDecision`. Pour la variante `NOTE_COLLISION`, elle utilise les identifiants conflictuels et affiche les choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement. La réponse appelle `submitEditDecision` avec l’identité de la décision et le choix explicite ; l’éditeur observe ensuite le projet publié si la validation réussit.
+Lorsque `commitEdit` retourne `ok("DECISION_REQUIRED")`, la présentation lit `EditSession.phase.pendingDecision` après discrimination sur `phase.status`. Pour la variante `NOTE_COLLISION`, elle utilise `details.collisions` et affiche les choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement. La réponse appelle `submitEditDecision` avec l’identité de la décision et le choix explicite ; l’éditeur observe ensuite le projet publié si la validation réussit.
 
 Pour les autres erreurs de validation, la présentation effectue une correspondance exhaustive sur `error.code` et construit elle-même le message localisé. Elle ne reçoit jamais une chaîne métier déjà formatée par le domaine.
 
@@ -1658,7 +1672,7 @@ src/
 | `domain/Pitch.ts` | `Pitch` et `RootNote` commun à `Chord` et `Scale` |
 | `domain/Harmony.ts` | `Chord`, `Scale`, catalogues de types, `Harmony`, `HarmonyChange`, `HarmonySection` et analyse dérivée des notes |
 | `domain/Instrument.ts` | `Instrument` public et `InstrumentId` |
-| `application/ProjectState.ts` | `ProjectState`, l’union `EditSession`, `PendingEditDecision`, `EditDecision`, `PendingEditPreparation`, leurs identifiants et `TransientProject` ; résolution dérivée d’`effectiveProject` |
+| `application/ProjectState.ts` | `ProjectState`, `EditSession`, `EditSessionPhase`, les conteneurs génériques `PendingEditDecision` et `EditDecision`, leurs unions applicatives, `PendingEditPreparation`, leurs identifiants et `TransientProject` ; résolution dérivée d’`effectiveProject` |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
 | `application/EditorState.ts` | `EditorState`, `ClipEditorState`, positions mémorisées et contexte d’édition |
 | `application/Selection.ts` | `ClipContentSelection`, `ClipOccurrenceSelection` ; réutilise les références du domaine |

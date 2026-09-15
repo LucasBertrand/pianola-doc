@@ -335,7 +335,7 @@ Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisate
 
 Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en `PendingEditDecision` de variante `NOTE_COLLISION`, associe `note-m` à `note-a`, place la session en `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
+Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_COLLISION` de `ProjectEditDecisionRequest`, place les conflits dans `details.collisions`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
 Avec `submitEditDecision({ decisionId, kind: "NOTE_COLLISION", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
