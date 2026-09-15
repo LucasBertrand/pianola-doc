@@ -1468,25 +1468,16 @@ Le moteur et son `AudioContext` Web Audio sont globaux. Un `PlaybackContext` con
 
 ### StaticInstrumentCatalog
 
-`StaticInstrumentCatalog` est l'implémentation concrète du port `InstrumentCatalog` et la source de vérité des instruments intégrés.
+`StaticInstrumentCatalog` est l'implémentation concrète du port `InstrumentCatalog` et la source de vérité des instruments intégrés. Le module `infrastructure/audio/StaticInstrumentCatalog.ts` réunit le catalogue, sa collection immuable et le type technique `InstrumentDefinition` ; ce dernier ne justifie pas un fichier autonome.
 
-Il conserve une collection immuable d'`InstrumentDefinition` :
+Chaque `InstrumentDefinition` contient :
 
-- la couche applicative le manipule à travers `InstrumentCatalog`, qui n'expose que les `Instrument` publics ;
-- le moteur audio concret l'utilise directement pour résoudre un `InstrumentId` vers sa définition technique.
+- l'`Instrument` public ;
+- `createInstance`, factory technique interne.
 
-Cette résolution interne à l'infrastructure ne nécessite pas de second port ni de registre parallèle.
+La couche applicative manipule le catalogue à travers `InstrumentCatalog`, qui n'expose que les `Instrument` publics. Le moteur audio concret utilise directement `StaticInstrumentCatalog` pour résoudre un `InstrumentId` vers sa définition technique. Cette résolution interne à l'infrastructure ne nécessite ni second port, ni registre parallèle.
 
-### InstrumentDefinition
-
-`InstrumentDefinition` est la définition technique immuable d'un instrument intégré.
-
-Attributs possibles :
-
-- `instrument` ;
-- `createInstance`.
-
-`createInstance` est une factory interne à l'infrastructure. Elle reçoit l'`AudioContext` global, le bus de sortie du `PlaybackContext` et le chargeur d'échantillons partagé, puis crée une `InstrumentInstance` fondée sur [`smplr`](https://github.com/danigb/smplr).
+`createInstance` reçoit l'`AudioContext` global, le bus de sortie du `PlaybackContext` et le chargeur d'échantillons partagé, puis crée une `InstrumentInstance` fondée sur [`smplr`](https://github.com/danigb/smplr). `InstrumentDefinition` peut être exporté par ce module pour le typage interne de l'infrastructure, mais ne traverse jamais un port applicatif.
 
 La définition choisit l'instrument ou le preset `smplr` employé. Elle ne décrit aucune chaîne de traitement ni politique d'allocation des voix propre à Pianola. Ces détails ne traversent jamais le port `InstrumentCatalog`.
 
@@ -1650,14 +1641,11 @@ src/
 │       └── ProjectFileStore.ts
 ├── infrastructure/
 │   ├── audio/
-│   │   ├── catalog/
-│   │   │   ├── StaticInstrumentCatalog.ts
-│   │   │   └── InstrumentDefinition.ts
-│   │   └── engine/
-│   │       ├── WebAudioEngine.ts
-│   │       ├── PlaybackSession.ts
-│   │       ├── PlaybackContext.ts
-│   │       └── InstrumentInstance.ts
+│   │   ├── StaticInstrumentCatalog.ts
+│   │   ├── WebAudioEngine.ts
+│   │   ├── PlaybackSession.ts
+│   │   ├── PlaybackContext.ts
+│   │   └── InstrumentInstance.ts
 │   └── persistence/
 │       └── JsonProjectFileStore.ts
 └── presentation/
@@ -1689,12 +1677,11 @@ src/
 | `application/ports/AudioEngine.ts` | `StopMode`, identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; ne connaît pas `PlaybackSessionKind` |
 | `application/ports/InstrumentCatalog.ts` | Contrat de consultation des `Instrument` publics et résolution des `InstrumentId` |
 | `application/ports/ProjectFileStore.ts` | Contrat abstrait de sélection, lecture et écriture de fichier, erreurs techniques et composition avec les erreurs de validation du domaine ; aucun schéma JSON |
-| `infrastructure/audio/catalog/StaticInstrumentCatalog.ts` | Adaptateur concret du catalogue et collection immuable des définitions intégrées |
-| `infrastructure/audio/catalog/InstrumentDefinition.ts` | Configuration technique et factory `smplr`, privées à l’infrastructure |
-| `infrastructure/audio/engine/WebAudioEngine.ts` | Implémentation du port, horloge technique, planification et mixage Web Audio |
-| `infrastructure/audio/engine/PlaybackSession.ts` | État technique transitoire et propriété des contextes d’une session |
-| `infrastructure/audio/engine/PlaybackContext.ts` | Chaîne audio isolée, commandes programmées, voix et cycle `SCHEDULED → ACTIVE → DRAINING → DISPOSED` |
-| `infrastructure/audio/engine/InstrumentInstance.ts` | Adaptation d’une instance `smplr` au cycle de vie d’un contexte |
+| `infrastructure/audio/StaticInstrumentCatalog.ts` | Adaptateur concret du catalogue, collection immuable, `InstrumentDefinition` et factories `smplr` internes |
+| `infrastructure/audio/WebAudioEngine.ts` | Implémentation du port, horloge technique, planification et mixage Web Audio |
+| `infrastructure/audio/PlaybackSession.ts` | État technique transitoire et propriété des contextes d’une session |
+| `infrastructure/audio/PlaybackContext.ts` | Chaîne audio isolée, commandes programmées, voix et cycle `SCHEDULED → ACTIVE → DRAINING → DISPOSED` |
+| `infrastructure/audio/InstrumentInstance.ts` | Adaptation d’une instance `smplr` au cycle de vie d’un contexte |
 | `infrastructure/persistence/JsonProjectFileStore.ts` | Adaptateur, `ProjectFileData`, `ProjectData`, encodage et reconstitution du format versionné |
 | `presentation/components/` | Rendu de la grille, du piano roll, des décisions et des états de chargement |
 | `presentation/stores/` | État strictement visuel et adaptation réactive de l’état applicatif, sans duplication du document ni des tâches |
