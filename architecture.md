@@ -691,7 +691,7 @@ Attribut possible :
 
 - `snapStepTicks`.
 
-`Settings` appartient à l’application et constitue la source de vérité persistante des résolutions :
+`Settings` appartient à l’application et constitue la source de vérité persistante des résolutions. Son interface est déclarée dans `ProjectState.ts`, au même endroit que son unique propriétaire :
 
 ```ts
 interface Settings {
@@ -1887,7 +1887,6 @@ src/
 │   ├── GlobalEditorState.ts
 │   ├── ArrangementEditorState.ts
 │   ├── ScoreEditorState.ts
-│   ├── Settings.ts
 │   ├── ProjectState.ts
 │   ├── EditSession.ts
 │   ├── ProjectHistory.ts
@@ -1948,13 +1947,12 @@ src/
 | `domain/operations/time/MeterTimeline.ts` | Ordonnancement des `MeterChange`, résolution de la métrique active et production des `MeterSection` dérivées |
 | `domain/operations/harmony/HarmonyTimeline.ts` | Ordonnancement des `HarmonyChange`, résolution de l'harmonie active et production des `HarmonySection` dérivées |
 | `domain/operations/harmony/NoteRoleAnalysis.ts` | Segmentation d'une note et dérivation de ses rôles `CHORD_TONE`, `SCALE_TONE` ou `OUTSIDE_TONE` |
-| `application/ProjectState.ts` | `ProjectState`, `TransientProject`, `Settings` courants, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
+| `application/ProjectState.ts` | `Settings`, `ProjectState`, `TransientProject`, réglages de grille associés au projet, invariants de correspondance avec ses `ScoreId`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
 | `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
 | `application/GlobalEditorState.ts` | `GlobalEditorState` et état applicatif propre à la vue globale toujours présente ; ne possède aucun état d’un éditeur spécialisé |
 | `application/ArrangementEditorState.ts` | `ArrangementEditorState`, tête globale du projet et `ClipSelection` |
 | `application/ScoreEditorState.ts` | `ScoreEditorState`, score ouvert, tête locale, piste d’écoute optionnelle et `ScoreContentSelection` |
-| `application/Settings.ts` | `Settings`, réglage de grille de l’arrangement et réglages indexés par `ScoreId`, avec leurs invariants de correspondance au projet |
 | `application/Selection.ts` | `ScoreContentSelection`, `ClipSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution`, sa factory et la quantification des intentions dans leur référentiel ; aucune politique de persistance |
 | `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
