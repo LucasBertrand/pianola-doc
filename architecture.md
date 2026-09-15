@@ -1474,7 +1474,7 @@ Il consomme la collection immuable déclarée par `SmplrInstruments`. Cette rela
 
 ### SmplrInstruments
 
-Le module `infrastructure/audio/catalog/SmplrInstruments.ts` contient ce qui dépend directement de `smplr` :
+Le module `infrastructure/audio/instruments/SmplrInstruments.ts` contient ce qui dépend directement de `smplr` :
 
 - le type technique `InstrumentDefinition` ;
 - la collection des définitions intégrées ;
@@ -1647,7 +1647,7 @@ src/
 │       └── ProjectFileStore.ts
 ├── infrastructure/
 │   ├── audio/
-│   │   ├── catalog/
+│   │   ├── instruments/
 │   │   │   ├── BuiltInInstrumentCatalog.ts
 │   │   │   └── SmplrInstruments.ts
 │   │   └── engine/
@@ -1686,8 +1686,8 @@ src/
 | `application/ports/AudioEngine.ts` | `StopMode`, identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; ne connaît pas `PlaybackSessionKind` |
 | `application/ports/InstrumentCatalog.ts` | Contrat de consultation des `Instrument` publics et résolution des `InstrumentId` |
 | `application/ports/ProjectFileStore.ts` | Contrat abstrait de sélection, lecture et écriture de fichier, erreurs techniques et composition avec les erreurs de validation du domaine ; aucun schéma JSON |
-| `infrastructure/audio/catalog/BuiltInInstrumentCatalog.ts` | Adaptateur concret du port `InstrumentCatalog` et résolution des définitions techniques |
-| `infrastructure/audio/catalog/SmplrInstruments.ts` | `InstrumentDefinition`, collection intégrée, sources d’échantillons et factories propres à `smplr` |
+| `infrastructure/audio/instruments/BuiltInInstrumentCatalog.ts` | Adaptateur concret du port `InstrumentCatalog` et résolution des définitions techniques |
+| `infrastructure/audio/instruments/SmplrInstruments.ts` | `InstrumentDefinition`, collection intégrée, sources d’échantillons et factories propres à `smplr` |
 | `infrastructure/audio/engine/WebAudioEngine.ts` | Implémentation du port, horloge technique, planification et mixage Web Audio |
 | `infrastructure/audio/engine/PlaybackSession.ts` | État technique transitoire et propriété des contextes d’une session |
 | `infrastructure/audio/engine/PlaybackContext.ts` | Chaîne audio isolée, commandes programmées, voix et cycle `SCHEDULED → ACTIVE → DRAINING → DISPOSED` |
