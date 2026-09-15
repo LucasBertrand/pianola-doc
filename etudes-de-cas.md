@@ -335,9 +335,9 @@ Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisate
 
 Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, `await commitEdit()` ne modifie pas `project` et retourne `{ ok: false, error }` avec le code `NOTE_OVERLAP`. `error.details.collisions` associe `note-m` à `note-a`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
+Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en `PendingEditDecision` de variante `NOTE_COLLISION`, associe `note-m` à `note-a`, place la session en `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
-Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
+Avec `submitEditDecision({ decisionId, kind: "NOTE_COLLISION", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
 | Note résultante | Hauteur | Intervalle | Identité | Vélocité |
 | --- | --- | --- | --- | ---: |
@@ -345,7 +345,7 @@ Avec `SLICE`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle
 | Note manipulée | `C4` | `[960, 1440)` | conserve `note-m` | 100 |
 | Fragment droit | `C4` | `[1440, 1920)` | nouveau `NoteId` | 70 |
 
-Avec `MERGE`, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `transientProject` et restauré `project` à l’écran comme dans l’audio.
+Avec le choix `MERGE` soumis à la même décision, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `transientProject` et restauré `project` à l’écran comme dans l’audio.
 
 Une note `C4` commençant exactement au tick `1920` serait seulement contiguë au résultat : les intervalles semi-ouverts ne déclenchent alors ni question ni résolution automatique.
 
@@ -529,9 +529,9 @@ Les préécoutes suivent une forme différente parce que leur contrôle doit êt
 
 Un geste déplace une note et un changement harmonique. `EditService.beginEdit` capture le projet validé dans `EditSession.baseProject`. Chaque `updateEdit` remplace le delta total de la commande ; les transformations sont recalculées depuis cette base avec les mêmes fonctions pures que la validation finale.
 
-Un delta qui placerait une note avant `0` est refusé sans changer la dernière projection admissible. Un delta qui crée seulement une collision de même hauteur peut être prévisualisé ; au commit, `NOTE_OVERLAP` conserve le brouillon et fige la commande jusqu’au choix de résolution. Une seconde édition ou `undo()` pendant cette attente retourne `EDIT_IN_PROGRESS`.
+Un delta qui placerait une note avant `0` est refusé sans changer la dernière projection admissible. Un delta qui crée seulement une collision de même hauteur peut être prévisualisé ; au commit, `NOTE_OVERLAP` est traduit en décision `NOTE_COLLISION`, le brouillon est conservé et la commande reste figée. Une seconde édition ou `undo()` pendant cette attente retourne `EDIT_IN_PROGRESS`.
 
-Le choix `SLICE` produit un seul nouveau projet et une seule entrée d’historique. Une annulation aurait supprimé le brouillon sans rien inscrire. Si une préparation audio était en cours, `cancelEdit` l’aurait rendue obsolète ; sa réponse tardive ne pourrait ni modifier le projet ni démarrer des notes.
+La présentation soumet le choix `SLICE` avec l’identité de la décision. Il produit un seul nouveau projet et une seule entrée d’historique. Une réponse portant une ancienne identité est refusée. Une annulation aurait supprimé le brouillon sans rien inscrire. Si une préparation audio était en cours, `cancelEdit` l’aurait rendue obsolète ; sa réponse tardive ne pourrait ni modifier le projet ni démarrer des notes.
 
 ## Cas 29 — Placement d’un clip dont la banque n’est pas prête
 
@@ -574,4 +574,3 @@ Changer ensuite la métrique de `4/4` en `3/4` conserve cette durée de `2880` t
 ## Référence des contrats
 
 Les règles communes, les signatures des services et ports et les questions encore ouvertes sont centralisées dans [architecture.md](architecture.md). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
-
