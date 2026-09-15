@@ -141,14 +141,14 @@ type TempoValidationError = ValidationError<
   { received: number; min: number; max: number; decimals: number }
 >;
 
-type NoteCollision = {
+type NoteOverlap = {
   manipulatedNoteId: NoteId;
-  conflictingNoteIds: readonly NoteId[];
+  overlappingNoteIds: readonly NoteId[];
 };
 
-type NoteCollisionError = ValidationError<
+type NoteOverlapError = ValidationError<
   "NOTE_OVERLAP",
-  { collisions: readonly NoteCollision[] }
+  { overlaps: readonly NoteOverlap[] }
 >;
 ```
 
@@ -160,8 +160,8 @@ Les constructeurs capables de créer un état invalide restent privés. Les fact
 Tempo.create(bpm: number): Result<Tempo, TempoValidationError>;
 Clip.create(input: CreateClipInput): Result<Clip, ClipValidationError>;
 Project.create(input: CreateProjectInput): Result<Project, ProjectValidationError>;
-project.moveClipOccurrences(command: MoveClipOccurrencesCommand): Result<Project, ProjectEditError>;
-clip.editNote(command: EditNoteCommand): Result<Clip, ClipValidationError>;
+moveClipOccurrences(project: Project, command: MoveClipOccurrencesCommand): Result<Project, ProjectEditError>;
+editNote(clip: Clip, command: EditNoteCommand): Result<Clip, ClipValidationError>;
 ```
 
 Une branche `ok: false` ne modifie jamais l'objet d'origine et ne publie aucun état partiel. Dans le premier périmètre, une opération retourne la première erreur selon un ordre de validation déterministe ; l'accumulation de plusieurs erreurs pourra être ajoutée sans changer la forme de `Result`.
@@ -345,15 +345,15 @@ Lorsqu’une note traverse un `HarmonyChange`, son `TimeRange` est analysé par 
 
 Les événements instantanés `NoteOn` et `NoteOff` ne sont pas des objets persistants du domaine. Ils sont produits par le service de lecture.
 
-`Velocity` ne possède actuellement aucun usage indépendant de `Note`. Son type et ses règles sont déclarés dans `domain/Note.ts`.
+`Velocity` ne possède actuellement aucun usage indépendant de `Note`, mais sa valeur et ses invariants sont isolés dans `domain/models/composition/Velocity.ts` afin que `Note.ts` reste centré sur l'entité.
 
-### Résolution des collisions de notes
+### Résolution des chevauchements de notes
 
 ```ts
-type NoteCollisionResolution = "SLICE" | "MERGE";
+type NoteOverlapResolution = "SLICE" | "MERGE";
 ```
 
-La détection et la résolution sont des règles pures du domaine, orchestrées par `Clip` qui valide la collection complète. Elles peuvent rester dans `Clip.ts` ; un module dédié ne devient utile que si leur complexité le justifie. Le cas d’usage obtient le choix utilisateur auprès de la présentation et transmet ce mode au domaine.
+L'invariant d'absence de chevauchement appartient au modèle `Clip`. Sa détection et sa résolution sont cependant des algorithmes purs isolés dans `domain/operations/composition/NoteOverlap.ts`. Les transformations de clip les utilisent pour valider la collection complète sans alourdir `Clip.ts`. Le cas d’usage obtient le choix utilisateur auprès de la présentation et transmet ce mode au domaine.
 
 Une commande collective fournit ses `manipulatedNoteIds` dans un ordre stable. Cet ordre définit la priorité de résolution sans introduire de `primaryNoteId` supplémentaire.
 
@@ -365,7 +365,7 @@ Une commande collective fournit ses `manipulatedNoteIds` dans un ordre stable. C
 
 `MERGE` calcule séparément l'union de chaque groupe transitif de notes de même hauteur en collision. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la première note manipulée du groupe selon l’ordre de la commande ; les autres notes du groupe sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
 
-Une détection collective retourne une seule `NoteCollisionError` dont `details.collisions` contient toutes les collisions, dans l’ordre stable des notes manipulées. Chaque entrée associe une note manipulée à tous ses `conflictingNoteIds`, qu’ils désignent des notes manipulées ou non manipulées.
+Une détection collective retourne une seule `NoteOverlapError` dont `details.overlaps` contient toutes les collisions, dans l’ordre stable des notes manipulées. Chaque entrée associe une note manipulée à tous ses `overlappingNoteIds`, qu’ils désignent des notes manipulées ou non manipulées.
 
 Après résolution, le `Clip` valide de nouveau l'ensemble de ses notes. Il retourne `ok(clip)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le clip d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique sur l’ensemble de la commande.
 
@@ -378,7 +378,7 @@ Attributs possibles :
 - `id` ;
 - `name`.
 
-`InstrumentId` est un type stable et opaque déclaré avec `Instrument` dans `domain/Instrument.ts`.
+`InstrumentId` est un type stable et opaque déclaré avec `Instrument` dans `domain/models/instrument/Instrument.ts`.
 
 Un `Clip` sauvegarde uniquement cet identifiant, et non une référence directe vers l'objet `Instrument`. Il référence exactement un instrument, dont héritent toutes ses notes. Plusieurs clips peuvent référencer le même instrument. Le placement d'une occurrence sur une ligne ne modifie jamais cette association.
 
@@ -678,9 +678,9 @@ interface PendingEditDecision<
 
 type EditDecisionRequest =
   | PendingEditDecision<
-      "NOTE_COLLISION",
-      { collisions: readonly NoteCollision[] },
-      NoteCollisionResolution
+      "NOTE_OVERLAP",
+      { overlaps: readonly NoteOverlap[] },
+      NoteOverlapResolution
     >;
 
 interface EditDecision<Kind extends string, Choice> {
@@ -690,7 +690,7 @@ interface EditDecision<Kind extends string, Choice> {
 }
 
 type SubmittedEditDecision =
-  | EditDecision<"NOTE_COLLISION", NoteCollisionResolution>;
+  | EditDecision<"NOTE_OVERLAP", NoteOverlapResolution>;
 
 interface PendingEditPreparation {
   id: EditPreparationId;
@@ -727,7 +727,7 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 `EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
-`PendingEditDecision<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre ne contient que `NOTE_COLLISION`, mais une nouvelle décision ajoute une variante à cette union sans modifier `EditSession`, `EditSessionPhase` ou `commitEdit`.
+`PendingEditDecision<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre ne contient que `NOTE_OVERLAP`, mais une nouvelle décision ajoute une variante à cette union sans modifier `EditSession`, `EditSessionPhase` ou `commitEdit`.
 
 `EditDecision<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `SubmittedEditDecision` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
 
@@ -759,7 +759,7 @@ type EditError = ProjectEditError | EditValidationError | InstrumentPreparationE
 
 `beginEdit` capture la base, résout l’intention et construit la commande initiale ; `updateEdit` remplace cette intention, reconstruit la commande et recalcule sa projection. Une préparation éventuellement nécessaire est signalée par `pendingEditPreparation`, tandis que sa tâche reste privée au service. Son résultat technique est retourné par l’opération asynchrone qui l’attend, notamment `commitEdit`. Une nouvelle intention rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace ni l’intention ni la commande précédentes ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, valide la commande finale contre la même base et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
 
-Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_COLLISION` dont `details.collisions` contient les conflits et dont `choices` contient `SLICE` et `MERGE`.
+Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_OVERLAP` dont `details.overlaps` contient les conflits et dont `choices` contient `SLICE` et `MERGE`.
 
 La commande est figée jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, puis rejoue la même commande contre `baseProject` avec la politique de domaine correspondante. Si une future décision en entraîne une autre, le service peut remplacer `pendingDecision` et retourner de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
 
@@ -828,7 +828,7 @@ interface MoveClipContentCommand {
   clipId: ClipId;
   items: readonly ClipContentRef[];
   deltaTicks: number;
-  collisionResolution?: NoteCollisionResolution;
+  overlapResolution?: NoteOverlapResolution;
 }
 ```
 
@@ -844,7 +844,7 @@ Aucune résolution `SLICE` ou `MERGE` n'est exécutée pendant le geste et aucun
 
 Au relâchement, `commitEdit` soumet l’intention finale quantifiée au domaine, qui retourne `Result<Project, ProjectEditError>`. Le résultat public asynchrone du service reste `Result<EditOutcome, EditError>` ; le projet publié est observé dans `ProjectState`.
 
-Sans collision et après toute préparation nécessaire, le projet valide retourné remplace `project` et la session d’édition ainsi que `transientProject` disparaissent. En cas de `NOTE_OVERLAP`, `EditService` crée une décision `NOTE_COLLISION`. Le brouillon final reste affiché et audible, tandis que la commande finale est suspendue. La présentation demande alors `SLICE`, `MERGE` ou l'annulation :
+Sans collision et après toute préparation nécessaire, le projet valide retourné remplace `project` et la session d’édition ainsi que `transientProject` disparaissent. En cas de `NOTE_OVERLAP`, `EditService` crée une décision `NOTE_OVERLAP`. Le brouillon final reste affiché et audible, tandis que la commande finale est suspendue. La présentation demande alors `SLICE`, `MERGE` ou l'annulation :
 
 - `submitEditDecision` rejoue la même intention contre `baseProject`, avec le mode choisi ;
 - les fragments et leurs identifiants sont créés une seule fois pendant cette résolution définitive ;
@@ -852,7 +852,7 @@ Sans collision et après toute préparation nécessaire, le projet valide retour
 
 Pendant cette attente, le geste ne reçoit plus d'actualisation : sa géométrie finale et la commande quantifiée sont figées. Le domaine ne dépend d'aucune interaction utilisateur et ne reçoit jamais le projet transitoire potentiellement invalide.
 
-Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-collisions-de-notes). Le cas d’usage soumet le clip résolu à la validation du `Project` avant publication. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule unité d’annulation.
+Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-chevauchements-de-notes). Le cas d’usage soumet le clip résolu à la validation du `Project` avant publication. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule unité d’annulation.
 
 Les intentions d’édition sont regroupées dans `EditService`, sans imposer un fichier par commande.
 
@@ -1449,7 +1449,7 @@ La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le
 
 Le piano roll peut afficher simultanément des notes de hauteurs différentes. Après quantification d'une création ou d'une transformation, une collision n'existe que si deux notes de même hauteur se chevauchent avec une durée strictement positive.
 
-Lorsque `commitEdit` retourne `ok("DECISION_REQUIRED")`, la présentation lit `EditSession.phase.pendingDecision` après discrimination sur `phase.status`. Pour la variante `NOTE_COLLISION`, elle utilise `details.collisions` et affiche les choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement. La réponse appelle `submitEditDecision` avec l’identité de la décision et le choix explicite ; l’éditeur observe ensuite le projet publié si la validation réussit.
+Lorsque `commitEdit` retourne `ok("DECISION_REQUIRED")`, la présentation lit `EditSession.phase.pendingDecision` après discrimination sur `phase.status`. Pour la variante `NOTE_OVERLAP`, elle utilise `details.overlaps` et affiche les choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement. La réponse appelle `submitEditDecision` avec l’identité de la décision et le choix explicite ; l’éditeur observe ensuite le projet publié si la validation réussit.
 
 Pour les autres erreurs de validation, la présentation effectue une correspondance exhaustive sur `error.code` et construit elle-même le message localisé. Elle ne reçoit jamais une chaîne métier déjà formatée par le domaine.
 
@@ -1630,23 +1630,46 @@ Les invariants de composition et les contrats de publication ci-dessus sont déf
 
 ## Arborescence cible
 
-Cette arborescence exprime les responsabilités du modèle, sans imposer un fichier par type ou par commande. Les dépendances sont assemblées au point d’entrée de l’application ; les services ne construisent pas leurs adaptateurs.
+Cette arborescence sépare explicitement les données métier et leurs invariants des algorithmes qui les transforment ou les analysent. `models/` contient les représentations immuables, leurs identités, leurs factories et leurs validations intrinsèques. `operations/` contient des fonctions pures et sans état qui reçoivent des modèles valides et retournent soit une nouvelle version validée, soit une information dérivée. Les dépendances extérieures restent assemblées au point d’entrée de l’application ; les services ne construisent pas leurs adaptateurs.
 
 ```text
 src/
 ├── domain/
 │   ├── Result.ts
-│   ├── Project.ts
-│   ├── Clip.ts
-│   ├── Instrument.ts
-│   ├── Note.ts
-│   ├── Tick.ts
-│   ├── Duration.ts
-│   ├── TimeRange.ts
-│   ├── Tempo.ts
-│   ├── Meter.ts
-│   ├── Pitch.ts
-│   └── Harmony.ts
+│   ├── models/
+│   │   ├── composition/
+│   │   │   ├── Project.ts
+│   │   │   ├── Clip.ts
+│   │   │   ├── ClipOccurrence.ts
+│   │   │   ├── Note.ts
+│   │   │   └── Velocity.ts
+│   │   ├── time/
+│   │   │   ├── Tick.ts
+│   │   │   ├── Duration.ts
+│   │   │   ├── TimeRange.ts
+│   │   │   ├── Tempo.ts
+│   │   │   ├── Meter.ts
+│   │   │   └── MeterChange.ts
+│   │   ├── pitch/
+│   │   │   ├── Pitch.ts
+│   │   │   └── RootNote.ts
+│   │   ├── harmony/
+│   │   │   ├── Chord.ts
+│   │   │   ├── Scale.ts
+│   │   │   ├── Harmony.ts
+│   │   │   └── HarmonyChange.ts
+│   │   └── instrument/
+│   │       └── Instrument.ts
+│   └── operations/
+│       ├── composition/
+│       │   ├── ProjectTransformations.ts
+│       │   ├── ClipTransformations.ts
+│       │   └── NoteOverlap.ts
+│       ├── time/
+│       │   └── MeterTimeline.ts
+│       └── harmony/
+│           ├── HarmonyTimeline.ts
+│           └── NoteRoleAnalysis.ts
 ├── application/
 │   ├── EditorState.ts
 │   ├── ProjectState.ts
@@ -1683,14 +1706,31 @@ src/
 
 | Module | Contenu |
 | --- | --- |
-| `domain/Result.ts` | `Result`, helpers et forme générique de `ValidationError` ; les erreurs concrètes restent près de leurs invariants |
-| `domain/Project.ts` | Agrégat, validation complète, références entre clips et occurrences et commandes métier portant sur l’ensemble du projet |
-| `domain/Clip.ts` | `Clip`, `ClipOccurrence`, leurs identifiants, `LineIndex`, limites de lignes et répétitions, références `ClipContentRef`, commandes et transformations locales ; `NoteCollision`, `NoteCollisionError`, `NoteCollisionResolution`, détection et résolution des collisions |
-| `domain/Note.ts` | `Note`, `NoteId` et `Velocity` |
-| `domain/Meter.ts` | `Meter`, `MeterChange`, `MeterSection` |
-| `domain/Pitch.ts` | `Pitch` et `RootNote` commun à `Chord` et `Scale` |
-| `domain/Harmony.ts` | `Chord`, `Scale`, catalogues de types, `Harmony`, `HarmonyChange`, `HarmonySection` et analyse dérivée des notes |
-| `domain/Instrument.ts` | `Instrument` public et `InstrumentId` |
+| `domain/Result.ts` | `Result`, helpers et forme générique de `ValidationError` ; les erreurs concrètes restent auprès du modèle ou de l'opération qui les produit |
+| `domain/models/composition/Project.ts` | `Project`, `ProjectId`, factory, reconstitution et invariants de la racine d'agrégat |
+| `domain/models/composition/Clip.ts` | `Clip`, `ClipId`, références `ClipContentRef`, factory et invariants propres au contenu musical local |
+| `domain/models/composition/ClipOccurrence.ts` | `ClipOccurrence`, `ClipOccurrenceId`, `LineIndex`, limites de lignes et de répétitions et invariants de placement |
+| `domain/models/composition/Note.ts` | `Note`, `NoteId`, factory et invariants d'une note isolée |
+| `domain/models/composition/Velocity.ts` | `Velocity`, bornes et validation |
+| `domain/models/time/Tick.ts` | `Tick` et `MAX_TICK` |
+| `domain/models/time/Duration.ts` | `Duration` et validation de sa valeur en ticks |
+| `domain/models/time/TimeRange.ts` | `TimeRange`, intervalle semi-ouvert et validation de ses bornes composées |
+| `domain/models/time/Tempo.ts` | `Tempo`, bornes, précision et conversion temporelle élémentaire |
+| `domain/models/time/Meter.ts` | `Meter` et ses invariants intrinsèques |
+| `domain/models/time/MeterChange.ts` | `MeterChange`, son identité et sa position locale persistante |
+| `domain/models/pitch/Pitch.ts` | `Pitch` et validation du numéro MIDI |
+| `domain/models/pitch/RootNote.ts` | `RootNote`, `NoteLetter`, `Accidental` et cohérence de la classe chromatique |
+| `domain/models/harmony/Chord.ts` | `Chord` et catalogue des types d'accord |
+| `domain/models/harmony/Scale.ts` | `Scale` et catalogue des types de gamme |
+| `domain/models/harmony/Harmony.ts` | `Harmony`, union entre accord et gamme et modes `ROOT` ou `DEGREE` |
+| `domain/models/harmony/HarmonyChange.ts` | `HarmonyChange`, son identité et sa position locale persistante |
+| `domain/models/instrument/Instrument.ts` | `Instrument` public et `InstrumentId` |
+| `domain/operations/composition/ProjectTransformations.ts` | Commandes et fonctions pures qui ajoutent, déplacent, dupliquent ou suppriment les clips et leurs occurrences ; retournent un nouveau `Project` via `Result` |
+| `domain/operations/composition/ClipTransformations.ts` | Commandes et fonctions pures qui transforment les notes, la durée, l'instrument et les chronologies d'un clip ; retournent un nouveau `Clip` via `Result` |
+| `domain/operations/composition/NoteOverlap.ts` | `NoteOverlap`, `NoteOverlapError`, `NoteOverlapResolution`, détection et résolution `SLICE` ou `MERGE` |
+| `domain/operations/time/MeterTimeline.ts` | Ordonnancement des `MeterChange`, résolution de la métrique active et production des `MeterSection` dérivées |
+| `domain/operations/harmony/HarmonyTimeline.ts` | Ordonnancement des `HarmonyChange`, résolution de l'harmonie active et production des `HarmonySection` dérivées |
+| `domain/operations/harmony/NoteRoleAnalysis.ts` | Segmentation d'une note et dérivation de ses rôles `CHORD_TONE`, `SCALE_TONE` ou `OUTSIDE_TONE` |
 | `application/ProjectState.ts` | `ProjectState`, `TransientProject`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
 | `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
@@ -1713,6 +1753,8 @@ src/
 | `presentation/components/` | Rendu de la grille, du piano roll, des décisions et des états de chargement |
 | `presentation/stores/` | État strictement visuel et adaptation réactive de l’état applicatif, sans duplication du document ni des tâches |
 
-`Tick.ts`, `Duration.ts`, `TimeRange.ts` et `Tempo.ts` conservent les valeurs élémentaires et leurs validations ; `Tick.ts` porte `MAX_TICK`. La colocalisation de `ClipOccurrence` dans `Clip.ts` ne la rend pas enfant de `Clip` : les deux restent possédés par `Project`. De même, `ClipContentRef` est une adresse typée d’entité locale et non une sélection ; `Selection.ts` l’emploie sans déplacer sa propriété hors du domaine.
+Les modules de `models/` décrivent des données immuables et empêchent leur construction dans un état invalide. Les modules de `operations/` ne les modifient jamais en place : une transformation reçoit un modèle valide et retourne une nouvelle version avec `Result`, tandis qu'une timeline ou une analyse produit uniquement une vue dérivée. Le terme « transformation » décrit donc un changement métier, et non une mutation de l'objet reçu.
+
+Les commandes et erreurs propres à une transformation restent dans son module. Les erreurs de création restent auprès du modèle qui protège l'invariant correspondant. `MeterSection`, `HarmonySection` et les segments de rôle sont dérivés par les opérations et ne sont pas persistés. `ClipOccurrence` demeure possédé directement par `Project` malgré son fichier distinct. Enfin, `ClipContentRef` reste une adresse typée d'entité locale et non une sélection ; `Selection.ts` l'emploie sans déplacer sa propriété hors du domaine.
 
 Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` demande à `PlaybackService` la coordination sonore des publications ; `ProjectFileService` coordonne ses publications avec ces services. `PlaybackService` ne dépend pas en retour d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent l’état applicatif et conservent les détails d’interface ; ils ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
