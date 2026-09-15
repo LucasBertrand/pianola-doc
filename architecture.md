@@ -804,6 +804,25 @@ interface EditDecision<Kind extends string, Choice> {
 type SubmittedEditDecision =
   | EditDecision<"NOTE_OVERLAP", NoteOverlapResolution>;
 
+type DeferredViolation =
+  | {
+      kind: "NOTE_OVERLAP";
+      scoreId: ScoreId;
+      overlaps: readonly NoteOverlap[];
+    };
+
+type DeferredResolution =
+  | {
+      kind: "NOTE_OVERLAP";
+      scoreId: ScoreId;
+      choice: NoteOverlapResolution;
+    };
+
+interface ProjectCandidate {
+  // Surface de lecture complète du projet projeté, distincte de Project.
+  readonly deferredViolations: readonly DeferredViolation[];
+}
+
 interface PendingEditPreparation {
   id: EditPreparationId;
   editSessionId: EditSessionId;
@@ -816,13 +835,13 @@ interface ProjectState {
   project: Project;
   settings: Settings;
   editSession?: EditSession;
-  transientProject?: TransientProject;
+  transientProject?: ProjectCandidate;
   pendingEditPreparation?: PendingEditPreparation;
   history: ProjectHistory;
   effectiveProjectRevision: number;
 }
 
-const effectiveProject: Project | TransientProject =
+const effectiveProject: Project | ProjectCandidate =
   state.transientProject ?? state.project;
 ```
 
@@ -830,7 +849,25 @@ const effectiveProject: Project | TransientProject =
 
 `ProjectEditCommand` est l’union applicative des commandes métier élémentaires que `EditService` sait composer et rejouer comme une seule transaction. Les commandes élémentaires restent déclarées près des opérations du domaine qui les exécutent ; l’union n’appartient pas à `Project`, car son exhaustivité décrit les capacités du cas d’usage d’édition. Ce nom désigne la portée transactionnelle de la commande, pas son origine dans la grille. Les paramètres expriment une transformation cumulée depuis `baseProject`, jamais depuis le brouillon précédent. Les identifiants des créations ordinaires sont alloués une fois et conservés dans la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
 
-Prévisualisation et validation réutilisent les mêmes calculs purs de transformation, déclarés auprès des entités du domaine. Ces calculs peuvent produire des données candidates sans construire un agrégat valide ; la publication d’un `Project` ajoute toujours la validation complète. Le domaine ignore les gestes, les sélections, l’audio et la notion applicative de `TransientProject`.
+Prévisualisation et validation utilisent une seule chaîne de calcul, déclarée dans les opérations du domaine. Le domaine connaît `ProjectCandidate`, ses violations différées et leurs résolutions ; il ignore le geste, la sélection, la session d’édition et l’audio. Deux fonctions pures forment la frontière principale :
+
+```ts
+buildProjectCandidate(
+  baseProject: Project,
+  command: ProjectEditCommand
+): Result<ProjectCandidate, BlockingProjectError>;
+
+finalizeProjectCandidate(
+  candidate: ProjectCandidate,
+  resolutions: readonly DeferredResolution[]
+): Result<Project, ProjectEditError>;
+```
+
+`buildProjectCandidate` applique collectivement la commande à `baseProject`. Les valeurs d’une commande expriment l’état final proposé des entités ciblées, et non une suite de mutations à valider une par une. Plusieurs changements portant sur une même entité sont normalisés en une seule proposition finale ; deux propositions contradictoires pour le même champ constituent une commande applicative invalide. Les créations et leurs références sont également évaluées dans le résultat collectif : créer un score et un clip qui le référence ne produit aucun état intermédiaire orphelin.
+
+Toutes les validations reposent sur les mêmes fonctions pures d’inspection. Elles produisent soit une erreur bloquante, soit une `DeferredViolation` explicitement admise par l’union fermée. Une erreur bloquante empêche le candidat et conserve la dernière projection admissible. Une violation différée est enregistrée dans `ProjectCandidate.deferredViolations` et doit recevoir une `DeferredResolution` avant publication. Le premier périmètre ne diffère que `NOTE_OVERLAP` ; ajouter une autre exception exige une nouvelle variante typée et sa fonction de résolution, sans modifier le mécanisme générique.
+
+`finalizeProjectCandidate` applique les résolutions au candidat, relance les mêmes inspections et construit un `Project` uniquement lorsqu’aucune violation ne subsiste. Une violation différée n’est donc jamais ignorée ou transformée en autorisation générale de désactiver un invariant. Il n’existe qu’une implémentation de la détection des chevauchements, des références, des bornes et des autres règles ; seules leurs conséquences diffèrent selon qu’elles sont bloquantes ou explicitement différables.
 
 Les fichiers `*Transformations.ts` sont classés selon le type qu’ils produisent, et non selon l’élément principalement ciblé par la commande. Une fonction qui retourne un `Score` appartient ainsi à `ScoreTransformations.ts`. Toute fonction qui retourne un `Project` appartient à `ProjectTransformations.ts`, y compris lorsqu’elle ajoute, déplace, redimensionne, duplique ou supprime un clip, ou lorsqu’elle transforme une piste. Il n’existe donc pas de `ClipTransformations.ts` tant qu’aucune opération du domaine ne retourne un `Clip` isolé.
 
@@ -864,9 +901,9 @@ makeClipIndependent(
 
 `DuplicateClipsCommand` précise les clips sources, les nouveaux `ClipId`, les placements et le choix explicite `REFERENCE` ou `INDEPENDENT`. La branche `INDEPENDENT` fournit un `DuplicateScoreCommand` par clip copié ; la branche `REFERENCE` n’en fournit aucun. `MakeClipIndependentCommand` cible un clip existant et fournit la commande de copie de son score. Les opérations retournant un projet délèguent la copie locale à `ScoreTransformations`, puis valident ensemble les nouveaux scores et les références des clips. Le choix de duplication appartient uniquement à la commande : il ne devient pas une propriété persistante du clip ou du score.
 
-`TransientProject` est la projection applicative complète de ces données candidates. Les chevauchements de notes de même hauteur constituent la seule relaxation d’invariant du premier périmètre. Les bornes numériques, durées positives, références, identités, limites locales des notes et chronologies restent valides. Une intention violant une autre règle ne remplace pas la dernière projection admissible et retourne une erreur. Aucun `Project` invalide n’est construit.
+`ProjectCandidate` est un type du domaine distinct de `Project`. Il expose une surface de lecture complète pour la présentation et la planification audio, ainsi que la collection de ses `deferredViolations`, mais il ne peut pas être fourni à une opération exigeant un agrégat validé. Dans le premier périmètre, seul `NOTE_OVERLAP` peut apparaître dans cette collection. Les bornes numériques, durées positives, références finales, identités, limites locales des notes et chronologies restent valides. Aucun `Project` invalide n’est construit.
 
-`transientProject` est un cache de projection de la commande, jamais une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni l’un ni l’autre ne peut être sauvegardé. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
+`ProjectState.transientProject` conserve le `ProjectCandidate` courant comme cache de projection de la commande, jamais comme une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni le candidat ni le projet effectif transitoire ne peuvent être sauvegardés. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
 
 Cette projection contient une seule entrée par `ScoreId`, résolue par tous ses clips : une édition locale partagée n’est pas recopiée dans chaque bloc. Une copie indépendante introduit une nouvelle entrée avec ses propres identités, stables pendant toutes les actualisations du geste. Annuler ce geste retire simultanément ses créations et rétablit les références initiales ; aucun clip orphelin ni score créé par un geste annulé ne subsiste.
 
@@ -904,11 +941,11 @@ type EditOutcome =
 type EditError = ProjectEditError | EditValidationError | InstrumentPreparationError;
 ```
 
-`beginEdit` capture la base, résout l’intention et construit la commande initiale ; `updateEdit` remplace cette intention, reconstruit la commande et recalcule sa projection. Une préparation éventuellement nécessaire est signalée par `pendingEditPreparation`, tandis que sa tâche reste privée au service. Son résultat technique est retourné par l’opération asynchrone qui l’attend, notamment `commitEdit`. Une nouvelle intention rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace ni l’intention ni la commande précédentes ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, valide la commande finale contre la même base et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
+`beginEdit` capture la base, résout l’intention et construit la commande initiale ; `updateEdit` remplace cette intention, reconstruit la commande et recalcule sa projection. Une préparation éventuellement nécessaire est signalée par `pendingEditPreparation`, tandis que sa tâche reste privée au service. Son résultat technique est retourné par l’opération asynchrone qui l’attend, notamment `commitEdit`. Une nouvelle intention rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace ni l’intention ni la commande précédentes ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, finalise le `ProjectCandidate` courant et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
 
 Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_OVERLAP` dont `details.scoreId` identifie le contenu à résoudre, `details.overlaps` contient les conflits et `choices` contient `SLICE` et `MERGE`. Le choix est appliqué à ce score ; les éventuelles collisions d’un autre score demandent une décision distincte avant la publication atomique de l’ensemble.
 
-La commande est figée jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, puis rejoue la même commande contre `baseProject` avec la politique de domaine correspondante. Si cette résolution révèle une autre décision, notamment dans un autre score, le service conserve les choix déjà acceptés dans la commande avec leur portée, remplace `pendingDecision` et retourne de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Les identifiants des fragments déjà alloués restent stables pendant ces reprises ; aucune résolution partielle n’est publiée comme projet validé. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
+La commande et le `ProjectCandidate` sont figés jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, ajoute la `DeferredResolution` correspondante puis appelle `finalizeProjectCandidate` sur ce même candidat. Si cette résolution laisse une autre violation différée, notamment dans un autre score, le service conserve les résolutions déjà acceptées avec leur portée, remplace `pendingDecision` et retourne de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Les identifiants des fragments déjà alloués restent stables pendant ces reprises ; aucune résolution partielle n’est publiée comme projet validé. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
 
 `cancelEdit` est idempotente : elle invalide les préparations, résout un commit en attente avec `CANCELLED` et rétablit le `project` de base comme projet effectif. Les échecs ne créent aucune entrée d’historique et ne sauvegardent rien. Les défauts de programmation restent des exceptions.
 
@@ -994,23 +1031,24 @@ Les références peuvent désigner simultanément des notes et des changements d
 
 Les identifiants des entités déplacées sont conservés. Lorsqu'une transformation provisoire crée des entités, leurs identifiants sont générés une seule fois pour le geste, restent stables pendant ses actualisations et sont conservés si le projet transitoire est appliqué.
 
-#### Orchestration des collisions
+#### Orchestration des violations différées
 
-Pendant une manipulation continue, la présentation appelle `EditService.updateEdit` à chaque actualisation utile de l’intention ; le service reconstruit la commande correspondante et calcule `transientProject`. Cette projection suit le pointeur et reste la source commune du rendu visuel et audio, même lorsqu'elle contient provisoirement plusieurs notes de même hauteur en collision. Ces notes sont alors rendues comme des occurrences sonores simultanées.
+Pendant une manipulation continue, la présentation appelle `EditService.updateEdit` à chaque actualisation utile de l’intention. Le service normalise la commande puis appelle `buildProjectCandidate(baseProject, command)`. Toutes les entités ciblées sont projetées collectivement depuis la même base ; aucun ordre d’exécution intermédiaire ne porte de signification métier.
 
-Aucune résolution `SLICE` ou `MERGE` n'est exécutée pendant le geste et aucun fragment n'est créé. Les collisions intermédiaires n'ont donc aucun effet durable.
+Une erreur bloquante ne remplace pas la dernière projection admissible. Une violation différée reste au contraire visible dans `ProjectCandidate.deferredViolations` : la projection suit le pointeur et demeure la source commune du rendu visuel et audio. Avec `NOTE_OVERLAP`, plusieurs notes de même hauteur peuvent donc être entendues simultanément pendant le geste. Aucune résolution `SLICE` ou `MERGE` et aucun fragment ne sont produits à ce stade.
 
-Au relâchement, `commitEdit` soumet l’intention finale quantifiée au domaine, qui retourne `Result<Project, ProjectEditError>`. Le résultat public asynchrone du service reste `Result<EditOutcome, EditError>` ; le projet publié est observé dans `ProjectState`.
+Au relâchement, `commitEdit` appelle `finalizeProjectCandidate` avec les résolutions déjà acquises. Sans violation et après toute préparation nécessaire, le `Project` retourné remplace `project`, puis la session d’édition et `transientProject` disparaissent. Si une violation différée reste sans résolution, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, conserve le candidat final et suspend la publication.
 
-Sans collision et après toute préparation nécessaire, le projet valide retourné remplace `project` et la session d’édition ainsi que `transientProject` disparaissent. En cas de `NOTE_OVERLAP`, `EditService` crée une décision `NOTE_OVERLAP`. Le brouillon final reste affiché et audible, tandis que la commande finale est suspendue. La présentation demande alors `SLICE`, `MERGE` ou l'annulation :
+Pour `NOTE_OVERLAP`, la présentation demande `SLICE`, `MERGE` ou l’annulation :
 
-- `submitEditDecision` rejoue la même intention contre `baseProject`, avec le mode choisi ;
+- `submitEditDecision` ajoute une `DeferredResolution` typée puis finalise de nouveau le même candidat ;
 - les fragments et leurs identifiants sont créés une seule fois pendant cette résolution définitive ;
-- l'annulation supprime `transientProject` sans modifier `project`.
+- si une autre violation différée subsiste, elle produit la décision suivante sans publication partielle ;
+- l’annulation supprime `transientProject` sans modifier `project`.
 
-Pendant cette attente, le geste ne reçoit plus d'actualisation : sa géométrie finale et la commande quantifiée sont figées. Le domaine ne dépend d'aucune interaction utilisateur et ne reçoit jamais le projet transitoire potentiellement invalide.
+Pendant cette attente, le geste ne reçoit plus d’actualisation : sa géométrie finale et sa commande quantifiée sont figées. Le domaine ne dépend d’aucune interaction utilisateur. Il reçoit le candidat et les résolutions typées, tandis que l’application possède l’ordre des décisions et leur présentation.
 
-Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-chevauchements-de-notes). Le cas d’usage soumet le score résolu à la validation du `Project` avant publication. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule unité d’annulation.
+Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-chevauchements-de-notes). `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule unité d’annulation.
 
 Les intentions d’édition sont regroupées dans `EditService`, sans imposer un fichier par commande.
 
@@ -1639,7 +1677,7 @@ Dans cette représentation :
 
 Tous les clips d’une piste utilisent son instrument. Déplacer un clip verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
-La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` dérive `transientProject` de la commande quantifiée. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` obtient `transientProject` en appelant `buildProjectCandidate` avec la commande quantifiée et la base du geste. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
 Les actions de duplication distinguent clairement le partage du score et la création d’une copie indépendante. Le nombre de clips utilisant un score peut être dérivé de leurs `scoreId` pour informer l’utilisateur de la portée d’une édition. Cette information n’est ni un champ du document ni un mode d’édition : modifier le score ouvert modifie toujours ce score et tous les clips qui le référencent.
 
@@ -1853,19 +1891,7 @@ Les grandes responsabilités et les règles déjà actées ci-dessus constituent
 
 ### Points bloquants
 
-#### Q1 — Données candidates et composition transactionnelle
-
-Voir [Frontière de l’agrégat](#frontière-de-lagrégat), [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [EditService](#editservice).
-
-- Quelle représentation et quelles fonctions produisent les données candidates utilisées par `TransientProject`, sans construire un `Score` ou un `Project` invalide ?
-- Comment partager ces calculs avec la validation finale sans réimplémenter les règles musicales dans l’application ?
-- Dans une commande composite, les opérations lisent-elles toutes la base du geste ou certaines lisent-elles le résultat des opérations précédentes ? Comment combiner plusieurs opérations visant une même entité ?
-- Quelles validations s’appliquent à chaque opération et lesquelles portent uniquement sur le résultat complet ? Comment accepter une transaction finale valide dont un calcul intermédiaire produit une collision ou une référence temporairement absente ?
-- Comment articuler la règle selon laquelle les opérations reçoivent des modèles valides avec le calcul candidat autorisant provisoirement les chevauchements ?
-
-Cas à résoudre : deux notes de même hauteur échangent leurs positions sans collision finale ; une exécution validante note par note ne doit pas décider implicitement de la validité de la transaction.
-
-#### Q2 — Publication du document et plan audio accepté
+#### Q1 — Publication du document et plan audio accepté
 
 Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel), [Préparation sonore des éditions](#préparation-sonore-des-éditions), [Sessions et concurrence](#sessions-et-concurrence) et [Éditeur d’arrangement](#éditeur-darrangement).
 
@@ -1877,7 +1903,7 @@ Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modifi
 
 Cas à résoudre : un changement de tempo est accepté pour 5,04 s ; un second changement arrive avant cette borne. La conversion temps/tick doit rester définie avant, entre et après les bornes conservées.
 
-#### Q3 — État de réconciliation exactement à la borne
+#### Q2 — État de réconciliation exactement à la borne
 
 Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel) et [AudioEngine](#audioengine).
 
@@ -1890,7 +1916,7 @@ Les études de cas doivent distinguer explicitement un événement strictement a
 
 ### Contrats importants à compléter
 
-#### Q4 — Transitions complètes du cycle d’édition
+#### Q3 — Transitions complètes du cycle d’édition
 
 Voir [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [Historique du projet](#historique-du-projet).
 
@@ -1900,7 +1926,7 @@ Voir [Intention d’édition et projet transitoire](#intention-dédition-et-proj
 - Que reste-t-il observable pendant cette annulation et à partir de quand une nouvelle édition est-elle autorisée ?
 - Quelle table exhaustive « état + événement → résultat + nouvel état + effets » couvre les éditions, décisions, préparations, commits, annulations et restaurations ?
 
-#### Q5 — Effets applicatifs de l’annulation d’un brouillon
+#### Q4 — Effets applicatifs de l’annulation d’un brouillon
 
 Voir [Têtes de lecture](#têtes-de-lecture), [Fin de portée après modification](#fin-de-portée-après-modification), [Suppression du score attaché à une session](#suppression-du-score-attaché-à-une-session) et [Suppression d’une piste utilisée pour l’écoute](#suppression-dune-piste-utilisée-pour-lécoute).
 
@@ -1910,7 +1936,7 @@ Voir [Têtes de lecture](#têtes-de-lecture), [Fin de portée après modificatio
 - Quels effets sur les transports, préécoutes et états d’éditeur sont réversibles avec le brouillon, et lesquels restent acquis ?
 - Comment distinguer explicitement cette politique de celle, déjà décrite, d’undo/redo ?
 
-#### Q6 — Quantification et frontières de responsabilité
+#### Q5 — Quantification et frontières de responsabilité
 
 Voir [GridResolution](#gridresolution), [Clip](#clip) et [EditService](#editservice).
 
@@ -1922,7 +1948,7 @@ Voir [GridResolution](#gridresolution), [Clip](#clip) et [EditService](#editserv
 - Que produit un redimensionnement dont le bord traverse le bord opposé ?
 - Les formules `round()` et `max(1, …)` de la section `Clip` décrivent-elles une conversion applicative du geste ou une opération du domaine ? Comment les articuler avec l’interdiction des arrondis et clamps silencieux dans le domaine ?
 
-#### Q7 — Ordres canoniques et identités des fragments
+#### Q6 — Ordres canoniques et identités des fragments
 
 Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Résolution des chevauchements de notes](#résolution-des-chevauchements-de-notes) et [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire).
 
@@ -1932,7 +1958,7 @@ Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Réso
 - Quelle entrée explicite fournit ces identifiants aux fonctions pures, et comment conserver leur correspondance pendant les reprises et décisions portant sur plusieurs scores ?
 - Quels ordres de collections doivent être conservés ou normalisés pour que les résultats et erreurs restent reproductibles ?
 
-#### Q8 — Préécoute de sélection et références disparues
+#### Q7 — Préécoute de sélection et références disparues
 
 Voir [Préécoute d’une sélection](#préécoute-dune-sélection) et [Préparation de l’instrument](#préparation-de-linstrument).
 
@@ -1943,7 +1969,7 @@ Voir [Préécoute d’une sélection](#préécoute-dune-sélection) et [Prépara
 - Quelle issue reçoit `ready` si toutes les notes suivies disparaissent avant la fin du chargement ?
 - Quelle définition temporelle précise du « même cycle sûr de planification » rend la coalescence des mises à jour reproductible ?
 
-#### Q9 — Disponibilité audio, retards et contrat de l’adaptateur
+#### Q8 — Disponibilité audio, retards et contrat de l’adaptateur
 
 Voir [Planification selon la portée](#planification-selon-la-portée), [AudioEngine](#audioengine), [PlaybackContext](#playbackcontext) et [InstrumentInstance](#instrumentinstance).
 
@@ -1957,7 +1983,7 @@ Voir [Planification selon la portée](#planification-selon-la-portée), [AudioEn
 
 ### Précisions complémentaires
 
-#### Q10 — Égalité, métadonnées, persistance et valeurs initiales
+#### Q9 — Égalité, métadonnées, persistance et valeurs initiales
 
 Voir [Project](#project), [Historique du projet](#historique-du-projet), [ProjectFileService](#projectfileservice), [Chronologies locales du score](#chronologies-locales-du-score) et [Persistance](#persistance).
 
@@ -1970,15 +1996,14 @@ Voir [Project](#project), [Historique du projet](#historique-du-projet), [Projec
 - Quelles tables exactes d’intervalles correspondent à chaque `ChordTypeId` et `ScaleTypeId` ?
 - Quel résultat ou quelle précondition explicite couvre les appels publics exigeant un projet lorsqu’aucun document n’est ouvert ?
 
-#### Q11 — Nommage et représentation des états
+#### Q10 — Nommage et représentation des états
 
 - `PendingTransportRequest` est-il suffisamment précis alors qu’il couvre aussi `SET_AUDITION_TRACK`, y compris sans transport actif ?
-- Comment le typage distingue-t-il sans ambiguïté `TransientProject` d’un `Project` valide, afin qu’un brouillon ne puisse pas être fourni à une opération exigeant l’agrégat validé ?
 - `GlobalEditorState`, encore vide, doit-il déjà exister comme objet d’exécution ou seulement comme responsabilité documentée en attendant ses premières données applicatives ?
 
 Ces questions ne remettent pas en cause à elles seules les noms `Score`, `Clip`, `Track`, `ArrangementEditorState`, `ScoreEditorState`, ni la colocalisation de `Settings` avec `ProjectState`.
 
-#### Q12 — Présentation et paramètres techniques déjà ouverts
+#### Q11 — Présentation et paramètres techniques déjà ouverts
 
 - Comment distinguer et sélectionner les clips superposés sur une même piste dans la présentation ?
 - Quelles valeurs techniques retenir pour la marge de planification, la durée maximale des préécoutes et tails et la capacité de l’historique ? Ces paramètres ne doivent pas modifier les règles de propriété ou de concurrence.
@@ -1988,7 +2013,6 @@ Ces questions ne remettent pas en cause à elles seules les noms `Score`, `Clip`
 
 La résolution de ces questions devra compléter les contrats existants avec :
 
-- un contrat transactionnel couvrant données candidates, validation finale et annulation ;
 - des tables de transitions des éditions et des requêtes de lecture, incluant les événements asynchrones ;
 - un contrat temporel couvrant le plan accepté, les bornes exactes et les changements successifs ;
 - des études de cas avec résultats attendus pour les scénarios ci-dessus.
@@ -1997,7 +2021,7 @@ Ces éléments constituent un travail de spécification préalable, pas un plan 
 
 ## Arborescence cible
 
-Cette arborescence sépare explicitement les données métier et leurs invariants des algorithmes qui les transforment ou les analysent. `models/` contient les représentations immuables, leurs identités, leurs factories et leurs validations intrinsèques. `operations/` contient des fonctions pures et sans état qui reçoivent des modèles valides et retournent soit une nouvelle version validée, soit une information dérivée. Les dépendances extérieures restent assemblées au point d’entrée de l’application ; les services ne construisent pas leurs adaptateurs.
+Cette arborescence sépare explicitement les données métier et leurs invariants des algorithmes qui les transforment ou les analysent. `models/` contient les représentations immuables, leurs identités, leurs factories et leurs validations intrinsèques. `operations/` contient des fonctions pures et sans état qui reçoivent des modèles valides et retournent une nouvelle version validée, un candidat typé ou une information dérivée. Les dépendances extérieures restent assemblées au point d’entrée de l’application ; les services ne construisent pas leurs adaptateurs.
 
 ```text
 src/
@@ -2096,13 +2120,13 @@ src/
 | `domain/models/harmony/Harmony.ts` | `Harmony`, union exclusive entre accord et gamme avec une `RootNote` explicite |
 | `domain/models/harmony/HarmonyChange.ts` | `HarmonyChange`, son identité et sa position locale persistante |
 | `domain/models/instrument/Instrument.ts` | `Instrument` public et `InstrumentId` |
-| `domain/operations/composition/ProjectTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Project` via `Result`, y compris `addScore`, `duplicateClips`, `makeClipIndependent` et les transformations des pistes, scores ou clips intégrées à l’agrégat |
+| `domain/operations/composition/ProjectTransformations.ts` | Construction collective de `ProjectCandidate`, inspection de ses violations, finalisation en `Project` via `Result`, ainsi que toutes les commandes et fonctions pures retournant un nouveau `Project`, y compris `addScore`, `duplicateClips`, `makeClipIndependent` et les transformations des pistes, scores ou clips intégrées à l’agrégat |
 | `domain/operations/composition/ScoreTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Score` via `Result`, notamment `duplicateScore` et les transformations de ses notes, de sa durée et de ses chronologies |
 | `domain/operations/composition/NoteOverlap.ts` | `NoteOverlap`, `NoteOverlapError`, `NoteOverlapResolution`, détection et résolution `SLICE` ou `MERGE` |
 | `domain/operations/time/MeterTimeline.ts` | Ordonnancement des `MeterChange`, résolution de la métrique active et production des `MeterSection` dérivées |
 | `domain/operations/harmony/HarmonyTimeline.ts` | Ordonnancement des `HarmonyChange`, résolution de l'harmonie active et production des `HarmonySection` dérivées |
 | `domain/operations/harmony/NoteRoleAnalysis.ts` | Segmentation d'une note et dérivation de ses rôles `CHORD_TONE`, `SCALE_TONE` ou `OUTSIDE_TONE` |
-| `application/ProjectState.ts` | `Settings`, `ProjectState`, `TransientProject`, réglages de grille associés au projet, invariants de correspondance avec ses `ScoreId`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
+| `application/ProjectState.ts` | `Settings`, `ProjectState`, cache du `ProjectCandidate` courant, réglages de grille associés au projet, invariants de correspondance avec ses `ScoreId`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
 | `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
 | `application/GlobalEditorState.ts` | `GlobalEditorState` et état applicatif propre à la vue globale toujours présente ; ne possède aucun état d’un éditeur spécialisé |
