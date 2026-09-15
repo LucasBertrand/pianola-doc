@@ -756,6 +756,8 @@ const effectiveProject: Project | TransientProject =
 
 Prévisualisation et validation réutilisent les mêmes calculs purs de transformation, déclarés auprès des entités du domaine. Ces calculs peuvent produire des données candidates sans construire un agrégat valide ; la publication d’un `Project` ajoute toujours la validation complète. Le domaine ignore les gestes, les sélections, l’audio et la notion applicative de `TransientProject`.
 
+Les fichiers `*Transformations.ts` sont classés selon le type qu’ils produisent, et non selon l’élément principalement ciblé par la commande. Une fonction qui retourne un `Pattern` appartient ainsi à `PatternTransformations.ts`. Toute fonction qui retourne un `Project` appartient à `ProjectTransformations.ts`, y compris lorsqu’elle ajoute, déplace, redimensionne, duplique ou supprime un clip, ou lorsqu’elle transforme une piste. Il n’existe donc pas de `ClipTransformations.ts` tant qu’aucune opération du domaine ne retourne un `Clip` isolé.
+
 `TransientProject` est la projection applicative complète de ces données candidates. Les chevauchements de notes de même hauteur constituent la seule relaxation d’invariant du premier périmètre. Les bornes numériques, durées positives, références, identités, limites locales des notes et chronologies restent valides. Une intention violant une autre règle ne remplace pas la dernière projection admissible et retourne une erreur. Aucun `Project` invalide n’est construit.
 
 `transientProject` est un cache de projection de la commande, jamais une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni l’un ni l’autre ne peut être sauvegardé. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
@@ -1788,8 +1790,8 @@ src/
 | `domain/models/harmony/Harmony.ts` | `Harmony`, union entre accord et gamme et modes `ROOT` ou `DEGREE` |
 | `domain/models/harmony/HarmonyChange.ts` | `HarmonyChange`, son identité et sa position locale persistante |
 | `domain/models/instrument/Instrument.ts` | `Instrument` public et `InstrumentId` |
-| `domain/operations/composition/ProjectTransformations.ts` | Commandes et fonctions pures qui créent, renomment, réordonnent, changent l’instrument ou suppriment les pistes, et ajoutent, déplacent, dupliquent ou suppriment les patterns et les clips qui les référencent ; retournent un nouveau `Project` via `Result` |
-| `domain/operations/composition/PatternTransformations.ts` | Commandes et fonctions pures qui transforment les notes, la durée et les chronologies d’un pattern ; retournent un nouveau `Pattern` via `Result` |
+| `domain/operations/composition/ProjectTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Project` via `Result`, y compris celles qui transforment principalement ses pistes, ses patterns ou ses clips |
+| `domain/operations/composition/PatternTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Pattern` via `Result`, notamment celles qui transforment ses notes, sa durée et ses chronologies |
 | `domain/operations/composition/NoteOverlap.ts` | `NoteOverlap`, `NoteOverlapError`, `NoteOverlapResolution`, détection et résolution `SLICE` ou `MERGE` |
 | `domain/operations/time/MeterTimeline.ts` | Ordonnancement des `MeterChange`, résolution de la métrique active et production des `MeterSection` dérivées |
 | `domain/operations/harmony/HarmonyTimeline.ts` | Ordonnancement des `HarmonyChange`, résolution de l'harmonie active et production des `HarmonySection` dérivées |
