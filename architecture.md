@@ -733,7 +733,7 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 Une demande contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; le couple `kind` et `choice` interdit d’envoyer le choix d’un autre type d’arbitrage.
 
-`pendingEditPreparation` décrit uniquement l’attente observable requise par la commande courante. La promesse, le contrôle d’annulation et le résultat asynchrone appartiennent à une tâche privée d’`EditService` ; ils ne sont pas stockés dans `ProjectState`. Une actualisation de la commande ou l’annulation du geste invalide cette tâche par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
+`pendingEditPreparation` décrit uniquement l’attente observable requise par la commande courante. `EditService` possède l’identité, la révision et la continuation de cette attente, mais ne charge aucune banque lui-même : sa tâche privée attend une préparation demandée à `PlaybackService`. La promesse et le contrôle d’obsolescence ne sont pas stockés dans `ProjectState`. Une actualisation de la commande ou l’annulation du geste invalide cette continuation par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
 
 `effectiveProjectRevision` est un compteur monotone incrémenté à chaque remplacement de `project`, de `transientProject` ou de leur résolution effective. Il reste monotone lors d’un undo/redo. `commandRevision` suit séparément les intentions, y compris celles qui ne sont pas encore devenues effectives.
 
@@ -866,7 +866,7 @@ L’ajout initial à la grille crée une occurrence référençant le clip. Cett
 
 ### ProjectFileService
 
-`ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne la publication avec `EditService` et `PlaybackService`.
+`ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne la publication avec `EditService` et `PlaybackService`. Cette vérification confirme seulement qu’un `InstrumentId` est disponible dans le catalogue : `ProjectFileService` ne prépare ni ne charge aucune banque.
 
 Une ouverture valide remplace le document complet, vide l’historique et les sélections et initialise la tête globale à `0`, sans clip ouvert. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
 
@@ -931,11 +931,13 @@ Pour un transport `CLIP`, aucune de ces règles de répétition ne s’applique 
 
 ##### Préparation sonore des éditions
 
-`EditService` demande à `PlaybackService` les banques nécessaires à la projection candidate avant de la publier. Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un clip inutilisé, création d’une occurrence, déplacement dans la partie restant à lire, changement d’instrument ou restauration par undo/redo. Un changement explicite de `Clip.instrumentId` prépare aussi la banque quand le transport est arrêté. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
+`EditService` demande à `PlaybackService` d’évaluer et de préparer les banques nécessaires à la projection candidate avant de la publier. `PlaybackService` est l’unique consommateur applicatif de `AudioEngine.prepareInstruments` ; `EditService`, les composants de présentation et `ProjectFileService` ne l’appellent jamais directement.
 
-La préparation utilise le même `AudioEngine.prepareInstruments` et le même cache que les transports et préécoutes. `pendingEditPreparation` identifie l’intention concernée ; il remplace le mécanisme spécialisé de changement d’instrument. Tant qu’une banque manque, la projection candidate n’est pas publiée : l’ancien `effectiveProject` reste affiché comme document et continue de jouer, tandis que le geste ou le choix en attente dispose d’un repère distinct en chargement.
+Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un clip inutilisé, création d’une occurrence, déplacement dans la partie restant à lire, changement d’instrument ou restauration par undo/redo. Un changement explicite de `Clip.instrumentId` prépare aussi la banque quand le transport est arrêté. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
 
-Avant publication, les services vérifient que la demande, la commande, la base et la portée courante sont toujours celles attendues. Si le transport a changé ou avancé, les besoins sont recalculés ; seules les banques supplémentaires sont préparées. L’arrêt du transport ne valide ni n’annule une édition à lui seul. Les préécoutes restent protégées par leurs propres handles. Un échec de banque produit `InstrumentPreparationError`, conserve le dernier projet effectif et ne crée aucune entrée d’historique.
+`pendingEditPreparation` identifie l’intention concernée et protège sa publication ; il ne représente ni le chargeur, ni le cache, et remplace le mécanisme spécialisé de changement d’instrument. Tant qu’une banque manque, la projection candidate n’est pas publiée : l’ancien `effectiveProject` reste affiché comme document et continue de jouer, tandis que le geste ou le choix en attente dispose d’un repère distinct en chargement.
+
+Avant publication, `EditService` vérifie que la demande, la commande et la base sont toujours celles attendues, tandis que `PlaybackService` revalide la portée sonore et les besoins. Si le transport a changé ou avancé, les besoins sont recalculés ; seules les banques supplémentaires sont préparées. L’arrêt du transport ne valide ni n’annule une édition à lui seul. Les préécoutes restent protégées par leurs propres handles. Un échec de banque produit `InstrumentPreparationError`, conserve le dernier projet effectif et ne crée aucune entrée d’historique.
 
 Quand toutes les ressources sont disponibles, une projection de geste peut devenir transitoirement effective ; un commit publie seulement un résultat valide. Si un transport est actif, sa nouvelle planification doit être acceptée avant la publication de l’édition. Un refus temporel conserve l’état précédent et relance le calcul à une nouvelle borne. Une fois accepté, le document est publié et l’audio le rejoint à cette borne sûre, avec le même délai de replanification que les autres gestes.
 
@@ -1163,7 +1165,7 @@ Les mises à jour reçues dans un même cycle sûr de planification sont coalesc
 
 ##### Préparation de l’instrument
 
-L’application demande le préchargement de l’instrument dès l’ouverture du piano roll. `previewPitch` et `previewSelection` effectuent d’abord leur validation synchrone et retournent `err(PreviewValidationError)` sans handle lorsque l’entrée est invalide.
+`PlaybackService` demande le préchargement de l’instrument dès l’ouverture du piano roll. `previewPitch` et `previewSelection` effectuent d’abord leur validation synchrone et retournent `err(PreviewValidationError)` sans handle lorsque l’entrée est invalide.
 
 Lorsqu’un handle est retourné, il l’est immédiatement, même si la banque n’est pas encore disponible. Sa propriété `ready` expose l’issue asynchrone de la préparation :
 
@@ -1326,7 +1328,9 @@ type ScheduleError = {
 };
 
 interface AudioEngine {
-  prepareInstruments(instrumentIds: readonly InstrumentId[]): Promise<void>;
+  prepareInstruments(
+    instrumentIds: readonly InstrumentId[]
+  ): Promise<Result<"READY", InstrumentPreparationError>>;
 
   openSession(sessionId: PlaybackSessionId): void;
 
@@ -1357,7 +1361,9 @@ Tous les champs `at`, ainsi que `PlaybackClock.now`, `PlaybackClock.safeAt` et `
 
 `now` représente la position audio actuelle de la session. `safeAt` est la première borne que l’application peut encore remplacer ou programmer de façon fiable selon le lookahead, la latence et le cycle du moteur. Le moteur garantit `safeAt >= now`. Les événements antérieurs à `safeAt` sont considérés comme engagés.
 
-`prepareInstruments` résout et charge toutes les ressources demandées. `PlaybackService` attend sa réussite avant `openSession`. Pour une édition nécessitant de nouvelles banques, il coordonne également cette attente avec `EditService` avant de publier le nouvel `effectiveProject` et son plan sonore. Le chargement reste ainsi technique sans déplacer dans l’application les définitions `smplr`. Le port rejette sa promesse avec une `InstrumentPreparationError` normalisée en cas d’échec de banque ; les services la convertissent en branche `err` de leurs résultats publics. Les autres exceptions ne sont pas déguisées en échecs de chargement.
+`prepareInstruments` résout et charge toutes les ressources demandées. `PlaybackService` en est l’unique appelant applicatif et attend `ok("READY")` avant toute continuation sonore. Pour une édition nécessitant de nouvelles banques, il transmet ce résultat à l’orchestration d’`EditService` avant la publication du nouvel `effectiveProject` et de son plan sonore. Le chargement reste ainsi technique sans déplacer dans l’application les définitions `smplr`.
+
+Un échec attendu de banque est retourné directement par `err(InstrumentPreparationError)` ; il ne rejette pas la promesse et ne demande aucune conversion supplémentaire dans les services. Les défauts de programmation et les défaillances techniques non prévues restent des exceptions. L’obsolescence, `CANCELLED` et `SUPERSEDED` n’appartiennent pas au port : ils sont déterminés par le propriétaire applicatif de la demande après réception du résultat.
 
 `openContext` enregistre une seule fois la relation entre le contexte et sa session propriétaire. Chaque `AudioCommand` et `ContextCompletion` transporte donc uniquement son `contextId`.
 
@@ -1563,7 +1569,18 @@ Chaque `InstrumentDefinition` référence uniquement les chemins internes des é
 
 Le moteur possède un chargeur `smplr` partagé. Le chargement des ressources distribuées et leur décodage sont mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
 
-Le chargeur travaille à la demande d’un transport ou d’une préécoute, mais sa préparation constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont chargées et décodées avant l’ouverture de la session. Le cache mémoire partagé évite de recommencer le décodage lors des lectures suivantes. Le cache HTTP éventuel des ressources statiques relève du mécanisme ordinaire de distribution de l’application et non d’un catalogue de banques téléchargées à la demande.
+`prepareInstruments` applique un contrat universel, indépendamment de la demande qui l’a déclenché :
+
+- les `InstrumentId` répétés sont dédupliqués ;
+- une banque déjà prête produit immédiatement `ok("READY")` ;
+- les demandes concurrentes d’une même banque partagent le même chargement et le même décodage ;
+- chaque appel attend l’ensemble des banques distinctes qu’il a demandé ;
+- l’obsolescence ou l’annulation d’une demande applicative n’invalide pas une ressource déjà chargée et n’interdit pas au chargement partagé de terminer ;
+- une réussite tardive peut alimenter le cache, mais ne déclenche par elle-même ni publication, ni session, ni attaque.
+
+Le propriétaire de chaque parcours reste responsable de vérifier que sa demande est encore courante après la préparation : `PendingTransportRequest` pour un transport, `EditSessionId + commandRevision` pour une édition, et l’état du handle pour une préécoute. Ces contrôles ne dupliquent pas le chargement ; ils définissent des continuations applicatives différentes autour du même résultat technique.
+
+La préparation constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont chargées et décodées avant l’ouverture de la session. Le cache mémoire partagé évite de recommencer le décodage lors des lectures suivantes. Le cache HTTP éventuel des ressources statiques relève du mécanisme ordinaire de distribution de l’application et non d’un catalogue de banques téléchargées à la demande.
 
 ### WebAudioEngine
 
@@ -1681,9 +1698,9 @@ src/
 | `application/Selection.ts` | `ClipContentSelection`, `ClipOccurrenceSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution` et quantification des intentions dans leur référentiel |
 | `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
-| `application/use-cases/PlaybackService.ts` | Transport, préparation et planification, `PlaybackSessionKind`, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute ; importe et réexpose `StopMode` |
+| `application/use-cases/PlaybackService.ts` | Transport, préparation et planification ; unique appelant de `AudioEngine.prepareInstruments`, propriétaire de `PlaybackSessionKind`, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute ; importe et réexpose `StopMode` |
 | `application/use-cases/ProjectFileService.ts` | Ouverture/sauvegarde, contrôle du catalogue et remplacement atomique du document |
-| `application/ports/AudioEngine.ts` | `StopMode`, identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; ne connaît pas `PlaybackSessionKind` |
+| `application/ports/AudioEngine.ts` | `StopMode`, identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, contrat universel de préparation, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; ne connaît ni `PlaybackSessionKind`, ni l’obsolescence applicative |
 | `application/ports/InstrumentCatalog.ts` | Contrat de consultation des `Instrument` publics et résolution des `InstrumentId` |
 | `application/ports/ProjectFileStore.ts` | Contrat abstrait de sélection, lecture et écriture de fichier, erreurs techniques et composition avec les erreurs de validation du domaine ; aucun schéma JSON |
 | `infrastructure/audio/instruments/BuiltInInstrumentCatalog.ts` | Adaptateur concret du port `InstrumentCatalog` et résolution des définitions techniques |
