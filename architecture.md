@@ -721,7 +721,7 @@ La résolution locale sert à créer, déplacer et redimensionner les notes, à 
 
 Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre.
 
-`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `effectiveProject`. Pendant un geste, un score présent seulement dans `transientProject` n’ajoute aucune entrée provisoire dans `Settings` :
+`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `effectiveProject`. Pendant un geste, un score présent seulement dans `projectCandidate` n’ajoute aucune entrée provisoire dans `Settings` :
 
 - une création ordinaire utilise la résolution locale par défaut de `240` ticks ;
 - une duplication indépendante utilise la résolution du score source capturée dans la commande ;
@@ -731,7 +731,7 @@ Au commit, la publication ajoute atomiquement au nouveau `project` l’entrée d
 
 Les deux espaces utilisent le même Value Object et la même unité `Tick`, sans pour autant partager leur valeur. `EditService` résout la grille depuis `ProjectState.settings` selon l’éditeur concerné, puis applique la règle ci-dessus lorsqu’un score n’existe que dans le brouillon ; les états d’éditeur ne dupliquent pas cette configuration. Une modification persistante de résolution cible uniquement un score du `project` validé. Elle met à jour `Settings` directement, sans `ProjectEditCommand`, projet transitoire, replanification audio ou entrée dans `ProjectHistory`, et marque le fichier comme modifié afin d’être sauvegardée.
 
-`Settings` est validé par l’application relativement au `project` : la résolution de l’arrangement est obligatoire, chaque `ScoreId` du projet validé possède exactement un réglage et aucun réglage ne cible un score absent de ce projet. Le `transientProject` n’entre pas dans cet invariant. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
+`Settings` est validé par l’application relativement au `project` : la résolution de l’arrangement est obligatoire, chaque `ScoreId` du projet validé possède exactement un réglage et aucun réglage ne cible un score absent de ce projet. Le `projectCandidate` n’entre pas dans cet invariant. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
 
 #### Têtes de lecture
 
@@ -835,14 +835,14 @@ interface ProjectState {
   project: Project;
   settings: Settings;
   editSession?: EditSession;
-  transientProject?: ProjectCandidate;
+  projectCandidate?: ProjectCandidate;
   pendingEditPreparation?: PendingEditPreparation;
   history: ProjectHistory;
   effectiveProjectRevision: number;
 }
 
 const effectiveProject: Project | ProjectCandidate =
-  state.transientProject ?? state.project;
+  state.projectCandidate ?? state.project;
 ```
 
 `project` est la version musicale courante validée faisant autorité, éventuellement non encore sauvegardée. `settings` contient les configurations persistantes associées à ce fichier. `EditSession.baseProject` référence la version immuable du projet au début du geste. Le mécanisme couvre toutes les modifications musicales du document : contenu local d’un score dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de score ne possède donc ni session ni projet transitoire séparés.
@@ -903,7 +903,7 @@ makeClipIndependent(
 
 `ProjectCandidate` est un type du domaine distinct de `Project`. Il expose une surface de lecture complète pour la présentation et la planification audio, ainsi que la collection de ses `deferredViolations`, mais il ne peut pas être fourni à une opération exigeant un agrégat validé. Dans le premier périmètre, seul `NOTE_OVERLAP` peut apparaître dans cette collection. Les bornes numériques, durées positives, références finales, identités, limites locales des notes et chronologies restent valides. Aucun `Project` invalide n’est construit.
 
-`ProjectState.transientProject` conserve le `ProjectCandidate` courant comme cache de projection de la commande, jamais comme une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni le candidat ni le projet effectif transitoire ne peuvent être sauvegardés. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
+`ProjectState.projectCandidate` conserve le `ProjectCandidate` courant comme cache de projection de la commande, jamais comme une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni le candidat ni le projet effectif transitoire ne peuvent être sauvegardés. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
 
 Cette projection contient une seule entrée par `ScoreId`, résolue par tous ses clips : une édition locale partagée n’est pas recopiée dans chaque bloc. Une copie indépendante introduit une nouvelle entrée avec ses propres identités, stables pendant toutes les actualisations du geste. Annuler ce geste retire simultanément ses créations et rétablit les références initiales ; aucun clip orphelin ni score créé par un geste annulé ne subsiste.
 
@@ -919,7 +919,7 @@ Une demande contient des codes et des données structurées, jamais un titre ou 
 
 `pendingEditPreparation` décrit uniquement l’attente observable requise par la commande courante. `EditService` possède l’identité, la révision et la continuation de cette attente, mais ne charge aucune banque lui-même : sa tâche privée attend une préparation demandée à `PlaybackService`. La promesse et le contrôle d’obsolescence ne sont pas stockés dans `ProjectState`. Une actualisation de la commande ou l’annulation du geste invalide cette continuation par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
 
-`effectiveProjectRevision` est un compteur monotone incrémenté à chaque remplacement de `project`, de `transientProject` ou de leur résolution effective. Il reste monotone lors d’un undo/redo. `commandRevision` suit séparément les intentions, y compris celles qui ne sont pas encore devenues effectives.
+`effectiveProjectRevision` est un compteur monotone incrémenté à chaque remplacement de `project`, de `projectCandidate` ou de leur résolution effective. Il reste monotone lors d’un undo/redo. `commandRevision` suit séparément les intentions, y compris celles qui ne sont pas encore devenues effectives.
 
 Le cycle public de `EditService` est :
 
@@ -1037,14 +1037,14 @@ Pendant une manipulation continue, la présentation appelle `EditService.updateE
 
 Une erreur bloquante ne remplace pas la dernière projection admissible. Une violation différée reste au contraire visible dans `ProjectCandidate.deferredViolations` : la projection suit le pointeur et demeure la source commune du rendu visuel et audio. Avec `NOTE_OVERLAP`, plusieurs notes de même hauteur peuvent donc être entendues simultanément pendant le geste. Aucune résolution `SLICE` ou `MERGE` et aucun fragment ne sont produits à ce stade.
 
-Au relâchement, `commitEdit` appelle `finalizeProjectCandidate` avec les résolutions déjà acquises. Sans violation et après toute préparation nécessaire, le `Project` retourné remplace `project`, puis la session d’édition et `transientProject` disparaissent. Si une violation différée reste sans résolution, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, conserve le candidat final et suspend la publication.
+Au relâchement, `commitEdit` appelle `finalizeProjectCandidate` avec les résolutions déjà acquises. Sans violation et après toute préparation nécessaire, le `Project` retourné remplace `project`, puis la session d’édition et `projectCandidate` disparaissent. Si une violation différée reste sans résolution, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, conserve le candidat final et suspend la publication.
 
 Pour `NOTE_OVERLAP`, la présentation demande `SLICE`, `MERGE` ou l’annulation :
 
 - `submitEditDecision` ajoute une `DeferredResolution` typée puis finalise de nouveau le même candidat ;
 - les fragments et leurs identifiants sont créés une seule fois pendant cette résolution définitive ;
 - si une autre violation différée subsiste, elle produit la décision suivante sans publication partielle ;
-- l’annulation supprime `transientProject` sans modifier `project`.
+- l’annulation supprime `projectCandidate` sans modifier `project`.
 
 Pendant cette attente, le geste ne reçoit plus d’actualisation : sa géométrie finale et sa commande quantifiée sont figées. Le domaine ne dépend d’aucune interaction utilisateur. Il reçoit le candidat et les résolutions typées, tandis que l’application possède l’ordre des décisions et leur présentation.
 
@@ -1677,7 +1677,7 @@ Dans cette représentation :
 
 Tous les clips d’une piste utilisent son instrument. Déplacer un clip verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
-La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` obtient `transientProject` en appelant `buildProjectCandidate` avec la commande quantifiée et la base du geste. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` obtient `projectCandidate` en appelant `buildProjectCandidate` avec la commande quantifiée et la base du geste. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
 Les actions de duplication distinguent clairement le partage du score et la création d’une copie indépendante. Le nombre de clips utilisant un score peut être dérivé de leurs `scoreId` pour informer l’utilisateur de la portée d’une édition. Cette information n’est ni un champ du document ni un mode d’édition : modifier le score ouvert modifie toujours ce score et tous les clips qui le référencent.
 
