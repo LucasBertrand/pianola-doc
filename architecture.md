@@ -645,7 +645,7 @@ Une session `CLIP` reste attachée au `clipId` choisi à son ouverture. Fermer l
 
 #### Intention d’édition et projet transitoire
 
-`EditService` possède le cycle d’édition. La présentation lui transmet une intention sous forme de commande ; elle ne construit pas directement un agrégat ou un projet transitoire.
+`EditService` possède le cycle d’édition. La présentation traduit les événements bruts — pointeur, clavier ou commandes d’interface — en une `EditIntent` sémantique. Le service résout ensuite la sélection et la résolution concernées, quantifie l’intention et construit le `ProjectEditCommand` transmis aux opérations du domaine. La présentation ne construit donc directement ni commande métier, ni agrégat, ni projet transitoire.
 
 ```ts
 interface EditSession {
@@ -695,7 +695,7 @@ interface PendingEditPreparation {
   editSessionId: EditSessionId;
   commandRevision: number;
   instrumentIds: readonly InstrumentId[];
-  ready: Promise<Result<"READY" | "CANCELLED" | "SUPERSEDED", InstrumentPreparationError>>;
+  status: "PREPARING";
 }
 
 interface ProjectState {
@@ -713,7 +713,7 @@ const effectiveProject: Project | TransientProject =
 
 `project` est la version courante validée faisant autorité, éventuellement non encore sauvegardée. `EditSession.baseProject` référence cette version immuable au début du geste. Le mécanisme couvre toutes les modifications du document : contenu local d’un clip dans le piano roll, occurrences dans la grille et propriétés générales du projet. Le clip editor ne possède donc ni session ni projet transitoire séparés.
 
-`ProjectEditCommand` réunit les commandes explicites du domaine parce que chacune produit une nouvelle version de l’agrégat `Project`, y compris lorsqu’elle ne modifie qu’une note d’un clip. Ce nom désigne la portée transactionnelle de la commande, pas son origine dans la grille. Les paramètres expriment une transformation cumulée depuis `baseProject`, jamais depuis le brouillon précédent. Les identifiants des créations ordinaires sont alloués une fois et conservés dans la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
+`ProjectEditCommand` est l’union applicative des commandes métier élémentaires que `EditService` sait composer et rejouer comme une seule transaction. Les commandes élémentaires restent déclarées près des opérations du domaine qui les exécutent ; l’union n’appartient pas à `Project`, car son exhaustivité décrit les capacités du cas d’usage d’édition. Ce nom désigne la portée transactionnelle de la commande, pas son origine dans la grille. Les paramètres expriment une transformation cumulée depuis `baseProject`, jamais depuis le brouillon précédent. Les identifiants des créations ordinaires sont alloués une fois et conservés dans la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
 
 Prévisualisation et validation réutilisent les mêmes calculs purs de transformation, déclarés auprès des entités du domaine. Ces calculs peuvent produire des données candidates sans construire un agrégat valide ; la publication d’un `Project` ajoute toujours la validation complète. Le domaine ignore les gestes, les sélections, l’audio et la notion applicative de `TransientProject`.
 
@@ -731,15 +731,15 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 Une demande contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; le couple `kind` et `choice` interdit d’envoyer le choix d’un autre type d’arbitrage.
 
-`pendingEditPreparation` identifie la préparation requise par la commande courante. Une actualisation de cette commande ou l’annulation du geste invalide le résultat précédent par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
+`pendingEditPreparation` décrit uniquement l’attente observable requise par la commande courante. La promesse, le contrôle d’annulation et le résultat asynchrone appartiennent à une tâche privée d’`EditService` ; ils ne sont pas stockés dans `ProjectState`. Une actualisation de la commande ou l’annulation du geste invalide cette tâche par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
 
 `effectiveProjectRevision` est un compteur monotone incrémenté à chaque remplacement de `project`, de `transientProject` ou de leur résolution effective. Il reste monotone lors d’un undo/redo. `commandRevision` suit séparément les intentions, y compris celles qui ne sont pas encore devenues effectives.
 
 Le cycle public de `EditService` est :
 
 ```ts
-beginEdit(command: ProjectEditCommand): Result<void, ProjectEditError | EditValidationError>;
-updateEdit(command: ProjectEditCommand): Result<void, ProjectEditError | EditValidationError>;
+beginEdit(intent: EditIntent): Result<void, ProjectEditError | EditValidationError>;
+updateEdit(intent: EditIntent): Result<void, ProjectEditError | EditValidationError>;
 commitEdit(): Promise<Result<EditOutcome, EditError>>;
 submitEditDecision(
   decision: SubmittedEditDecision
@@ -755,7 +755,7 @@ type EditOutcome =
 type EditError = ProjectEditError | EditValidationError | InstrumentPreparationError;
 ```
 
-`beginEdit` capture la base ; `updateEdit` remplace la commande et recalcule sa projection. Une préparation éventuellement nécessaire est exposée par `pendingEditPreparation.ready` ; elle fournit son résultat technique même avant une demande de commit. Une nouvelle commande rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace pas la commande précédente ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, valide la commande finale contre la même base et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
+`beginEdit` capture la base, résout l’intention et construit la commande initiale ; `updateEdit` remplace cette intention, reconstruit la commande et recalcule sa projection. Une préparation éventuellement nécessaire est signalée par `pendingEditPreparation`, tandis que sa tâche reste privée au service. Son résultat technique est retourné par l’opération asynchrone qui l’attend, notamment `commitEdit`. Une nouvelle intention rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace ni l’intention ni la commande précédentes ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, valide la commande finale contre la même base et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
 
 Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_COLLISION` dont `details.collisions` contient les conflits et dont `choices` contient `SLICE` et `MERGE`.
 
@@ -780,11 +780,12 @@ Après publication, les références de sélection absentes sont retirées et le
 
 `EditService` expose les cas d’usage d’édition et leur cycle commun. Il :
 
-- traduit les gestes en commandes explicites ;
-- construit et compose les Value Objects par leurs `Result` sans forcer une valeur invalide ;
+- reçoit des intentions sémantiques, jamais des événements bruts de pointeur ou de clavier ;
 - choisit la sélection adaptée à la portée de l'action ;
 - résout les références vers les entités du projet ;
 - applique si nécessaire la quantification ;
+- construit et compose les Value Objects par leurs `Result` sans forcer une valeur invalide ;
+- construit les commandes métier élémentaires et leur `ProjectEditCommand` transactionnel ;
 - délègue au domaine les transformations et validations ;
 - coordonne leur préparation sonore avec `PlaybackService` ;
 - publie les versions validées et gère `ProjectHistory`.
@@ -804,7 +805,7 @@ Exemples :
 - modifier le `repeatCount` d'une occurrence ;
 - associer un instrument disponible à un clip.
 
-Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements et d’occurrences ; le résultat est validé et publié atomiquement. `ProjectEditCommand` et ses commandes élémentaires appartiennent au domaine. Les références de contenu `ClipContentRef` y désignent des entités, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
+Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements et d’occurrences ; le résultat est validé et publié atomiquement. Les commandes métier élémentaires appartiennent aux modules du domaine qui réalisent leurs transformations. `ProjectEditCommand`, leur union et leur composition transactionnelle appartiennent à `EditService`. Les références de contenu `ClipContentRef` restent des adresses d’entités du domaine, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
 
 Un cas d'usage propage explicitement une erreur de domaine ou la traduit vers une erreur applicative plus contextuelle. Il ne la remplace jamais par une exception et ne met à jour `ProjectState` que depuis la branche `ok: true`.
 
@@ -1033,7 +1034,7 @@ previewSelection(
 stop(mode?: StopMode): void;
 ```
 
-`Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
+`StopMode` est déclaré dans `application/Playback.ts`, car il fait partie du vocabulaire applicatif partagé entre l’API publique de lecture et le port audio. `Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
 
 Les erreurs de validation sont déterminées avant toute préparation lorsque c’est possible. Les méthodes de transport les retournent néanmoins dans leur promesse de `Result` ; seules les validations des préécoutes sont retournées synchroniquement. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
 
@@ -1257,6 +1258,8 @@ type ActiveTransport =
 | Touche du piano roll | `PITCH_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
 | Sélection manipulée | `SELECTION_PREVIEW` | Au plus une session de sélection ; peut coexister avec le transport et les préécoutes de hauteur |
 
+`PlaybackSessionKind` appartient à `PlaybackService` : il décrit les catégories de cas d’usage et leurs règles de concurrence. Il n’est pas transmis à `AudioEngine`, dont toutes les sessions suivent le même contrat technique.
+
 Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `playClip` retire ce rôle au transport précédent et annule ses attaques futures lorsque la nouvelle portée est prête à démarrer. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif. Les deux têtes de lecture restent indépendantes.
 
 `previewPitch` et `previewSelection` ne remplacent jamais le transport. Démarrer une nouvelle préécoute de sélection arrête la précédente. Relâcher ou arrêter leurs handles termine structurellement leur session sans affecter les autres auditions.
@@ -1275,7 +1278,7 @@ Le mode par défaut est `GRACEFUL` :
 
 #### AudioEngine
 
-`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Le `PlaybackService` copie le `Clip.instrumentId` dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
+`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Il ne reçoit pas la catégorie applicative de la session. Le `PlaybackService` copie le `Clip.instrumentId` dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
 
 ```ts
 type AudioCommand = {
@@ -1323,10 +1326,7 @@ type ScheduleError = {
 interface AudioEngine {
   prepareInstruments(instrumentIds: readonly InstrumentId[]): Promise<void>;
 
-  openSession(
-    sessionId: PlaybackSessionId,
-    kind: PlaybackSessionKind
-  ): void;
+  openSession(sessionId: PlaybackSessionId): void;
 
   openContext(
     sessionId: PlaybackSessionId,
@@ -1398,7 +1398,7 @@ interface ProjectFileStore {
 }
 ```
 
-`undefined` dans une lecture réussie représente l’annulation du choix de fichier. `ProjectFileError` distingue les validations du domaine des erreurs de lecture/écriture, de format JSON et de version non prise en charge (`UNSUPPORTED_FILE_VERSION`). Le port reçoit ou retourne un `Project` validé ; ses types d’erreur sont structurés, sans message d’interface. Le contrôle de disponibilité des `InstrumentId` appartient à `ProjectFileService`, après reconstitution et avant publication.
+`undefined` dans une lecture réussie représente l’annulation du choix de fichier. `ProjectFileError` compose les erreurs de lecture/écriture, de format JSON et de version non prise en charge (`UNSUPPORTED_FILE_VERSION`) avec les unions de validation déjà définies par le domaine ; il ne redéclare pas ces dernières. Le port reçoit ou retourne un `Project` validé ; ses types d’erreur sont structurés, sans message d’interface. Le contrôle de disponibilité des `InstrumentId` appartient à `ProjectFileService`, après reconstitution et avant publication.
 
 Le port ne reçoit ni état d’éditeur ni projet transitoire. Les chemins, dialogues de fichiers, chaînes JSON et données brutes restent à l’infrastructure. Le service propage l’échec attendu par `Result` ; les défauts de programmation restent des exceptions.
 
@@ -1634,9 +1634,11 @@ src/
 ├── application/
 │   ├── EditorState.ts
 │   ├── ProjectState.ts
+│   ├── EditSession.ts
 │   ├── ProjectHistory.ts
 │   ├── Selection.ts
 │   ├── Grid.ts
+│   ├── Playback.ts
 │   ├── use-cases/
 │   │   ├── EditService.ts
 │   │   ├── PlaybackService.ts
@@ -1667,25 +1669,36 @@ src/
 | Module | Contenu |
 | --- | --- |
 | `domain/Result.ts` | `Result`, helpers et forme générique de `ValidationError` ; les erreurs concrètes restent près de leurs invariants |
-| `domain/Project.ts` | Agrégat, commandes de projet et union `ProjectEditCommand`, validation complète et références entre clips et occurrences |
-| `domain/Clip.ts` | `Clip`, `ClipOccurrence`, leurs identifiants, `LineIndex`, limites de lignes et répétitions, références `ClipContentRef`, commandes et transformations locales ; détection et résolution des collisions |
-| `domain/Note.ts` | `Note`, `NoteId`, `Velocity`, `NoteCollisionResolution` et faits de collision |
+| `domain/Project.ts` | Agrégat, validation complète, références entre clips et occurrences et commandes métier portant sur l’ensemble du projet |
+| `domain/Clip.ts` | `Clip`, `ClipOccurrence`, leurs identifiants, `LineIndex`, limites de lignes et répétitions, références `ClipContentRef`, commandes et transformations locales ; `NoteCollision`, `NoteCollisionError`, `NoteCollisionResolution`, détection et résolution des collisions |
+| `domain/Note.ts` | `Note`, `NoteId` et `Velocity` |
 | `domain/Meter.ts` | `Meter`, `MeterChange`, `MeterSection` |
 | `domain/Pitch.ts` | `Pitch` et `RootNote` commun à `Chord` et `Scale` |
 | `domain/Harmony.ts` | `Chord`, `Scale`, catalogues de types, `Harmony`, `HarmonyChange`, `HarmonySection` et analyse dérivée des notes |
 | `domain/Instrument.ts` | `Instrument` public et `InstrumentId` |
-| `application/ProjectState.ts` | `ProjectState`, `EditSession`, `EditSessionPhase`, les conteneurs génériques `PendingEditDecision` et `EditDecision`, les unions `EditDecisionRequest` et `SubmittedEditDecision`, `PendingEditPreparation`, leurs identifiants et `TransientProject` ; résolution dérivée d’`effectiveProject` |
+| `application/ProjectState.ts` | `ProjectState`, `TransientProject`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
+| `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
 | `application/EditorState.ts` | `EditorState`, `ClipEditorState`, positions mémorisées et contexte d’édition |
 | `application/Selection.ts` | `ClipContentSelection`, `ClipOccurrenceSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution` et quantification des intentions dans leur référentiel |
-| `application/use-cases/EditService.ts` | Cycle des commandes, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives d’édition |
-| `application/use-cases/PlaybackService.ts` | Transport, préparation et planification, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute |
+| `application/Playback.ts` | `StopMode`, vocabulaire applicatif partagé par le service de lecture et le port audio |
+| `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
+| `application/use-cases/PlaybackService.ts` | Transport, préparation et planification, `PlaybackSessionKind`, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute |
 | `application/use-cases/ProjectFileService.ts` | Ouverture/sauvegarde, contrôle du catalogue et remplacement atomique du document |
-| `application/ports/AudioEngine.ts` | Identités audio, `PlaybackSessionKind`, `AudioCommand`, `ContextCompletion`, plans, horloge, `StopMode`, `ScheduleError`, `InstrumentPreparationError` et contrat moteur |
-| `application/ports/ProjectFileStore.ts` | Contrat de lecture/écriture et `ProjectFileError` ; aucun schéma JSON |
+| `application/ports/AudioEngine.ts` | Identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; réutilise `StopMode` sans connaître `PlaybackSessionKind` |
+| `application/ports/InstrumentCatalog.ts` | Contrat de consultation des `Instrument` publics et résolution des `InstrumentId` |
+| `application/ports/ProjectFileStore.ts` | Contrat abstrait de sélection, lecture et écriture de fichier, erreurs techniques et composition avec les erreurs de validation du domaine ; aucun schéma JSON |
+| `infrastructure/audio/catalog/StaticInstrumentCatalog.ts` | Adaptateur concret du catalogue et collection immuable des définitions intégrées |
+| `infrastructure/audio/catalog/InstrumentDefinition.ts` | Configuration technique et factory `smplr`, privées à l’infrastructure |
+| `infrastructure/audio/engine/WebAudioEngine.ts` | Implémentation du port, horloge technique, planification et mixage Web Audio |
+| `infrastructure/audio/engine/PlaybackSession.ts` | État technique transitoire et propriété des contextes d’une session |
+| `infrastructure/audio/engine/PlaybackContext.ts` | Chaîne audio isolée, commandes programmées, voix et cycle `SCHEDULED → ACTIVE → DRAINING → DISPOSED` |
+| `infrastructure/audio/engine/InstrumentInstance.ts` | Adaptation d’une instance `smplr` au cycle de vie d’un contexte |
 | `infrastructure/persistence/JsonProjectFileStore.ts` | Adaptateur, `ProjectFileData`, `ProjectData`, encodage et reconstitution du format versionné |
+| `presentation/components/` | Rendu de la grille, du piano roll, des décisions et des états de chargement |
+| `presentation/stores/` | État strictement visuel et adaptation réactive de l’état applicatif, sans duplication du document ni des tâches |
 
-`Tick.ts`, `Duration.ts`, `TimeRange.ts` et `Tempo.ts` conservent les valeurs élémentaires et leurs validations ; `Tick.ts` porte `MAX_TICK`. La colocalisation de `ClipOccurrence` dans `Clip.ts` ne la rend pas enfant de `Clip` : les deux restent possédés par `Project`.
+`Tick.ts`, `Duration.ts`, `TimeRange.ts` et `Tempo.ts` conservent les valeurs élémentaires et leurs validations ; `Tick.ts` porte `MAX_TICK`. La colocalisation de `ClipOccurrence` dans `Clip.ts` ne la rend pas enfant de `Clip` : les deux restent possédés par `Project`. De même, `ClipContentRef` est une adresse typée d’entité locale et non une sélection ; `Selection.ts` l’emploie sans déplacer sa propriété hors du domaine.
 
 Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` demande à `PlaybackService` la coordination sonore des publications ; `ProjectFileService` coordonne ses publications avec ces services. `PlaybackService` ne dépend pas en retour d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent l’état applicatif et conservent les détails d’interface ; ils ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
