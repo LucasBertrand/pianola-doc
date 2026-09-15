@@ -43,18 +43,18 @@ Le premier périmètre comprend :
 
 - une grille bidimensionnelle de clips ;
 - un axe horizontal représentant un temps global continu ;
-- des lignes d'organisation réparties sur l'axe vertical, sans instrument, routage ni comportement musical associé ;
-- un placement horizontal et une ligne persistants pour chaque occurrence de clip ;
+- des pistes instrumentales ordonnées sur l’axe vertical, chacune associée à un instrument ;
+- un placement horizontal et une référence de piste persistants pour chaque occurrence de clip ;
 - des occurrences référençant par défaut un contenu `Clip` partagé : modifier ce contenu modifie toutes ses occurrences ;
 - un tempo unique appartenant au projet ;
-- un instrument associé à chaque clip et partagé par toutes ses notes ;
+- des clips sans instrument propre, dont les notes sont jouées avec l’instrument de la piste de chaque occurrence ;
 - l'absence de chevauchement entre notes de même hauteur dans un clip, avec résolution explicite `SLICE` ou `MERGE` ;
 - des chronologies locales de métrique et d’harmonie pour chaque clip ;
-- la lecture simultanée de toutes les occurrences dont les intervalles globaux se chevauchent, y compris sur une même ligne ;
+- la lecture simultanée de toutes les occurrences dont les intervalles globaux se chevauchent, y compris sur une même piste ;
 - l'édition du contenu d'un clip dans un piano roll ;
 - la lecture du projet depuis sa tête globale ou depuis un tick global explicite ;
 - la lecture isolée du clip édité depuis sa tête locale ou depuis un tick local explicite ;
-- la préécoute soutenue d’une hauteur avec l’instrument du clip édité ;
+- la préécoute soutenue d’une hauteur avec l’instrument de la piste d’écoute du piano roll ;
 - la préécoute brève et simultanée des hauteurs uniques d’une sélection de notes ;
 - un catalogue d'instruments échantillonnés intégrés et non éditables, rendus par `smplr` ;
 - l’annulation et le rétablissement des éditions validées ;
@@ -62,7 +62,6 @@ Le premier périmètre comprend :
 
 Il ne comprend pas :
 
-- des pistes instrumentales : une ligne n'impose aucun instrument aux clips qu'elle contient ;
 - une chronologie de tempo : une seule valeur s'applique au projet entier ;
 - les contrôles globaux d'audibilité par instrument ;
 - les automations et événements de contrôle ;
@@ -81,7 +80,7 @@ Le domaine représente les intentions musicales indépendamment de React, Zustan
 
 ### Modèle de composition
 
-Le `Project` possède d'une part des `Clip`, contenus musicaux éditables dans le piano roll, et d'autre part des `ClipOccurrence`, blocs persistants placés dans l'espace temporel bidimensionnel. Chaque occurrence référence exactement un clip par son `ClipId`.
+Le `Project` possède des `Track` ordonnées, des `Clip` constituant les contenus musicaux éditables et des `ClipOccurrence` placées dans la composition. Chaque occurrence référence exactement un clip par son `ClipId` et une piste par son `TrackId`. Les trois collections appartiennent directement au projet ; les occurrences ne sont pas dupliquées dans les pistes.
 
 ```mermaid
 flowchart TD
@@ -91,22 +90,26 @@ flowchart TD
     Project --> OccB["ClipOccurrence · placement B"]
     OccA --> Clip
     OccB --> Clip
-    Clip --> Instrument
+    Project --> Track["Track · piste instrumentale"]
+    OccA --> Track
+    OccB --> Track
+    Track --> Instrument
     Clip --> Content["Notes · métrique · Harmony"]
 ```
 
-La coordonnée horizontale d'une occurrence est son instant de départ global. Sa coordonnée verticale est un indice de ligne. La durée du bloc est dérivée de la durée locale du clip référencé et du `repeatCount` de l'occurrence.
+La coordonnée horizontale d'une occurrence est son instant de départ global. Sa position verticale est dérivée du rang de sa piste dans `Project.tracks`. La durée du bloc est dérivée de la durée locale du clip référencé et du `repeatCount` de l'occurrence.
 
-Les lignes ne sont ni des pistes, ni des conteneurs, ni des canaux audio. Dans le premier périmètre, elles sont de simples indices bornés par une limite fixe de sécurité et ne font l'objet d'aucune commande d'ajout ou de suppression. Deux occurrences peuvent se chevaucher sur une même ligne comme sur des lignes différentes : elles sont alors lues simultanément. La ligne organise uniquement leur affichage et ne crée aucune contrainte temporelle entre les blocs.
+Les pistes possèdent une identité stable, un nom et un instrument. Leur ordre est persistant ; les réordonner ne change ni les références des occurrences ni leur son. Déplacer une occurrence vers une autre piste change son instrument effectif si les deux pistes utilisent des instruments différents. Deux occurrences peuvent se chevaucher sur une même piste comme sur des pistes différentes : elles sont lues simultanément, sans priorité ni contrainte de collision entre leurs notes. Chaque occurrence garde son contexte audio indépendant ; une piste n’introduit pas de bus de mixage partagé.
 
 ### Vue des concepts
 
 | Concept | Nature | Rôle principal |
 | --- | --- | --- |
-| `Project` | Entity et racine d'agrégat | Posséder le document musical, le tempo, les clips et leurs occurrences |
-| `Clip` | Entity interne | Porter un instrument et un contenu musical local partagé et éditable |
-| `ClipOccurrence` | Entity interne | Référencer un clip et porter son placement global dans la grille |
-| `Note` | Entity interne | Représenter une note persistante dont l'instrument est hérité du clip |
+| `Project` | Entity et racine d'agrégat | Posséder le document musical, le tempo, les pistes ordonnées, les clips et leurs occurrences |
+| `Track` | Entity interne | Porter l’identité, le nom et l’instrument d’une piste |
+| `Clip` | Entity interne | Porter un contenu musical local partagé et éditable, sans instrument propre |
+| `ClipOccurrence` | Entity interne | Référencer un clip et une piste, porter son début global et ses répétitions |
+| `Note` | Entity interne | Représenter une note locale ; son instrument est résolu depuis la piste lors de la lecture |
 | `Instrument` | Entity de référence | Décrire publiquement un instrument intégré |
 | `Tempo` | Value Object | Définir la vitesse unique du projet |
 | `MeterChange` | Entity interne | Placer une métrique sur la chronologie locale d'un clip |
@@ -173,14 +176,14 @@ Les violations prévisibles d'une règle métier ne lèvent pas d'exception. Les
 Le premier périmètre fixe les limites suivantes :
 
 ```ts
-const MAX_LINE_COUNT = 128;
+const MAX_TRACK_COUNT = 128;
 const MAX_TICK = 2_147_483_647;
 const MAX_REPEAT_COUNT = 65_535;
 ```
 
 | Valeur | Domaine valide |
 | --- | --- |
-| `LineIndex` | entier de `0` à `127` inclus |
+| Nombre de pistes | entier de `0` à `MAX_TRACK_COUNT = 128` inclus |
 | `Pitch.midiNumber` | entier de `0` à `127` inclus |
 | `Velocity` | entier de `1` à `127` inclus |
 | `Meter.beatsPerMeasure` | entier de `1` à `32` inclus |
@@ -212,6 +215,7 @@ Attributs possibles :
 - `id` ;
 - `name` ;
 - `tempo` ;
+- `tracks` : collection ordonnée de pistes ;
 - `clips` ;
 - `clipOccurrences` ;
 - `createdAt` ;
@@ -220,13 +224,16 @@ Attributs possibles :
 Responsabilités et invariants :
 
 - servir de racine de sauvegarde ;
-- posséder directement tous les clips et toutes leurs occurrences ;
+- posséder directement les pistes, tous les clips et toutes leurs occurrences ;
 - posséder exactement un `Tempo` ;
-- garantir l'unicité des `ClipId` et des `ClipOccurrenceId` ;
-- garantir que chaque `ClipOccurrence.clipId` référence un clip existant ;
+- garantir l’unicité des `TrackId`, des `ClipId` et des `ClipOccurrenceId` dans leurs collections respectives ;
+- limiter la collection à `MAX_TRACK_COUNT = 128` pistes ;
+- garantir que chaque `ClipOccurrence.clipId` référence un clip existant et chaque `trackId` une piste existante ;
+- permettre la création, le renommage, le réordonnancement et le changement d’instrument des pistes ;
+- interdire la suppression d’une piste encore référencée par une occurrence ;
 - permettre la création et l'édition des clips ainsi que l'ajout, le déplacement, la duplication et la suppression de leurs occurrences ;
 - interdire la suppression d'un clip encore référencé par une occurrence ;
-- accepter un projet vide et les clips temporairement sans occurrence.
+- accepter un projet sans piste ni occurrence, des pistes vides et des clips sans occurrence.
 
 Supprimer la dernière occurrence d'un clip ne supprime jamais implicitement sa source. Le clip reste disponible pour être replacé et ne disparaît que par une commande manuelle de suppression, valide uniquement lorsqu'aucune occurrence ne le référence.
 
@@ -234,16 +241,33 @@ Le tempo ne possède ni position, ni changement programmé. Il s'applique unifor
 
 La durée structurelle du projet est dérivée de la fin globale la plus tardive parmi ses occurrences. Elle vaut zéro lorsque le projet ne contient aucune occurrence.
 
+### Track
+
+`Track` représente une piste instrumentale appartenant au projet.
+
+Attributs :
+
+- `id: TrackId` ;
+- `name` ;
+- `instrumentId: InstrumentId`.
+
+Une piste référence exactement un instrument. Son rang est donné uniquement par l’ordre de `Project.tracks` : aucun indice de placement ni champ d’ordre redondant n’est sauvegardé dans la piste ou ses occurrences. Plusieurs pistes peuvent porter le même nom ou utiliser le même instrument ; leur identité les distingue.
+
+La piste détermine l’instrument de toutes ses occurrences, sans posséder leur contenu musical. Un même clip peut ainsi être joué au piano sur une piste et au vibraphone sur une autre. Modifier l’instrument d’une piste ne modifie aucun clip et n’affecte pas les occurrences placées ailleurs.
+
+Une piste vide est valide et peut servir de piste d’écoute au piano roll. La suppression d’une piste non vide retourne `TRACK_IN_USE`, sans suppression en cascade ni déplacement implicite. Une commande collective peut déplacer ou supprimer explicitement ses occurrences puis supprimer la piste, sous réserve que le résultat complet reste valide.
+
+La création au-delà de la limite retourne `TRACK_LIMIT_EXCEEDED` ; une référence absente retourne `TRACK_NOT_FOUND`. Ces erreurs structurées appartiennent aux validations du projet. Le réordonnancement doit conserver exactement les identités existantes, sans doublon ni omission. Les contrôles de volume, mute, solo, effets et routage ne font pas partie de ce premier périmètre.
+
 ### Clip
 
-`Clip` représente un contenu musical local éditable dans le piano roll, associé à un instrument et partageable par plusieurs occurrences.
+`Clip` représente un contenu musical local éditable dans le piano roll et partageable par plusieurs occurrences, indépendamment de l’instrument utilisé pour le jouer.
 
 Attributs possibles :
 
 - `id` ;
 - `name` ;
 - `duration` ;
-- `instrumentId` ;
 - `notes` ;
 - `meterChanges` ;
 - `harmonyChanges`.
@@ -251,15 +275,14 @@ Attributs possibles :
 Responsabilités et invariants :
 
 - définir sa durée canonique locale en ticks ;
-- référencer exactement un `InstrumentId` ;
-- contenir des notes positionnées relativement à son début local, toutes jouées par l'instrument du clip ;
+- contenir des notes positionnées relativement à son début local, sans association instrumentale persistante ;
 - empêcher le chevauchement temporel de deux notes de même hauteur ;
 - contenir et ordonner ses deux chronologies locales : métrique et harmonie ;
 - fournir la métrique et l’harmonie actives à une position locale ;
 - posséder un `HarmonyChange` initial obligatoire au tick `0`, dont la valeur peut être un accord ou une gamme ; la création utilise `SCALE · C CHROMATIC` par défaut ;
 - garantir la cohérence locale de ses notes et changements.
 
-Un `Clip` ne possède ni début global, ni ligne, ni nombre de répétitions. Modifier son contenu ou sa durée modifie la source commune observée et jouée par toutes les `ClipOccurrence` qui le référencent.
+Un `Clip` ne possède ni début global, ni piste, ni instrument, ni nombre de répétitions. Modifier son contenu ou sa durée modifie la source commune observée et jouée par toutes les `ClipOccurrence` qui le référencent.
 
 ### ClipOccurrence
 
@@ -270,10 +293,10 @@ Attributs possibles :
 - `id` ;
 - `clipId` ;
 - `start` ;
-- `line` ;
+- `trackId` ;
 - `repeatCount`.
 
-`start` est un `Tick` interprété depuis le début du projet. `line` est un `LineIndex` compris entre `0` et `127` inclus, conformément à `MAX_LINE_COUNT = 128`. Les lignes n'ont dans le premier périmètre ni identité, ni métadonnées, ni cycle de vie propre. Une occurrence référence exactement un `Clip` existant et ne duplique jamais son contenu local.
+`start` est un `Tick` interprété depuis le début du projet. `trackId` est un `TrackId` stable référençant une piste existante. Une occurrence référence exactement un `Clip` existant et ne duplique jamais son contenu local. Son instrument est obtenu en recherchant dans `Project.tracks` la piste dont l’identité vaut `trackId`, puis en lisant son `instrumentId`.
 
 `repeatCount` vaut `1` par défaut. Il accepte un entier de `1` à `MAX_REPEAT_COUNT = 65_535` et indique le nombre total de lectures contiguës du clip référencé. Chaque répétition recommence au tick local `0`.
 
@@ -284,7 +307,7 @@ occurrenceEnd = occurrence.start
               + clip.duration * occurrence.repeatCount
 ```
 
-Déplacer une occurrence modifie seulement son `start` ou sa `line`. La redimensionner depuis la grille globale ne modifie jamais la durée du clip partagé : elle ajoute ou retire uniquement des répétitions complètes en modifiant son `repeatCount`.
+Déplacer une occurrence modifie son `start` ou son `trackId`. Le déplacement horizontal change son instant de lecture ; le déplacement vers une autre piste change son instrument effectif si les deux pistes utilisent des instruments différents. Le clip source et les autres occurrences restent inchangés. La redimensionner depuis la grille globale ne modifie jamais la durée du clip partagé : elle ajoute ou retire uniquement des répétitions complètes en modifiant son `repeatCount`.
 
 Le bord droit conserve `start` et détermine le nouveau nombre de répétitions depuis sa position quantifiée :
 
@@ -306,15 +329,15 @@ repeatCount = max(
 start = previousEnd - clip.duration * repeatCount
 ```
 
-Dans les deux cas, le bord effectivement retenu s’aimante à une frontière de répétition complète. Chaque répétition recommence au tick local `0` ; aucune durée partielle ni aucun décalage de phase propre à l’occurrence n’est introduit. L’opération reste soumise aux bornes globales ; un chevauchement avec une autre occurrence, quelle que soit sa ligne, est valide.
+Dans les deux cas, le bord effectivement retenu s’aimante à une frontière de répétition complète. Chaque répétition recommence au tick local `0` ; aucune durée partielle ni aucun décalage de phase propre à l’occurrence n’est introduit. L’opération reste soumise aux bornes globales ; un chevauchement avec une autre occurrence, quelle que soit sa piste, est valide.
 
-Dupliquer un bloc crée une nouvelle `ClipOccurrenceId` qui conserve le même `clipId` ; les deux blocs restent donc liés au même contenu. Le premier périmètre ne permet ni de délier une occurrence, ni de transformer une occurrence liée en copie indépendante.
+Dupliquer un bloc crée une nouvelle `ClipOccurrenceId` qui conserve le même `clipId` et, par défaut, le même `trackId` ; les deux blocs restent donc liés au même contenu. Le premier périmètre ne permet ni de délier une occurrence, ni de transformer une occurrence liée en copie indépendante.
 
-Les intervalles des occurrences sont semi-ouverts. Leur recouvrement avec une durée strictement positive exprime une lecture simultanée, y compris sur une même ligne ; des bornes contiguës ne constituent pas un recouvrement. La ligne n’intervient jamais dans la planification audio.
+Les intervalles des occurrences sont semi-ouverts. Leur recouvrement avec une durée strictement positive exprime une lecture simultanée, y compris sur une même piste ; des bornes contiguës ne constituent pas un recouvrement. La piste détermine l’instrument, sans modifier le calcul des intervalles temporels.
 
 ### Note
 
-`Note` représente une note placée dans un clip. Son instrument est celui du clip qui la contient.
+`Note` représente une note placée dans un clip. Elle ne porte aucun instrument : celui-ci est résolu depuis la piste de l’occurrence ou la piste d’écoute du piano roll.
 
 Attributs possibles :
 
@@ -380,7 +403,7 @@ Attributs possibles :
 
 `InstrumentId` est un type stable et opaque déclaré avec `Instrument` dans `domain/models/instrument/Instrument.ts`.
 
-Un `Clip` sauvegarde uniquement cet identifiant, et non une référence directe vers l'objet `Instrument`. Il référence exactement un instrument, dont héritent toutes ses notes. Plusieurs clips peuvent référencer le même instrument. Le placement d'une occurrence sur une ligne ne modifie jamais cette association.
+Une `Track` sauvegarde uniquement cet identifiant, et non une référence directe vers l’objet `Instrument`. Plusieurs pistes peuvent référencer le même instrument. Les notes d’une occurrence utilisent l’instrument de sa piste ; déplacer l’occurrence vers une autre piste peut donc modifier cette association sonore sans changer son clip.
 
 `Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni configuration d'échantillons, ni état de voix, ni objet du moteur audio.
 
@@ -541,7 +564,7 @@ type NoteHarmonyRole =
 
 Les entités internes conservent des identifiants stables afin d'être ciblées par l'éditeur et les cas d'usage. Elles ne possèdent cependant ni repository ni cycle de persistance autonomes.
 
-Une opération peut être déléguée à un `Clip` pour préserver ses invariants locaux. Le `Project` valide ensuite le résultat complet avant publication : modifier la durée d’un clip doit notamment préserver les bornes des fins globales calculées de toutes ses occurrences. Les superpositions entre occurrences sont valides et ne demandent aucune résolution. Une validation locale réussie ne suffit donc pas à accepter l’édition de l’agrégat.
+Une opération peut être déléguée à un `Clip` ou une `Track` pour préserver ses invariants locaux. Le projet garantit les références de piste et de clip ainsi que l’ordre des pistes. Le `Project` valide ensuite le résultat complet avant publication : modifier la durée d’un clip doit notamment préserver les bornes des fins globales calculées de toutes ses occurrences. Les superpositions entre occurrences sont valides et ne demandent aucune résolution. Une validation locale réussie ne suffit donc pas à accepter l’édition de l’agrégat.
 
 Les `Instrument` sont extérieurs à cet agrégat et sont fournis par un catalogue.
 
@@ -581,6 +604,7 @@ interface ClipOccurrenceSelection {
 ```ts
 interface ClipEditorState {
   clipId: ClipId;
+  auditionTrackId?: TrackId;
   playhead: Tick;
   gridResolution: GridResolution;
   selection: ClipContentSelection;
@@ -597,6 +621,18 @@ interface EditorState {
 Le clip source édité et la sélection d'occurrences expriment des faits différents. Un geste d'interface peut les mettre à jour ensemble, mais aucun lien implicite n'est imposé entre eux. Regrouper `clipId`, la tête locale et la sélection empêche qu'un état local subsiste sans clip édité.
 
 La couche applicative choisit explicitement la sélection correspondant à l'action, résout ses références et transmet au domaine les identifiants concernés. Le domaine ne connaît jamais la notion de sélection.
+
+#### Piste d’écoute du piano roll
+
+`ClipEditorState.auditionTrackId` désigne la piste dont l’instrument sert à `playClip`, `previewPitch` et `previewSelection`. Ce choix applicatif n’est ni une propriété du clip, ni une occurrence supplémentaire ; il n’entre pas dans la sauvegarde ou l’historique du projet.
+
+Ouvrir une occurrence initialise le contexte depuis son `clipId` et son `trackId`. Pour un nouvel éditeur, la référence de piste est disponible immédiatement ; sa banque peut encore être en préparation et aucun son ne démarre avant sa disponibilité. Ouvrir directement un clip source, sans passer par une occurrence, laisse la piste d’écoute absente, jusqu’à un choix explicite. Le contenu reste éditable et la tête locale déplaçable sans piste, mais les appels produisant du son retournent `NO_AUDITION_TRACK`. Aucune piste ou instrument de remplacement n’est choisi implicitement.
+
+`PlaybackService.setAuditionTrack(trackId)` valide la piste et prépare son instrument via le même port que les transports. Tant que la préparation dure, le choix précédent reste effectif et le nouveau choix apparaît en attente. En cas d’échec, le choix précédent est conservé. Une fois la demande encore courante prête, le choix devient effectif ; si le clip édité est encore joué par le transport `CLIP`, son `trackId` bascule avec le plan accepté à une borne sûre, sans changer la session ni la position locale. Si l’instrument effectif est identique, aucun contexte ni aucune voix n’est recréé. Une session `PROJECT` ou une session `CLIP` attachée à un autre clip reste inchangée.
+
+Ouvrir une autre occurrence du même clip conserve ses notes sélectionnées et sa tête, mais applique explicitement ce changement de piste d’écoute. Ouvrir un autre clip crée un nouvel état local et laisse le transport existant attaché à son ancien couple clip/piste. Déplacer ultérieurement l’occurrence d’origine ne modifie pas automatiquement la piste d’écoute : l’éditeur conserve une référence de piste, pas un lien vivant vers ce bloc.
+
+Chaque préécoute capture `clipId`, `trackId` et l’instrument résolu. Changer le clip édité, fermer le piano roll, changer effectivement sa piste d’écoute ou l’instrument de cette piste arrête les handles concernés, y compris leurs préparations, sans réattaque automatique. Les nouveaux gestes utilisent le nouveau contexte. Une simple réorganisation des pistes n’invalide aucune audition.
 
 #### GridResolution
 
@@ -641,7 +677,7 @@ Les deux espaces restent indépendants. Une position globale ne détermine pas u
 
 Un seek sur la portée active remplace gracieusement la session lorsqu’il est prêt. Un seek sur une portée inactive modifie seulement sa position mémorisée. Aller exactement à la fin termine le transport sans ouvrir de nouvelle session. `stop(GRACEFUL | IMMEDIATE)` conserve la position atteinte ; la fin naturelle mémorise exactement `endTick` et libère le rôle d’`ActiveTransport`, indépendamment des tails.
 
-Une session `CLIP` reste attachée au `clipId` choisi à son ouverture. Fermer le piano roll ou ouvrir un autre clip ne l’arrête pas : sa position continue d’être dérivée en interne, sans modifier la tête du nouvel éditeur. Rouvrir le même clip pendant sa lecture affiche la position du transport ; lorsqu’il est inactif, son nouvel éditeur commence au tick `0`. Supprimer le clip lu suit la politique d’arrêt explicite définie plus loin.
+Une session `CLIP` reste attachée au couple `clipId` / `trackId` choisi à son ouverture, sauf changement explicite de piste d’écoute pour ce même clip. Fermer le piano roll ou ouvrir un autre clip ne l’arrête pas : sa position continue d’être dérivée en interne, sans modifier la tête du nouvel éditeur. Rouvrir le même clip pendant sa lecture affiche la position du transport ; lorsqu’il est inactif, son nouvel éditeur commence au tick `0`. Supprimer le clip lu suit la politique d’arrêt explicite définie plus loin.
 
 #### Intention d’édition et projet transitoire
 
@@ -713,7 +749,7 @@ const effectiveProject: Project | TransientProject =
   state.transientProject ?? state.project;
 ```
 
-`project` est la version courante validée faisant autorité, éventuellement non encore sauvegardée. `EditSession.baseProject` référence cette version immuable au début du geste. Le mécanisme couvre toutes les modifications du document : contenu local d’un clip dans le piano roll, occurrences dans la grille et propriétés générales du projet. Le clip editor ne possède donc ni session ni projet transitoire séparés.
+`project` est la version courante validée faisant autorité, éventuellement non encore sauvegardée. `EditSession.baseProject` référence cette version immuable au début du geste. Le mécanisme couvre toutes les modifications du document : contenu local d’un clip dans le piano roll, occurrences dans la grille, pistes instrumentales et propriétés générales du projet. Le clip editor ne possède donc ni session ni projet transitoire séparés.
 
 `ProjectEditCommand` est l’union applicative des commandes métier élémentaires que `EditService` sait composer et rejouer comme une seule transaction. Les commandes élémentaires restent déclarées près des opérations du domaine qui les exécutent ; l’union n’appartient pas à `Project`, car son exhaustivité décrit les capacités du cas d’usage d’édition. Ce nom désigne la portée transactionnelle de la commande, pas son origine dans la grille. Les paramètres expriment une transformation cumulée depuis `baseProject`, jamais depuis le brouillon précédent. Les identifiants des créations ordinaires sont alloués une fois et conservés dans la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
 
@@ -800,26 +836,31 @@ Exemples :
 - transposer ou redimensionner des notes ;
 - ajouter, déplacer ou supprimer un changement local ;
 - redimensionner le contenu d'un clip, ce qui redimensionne toutes ses occurrences ;
-- déplacer une ou plusieurs occurrences sur l'axe temporel ou entre les lignes ;
+- déplacer une ou plusieurs occurrences sur l’axe temporel ou entre les pistes ;
 - créer ou supprimer un clip source ;
 - créer, dupliquer ou supprimer des occurrences liées à des clips existants ;
 - modifier le tempo unique du projet ;
 - modifier le `repeatCount` d'une occurrence ;
-- associer un instrument disponible à un clip.
+- créer, renommer, réordonner ou supprimer des pistes ;
+- associer un instrument disponible à une piste.
 
-Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements et d’occurrences ; le résultat est validé et publié atomiquement. Les commandes métier élémentaires appartiennent aux modules du domaine qui réalisent leurs transformations. `ProjectEditCommand`, leur union et leur composition transactionnelle appartiennent à `EditService`. Les références de contenu `ClipContentRef` restent des adresses d’entités du domaine, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
+Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements, de pistes et d’occurrences ; le résultat est validé et publié atomiquement. Les commandes métier élémentaires appartiennent aux modules du domaine qui réalisent leurs transformations. `ProjectEditCommand`, leur union et leur composition transactionnelle appartiennent à `EditService`. Les références de contenu `ClipContentRef` restent des adresses d’entités du domaine, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
 
 Un cas d'usage propage explicitement une erreur de domaine ou la traduit vers une erreur applicative plus contextuelle. Il ne la remplace jamais par une exception et ne met à jour `ProjectState` que depuis la branche `ok: true`.
 
-Un déplacement d'occurrences reçoit par exemple un delta temporel global et un delta de ligne. Les occurrences sélectionnées conservent leurs positions relatives :
+Un déplacement collectif reçoit un delta temporel global et, pour chaque occurrence, une piste cible explicite. L’application traduit le déplacement vertical selon l’ordre des pistes dans la base du geste, en conservant les écarts de rang entre les blocs sélectionnés. Une destination hors de la collection est refusée, sans créer de piste ni borner silencieusement le geste. Le domaine reçoit des identités stables, jamais un delta d’indice d’affichage :
 
 ```ts
 interface MoveClipOccurrencesCommand {
-  occurrenceIds: readonly ClipOccurrenceId[];
+  placements: readonly {
+    occurrenceId: ClipOccurrenceId;
+    trackId: TrackId;
+  }[];
   deltaTicks: number;
-  deltaLines: number;
 }
 ```
+
+Chaque occurrence apparaît au plus une fois dans `placements`. Un déplacement uniquement horizontal conserve ses `trackId`. Les transformations sont recalculées depuis `EditSession.baseProject` ; un réordonnancement concurrent des pistes est exclu par le cycle d’édition unique.
 
 Un déplacement temporel du contenu local peut recevoir une autre commande :
 
@@ -882,7 +923,7 @@ L’ouverture partage l’exclusion des modifications du document : elle est ref
 
 Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe, y compris ses collisions provisoires.
 
-Lorsqu’un transport est actif, chaque projection candidate susceptible d’affecter sa portée requiert le remplacement de la portion future de l’ancien plan. Le service obtient `safeAt` par `AudioEngine.getClock(sessionId)`, recalcule depuis cette borne avec la candidate et transmet une unique mise à jour atomique au moteur. La projection devient effective après acceptation du plan ; en cas de refus temporel, le calcul est repris sans publication partielle. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `CLIP`, seules les modifications du clip attaché à la session et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
+Lorsqu’un transport est actif, chaque projection candidate susceptible d’affecter sa portée requiert le remplacement de la portion future de l’ancien plan. Le service obtient `safeAt` par `AudioEngine.getClock(sessionId)`, recalcule depuis cette borne avec la candidate et transmet une unique mise à jour atomique au moteur. La projection devient effective après acceptation du plan ; en cas de refus temporel, le calcul est repris sans publication partielle. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `CLIP`, seules les modifications du clip attaché, de l’instrument de sa piste d’écoute et du tempo du projet affectent la planification ; les placements et les autres clips sont sans effet.
 
 Valider un brouillon sans en modifier la projection sonore ne doit provoquer ni nouvelle planification ni rupture. L'abandonner entraîne la même réconciliation que toute autre modification du projet effectif.
 
@@ -933,7 +974,7 @@ Pour un transport `CLIP`, aucune de ces règles de répétition ne s’applique 
 
 `EditService` demande à `PlaybackService` d’évaluer et de préparer les banques nécessaires à la projection candidate avant de la publier. `PlaybackService` est l’unique consommateur applicatif de `AudioEngine.prepareInstruments` ; `EditService`, les composants de présentation et `ProjectFileService` ne l’appellent jamais directement.
 
-Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un clip inutilisé, création d’une occurrence, déplacement dans la partie restant à lire, changement d’instrument ou restauration par undo/redo. Un changement explicite de `Clip.instrumentId` prépare aussi la banque quand le transport est arrêté. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
+Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un clip inutilisé, création d’une occurrence, déplacement vers une autre piste ou dans la partie restant à lire, changement d’instrument d’une piste ou restauration par undo/redo. Un changement explicite de `Track.instrumentId` prépare aussi la banque quand le transport est arrêté. Créer une piste vide ne charge pas sa banque tant qu’aucune audition ne la requiert ; les instruments sont néanmoins validés auprès du catalogue avant publication. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
 
 `pendingEditPreparation` identifie l’intention concernée et protège sa publication ; il ne représente ni le chargeur, ni le cache, et remplace le mécanisme spécialisé de changement d’instrument. Tant qu’une banque manque, la projection candidate n’est pas publiée : l’ancien `effectiveProject` reste affiché comme document et continue de jouer, tandis que le geste ou le choix en attente dispose d’un repère distinct en chargement.
 
@@ -943,7 +984,7 @@ Quand toutes les ressources sont disponibles, une projection de geste peut deven
 
 Un changement d’instrument ouvre de nouveaux contextes dans la session existante. La mise à jour atomique contient les `NOTE_OFF` et `ContextCompletion` des anciens contextes à la borne choisie, ainsi que les nouvelles attaques et fins. Les anciens contextes peuvent se drainer pendant que les nouveaux jouent ; aucune voix n’est coupée avant l’acceptation du plan. Les notes couvrant cette borne sont réattaquées au nouvel instrument. Les contextes futurs encore remplaçables sont également recalculés.
 
-Chaque occurrence du clip possède sa propre substitution, même sur la même ligne. Une session `CLIP` ne remplace que son contexte local. Aucun nouveau transport n’est ouvert. En cas de calcul refusé, les contextes nouvellement ouverts qui ne sont utilisés par aucun plan accepté sont libérés, sans toucher aux contextes de l’ancien plan.
+Chaque occurrence concernée de la piste possède sa propre substitution, même si elle référence un autre clip. Les occurrences du même clip sur d’autres pistes ne sont pas affectées. Une session `CLIP` ne remplace son contexte local que si elle utilise cette piste. Déplacer une seule occurrence vers une piste d’instrument différent remplace uniquement son contexte dans `PROJECT` ; si l’instrument est identique, ses voix sont conservées selon les règles temporelles ordinaires. Renommer ou réordonner les pistes ne requiert aucune replanification sonore. Aucun nouveau transport n’est ouvert. En cas de calcul refusé, les contextes nouvellement ouverts qui ne sont utilisés par aucun plan accepté sont libérés, sans toucher aux contextes de l’ancien plan.
 
 Au choix de `SLICE` ou `MERGE`, le résultat valide remplace la projection provisoire comme une modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`.
 
@@ -966,21 +1007,25 @@ type PreviewReadyOutcome =
   | "CANCELLED";
 
 type PlaybackValidationError = ValidationError<
-  "NO_CLIP_EDITED" | "CLIP_NOT_FOUND" | "TICK_OUT_OF_RANGE",
+  "NO_CLIP_EDITED" | "CLIP_NOT_FOUND" | "TICK_OUT_OF_RANGE" |
+  "NO_AUDITION_TRACK" | "TRACK_NOT_FOUND",
   {
     tick?: Tick;
     clipId?: ClipId;
+    trackId?: TrackId;
     endTick?: Tick;
   }
 >;
 
 type PreviewValidationError = ValidationError<
   "NO_CLIP_EDITED" | "PITCH_OUT_OF_RANGE" |
-  "EMPTY_SELECTION" | "NOTE_NOT_IN_EDITED_CLIP",
+  "EMPTY_SELECTION" | "NOTE_NOT_IN_EDITED_CLIP" |
+  "NO_AUDITION_TRACK" | "TRACK_NOT_FOUND",
   {
     pitch?: number;
     noteIds?: readonly NoteId[];
     clipId?: ClipId;
+    trackId?: TrackId;
   }
 >;
 
@@ -1009,6 +1054,10 @@ interface PreviewSelectionHandle {
 
   stop(): void;
 }
+
+setAuditionTrack(
+  trackId: TrackId
+): Promise<Result<"APPLIED" | "SUPERSEDED" | "CANCELLED", PlaybackRequestError>>;
 
 playProject(
   tick?: Tick
@@ -1040,37 +1089,40 @@ stop(mode?: StopMode): void;
 
 `StopMode` est déclaré par `application/ports/AudioEngine.ts`, qui constitue la source de vérité de cette politique d’arrêt. `PlaybackService` l’importe et le réexpose dans son API publique sans le redéfinir. `Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
 
-Les erreurs de validation sont déterminées avant toute préparation lorsque c’est possible. Les méthodes de transport les retournent néanmoins dans leur promesse de `Result` ; seules les validations des préécoutes sont retournées synchroniquement. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
+`setAuditionTrack` exige un clip édité et un `TrackId` existant. Une piste d’écoute absente produit `NO_AUDITION_TRACK` pour les appels sonores ; une référence de piste invalide produit `TRACK_NOT_FOUND`. Les erreurs de validation sont déterminées avant toute préparation lorsque c’est possible. Les méthodes de transport les retournent néanmoins dans leur promesse de `Result` ; seules les validations des préécoutes sont retournées synchroniquement. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
 
 `SUPERSEDED` et `CANCELLED` sont des résultats normaux d’orchestration : ils ne doivent pas produire de message d’erreur utilisateur.
 
 #### Préparation asynchrone des transports
 
-Le service conserve au plus une requête de transport en préparation :
+Le service conserve au plus une requête en préparation pour le transport ou le changement explicite de piste d’écoute :
 
 ```ts
 interface PendingTransportRequest {
   id: TransportRequestId;
-  kind: "PLAY_PROJECT" | "PLAY_CLIP" | "SEEK_PROJECT" | "SEEK_CLIP";
+  kind: "PLAY_PROJECT" | "PLAY_CLIP" | "SEEK_PROJECT" | "SEEK_CLIP" | "SET_AUDITION_TRACK";
   targetTick: Tick;
   clipId?: ClipId;
+  trackId?: TrackId;
   effectiveProjectRevision: number;
   status: "PREPARING";
 }
 ```
 
-Chaque `playProject`, `playClip`, `seekProject` ou `seekClip` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
+Chaque `playProject`, `playClip`, `seekProject`, `seekClip` ou `setAuditionTrack` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
 
 `stop(mode)` invalide la requête en attente en plus d’arrêter l’éventuel transport actif. Sa promesse se résout avec `ok("CANCELLED")`. Le service transmet un signal d’annulation au chargement lorsque l’infrastructure le permet, mais l’identité de requête reste la protection obligatoire contre les réponses tardives.
 
+Pour les requêtes locales nécessitant une préparation, `clipId` et `trackId` capturent le contexte d’écoute ; ils sont absents pour le projet. `SET_AUDITION_TRACK` utilise le tick local courant comme repère initial, mais recalcule la borne de bascule si le transport avance ; il ne crée pas de transport et retourne `APPLIED` après publication du choix. Fermer ou changer le clip édité invalide les requêtes locales encore en attente et les résout avec `CANCELLED`, sans arrêter une session déjà démarrée.
+
 La requête capture `effectiveProjectRevision` avant de déterminer les instruments nécessaires. Après chaque préparation réussie, le service compare cette révision à la valeur courante :
 
-1. si elles sont égales et que la requête est toujours courante, il planifie et ouvre la session ;
-2. si elles diffèrent, il relit le dernier `effectiveProject`, revalide le tick et recalcule la portée ;
+1. si elles sont égales et que la requête est toujours courante, il poursuit l’opération : ouverture de session pour un play/seek, ou publication du choix et éventuelle réconciliation de la session existante pour `SET_AUDITION_TRACK` ;
+2. si elles diffèrent, il relit le dernier `effectiveProject`, revalide les références et les bornes applicables, puis recalcule la portée et les instruments requis ;
 3. les banques déjà préparées sont réutilisées et seules les banques supplémentaires sont chargées ;
-4. le contrôle recommence avant le démarrage.
+4. le contrôle recommence avant le démarrage ou la publication du choix d’écoute.
 
-Une modification continue du projet ne publie donc jamais une session construite depuis une ancienne projection. Si le tick est devenu supérieur à la nouvelle fin, la requête retourne `err(TICK_OUT_OF_RANGE)`. S’il est exactement à la fin, elle retourne `ok("NO_CONTENT")` sans ouvrir de session.
+Une modification continue du projet ne publie donc jamais une session construite depuis une ancienne projection. Pour les requêtes de play/seek, si le tick est devenu supérieur à la nouvelle fin, la requête retourne `err(TICK_OUT_OF_RANGE)`. S’il est exactement à la fin, elle retourne `ok("NO_CONTENT")` sans ouvrir de session. `SET_AUDITION_TRACK` ne déplace pas la tête : il relit sa position courante et peut retourner `APPLIED` même à la fin du clip ou après la fin naturelle du transport, sans le redémarrer.
 
 Lors d’un seek sur le transport actif, la tête sonore actuelle continue d’avancer pendant la préparation. La destination demandée est affichée séparément comme un repère provisoire en chargement ; elle ne devient pas encore la tête effective. Lorsque la préparation réussit, l’ancienne session est remplacée gracieusement et la tête saute à la destination.
 
@@ -1084,23 +1136,25 @@ Sans transport actif, un seek valide déplace immédiatement la tête immobile. 
 
 #### Lecture du clip édité
 
-`playClip()` exige un `clipEditor` et capture son `clipId`. Il utilise le tick local dérivé si ce même clip est en cours de lecture, sinon la position mémorisée `clipEditor.playhead`. Si cette tête se trouve à `clip.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un clip possède toujours une durée strictement positive.
+`playClip()` exige un `clipEditor` avec une piste d’écoute existante et capture son `clipId` et son `auditionTrackId` comme `trackId` de session. Il utilise le tick local dérivé si ce même clip est en cours de lecture, sinon la position mémorisée `clipEditor.playhead`. Si cette tête se trouve à `clip.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un clip possède toujours une durée strictement positive.
 
 `playClip(tick)` valide explicitement le tick dans `[0, clip.duration]`. Il positionne une tête inactive ; sur le transport du même clip actif, la destination reste provisoire jusqu’au remplacement réussi. Si `tick === clip.duration`, aucune session n’est ouverte et un transport du même clip actif est terminé à cette destination ; si `tick > clip.duration`, l’appel retourne une erreur de validation.
 
 Ce transport :
 
 - lit uniquement le contenu du clip édité ;
-- ignore ses `ClipOccurrence`, leurs positions, leurs lignes et leurs `repeatCount` ;
-- utilise le tempo unique du projet ;
+- ignore ses `ClipOccurrence`, leurs positions et leurs `repeatCount` ;
+- utilise l’instrument de sa piste d’écoute et le tempo unique du projet ;
 - s'arrête structurellement à `clip.duration` ;
 - ouvre un seul `PlaybackContext` pour ce clip.
 
 `PROJECT` et `CLIP` sont deux portées d'un même transport exclusif. Démarrer l'une remplace gracieusement l'autre sans modifier la tête inactive.
 
-Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les occurrences susceptibles d'être lues entre le tick de départ et la fin du projet ; pour `CLIP`, seulement l'instrument du clip ciblé. La promesse se résout lorsque le transport a effectivement démarré, ou immédiatement lorsqu’aucune session ne doit être ouverte. Aucun transport ne commence avec une banque requise manquante.
+Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les occurrences susceptibles d'être lues entre le tick de départ et la fin du projet ; pour `CLIP`, seulement l’instrument de la piste d’écoute capturée. Les pistes sans occurrence dans la portée ne sont pas préparées pour `PROJECT`. Chaque instrument requis est obtenu depuis le `trackId` de l’occurrence, et les identifiants d’instrument sont dédupliqués avant la préparation. La promesse se résout lorsque le transport a effectivement démarré, ou immédiatement lorsqu’aucune session ne doit être ouverte. Aucun transport ne commence avec une banque requise manquante.
 
-`seekProject(tick)` et `seekClip(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — un déplacement avant la fin crée une requête asynchrone de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport et retourne `ok("NO_CONTENT")`. Lorsque la portée est inactive, le seek déplace seulement la tête et retourne `ok("POSITIONED")`.
+Sur une session `CLIP` active du même clip, `seekClip` conserve le `trackId` de cette session, même si le clip a été rouvert directement sans piste d’écoute dans l’éditeur. Le choix de piste relève de `setAuditionTrack` ou d’un nouveau `playClip`, pas du seek.
+
+`seekProject(tick)` et `seekClip(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `CLIP`, au même `clipId` — un déplacement avant la fin crée une requête asynchrone de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport et retourne `ok("NO_CONTENT")`. Lorsque la portée est inactive, le seek déplace seulement la tête et retourne `ok("POSITIONED")`, même si le clip édité n’a pas encore de piste d’écoute.
 
 #### Fin de portée après modification
 
@@ -1138,9 +1192,15 @@ La tête locale appartient au `ClipEditorState` supprimé : elle n’est ni cons
 
 Supprimer un clip non placé pendant un transport `PROJECT` n’a aucun effet sur cette session, puisqu’aucune occurrence ne peut le rendre audible.
 
+#### Suppression d’une piste utilisée pour l’écoute
+
+Le projet refuse une piste encore référencée par des occurrences. Une piste vide peut toutefois être utilisée par une session `CLIP` ou des préécoutes. Lorsqu’une édition, une annulation de brouillon ou un undo/redo retire effectivement cette piste, l’application arrête gracieusement la session `CLIP` liée, mémorise la tête locale si ce clip est ouvert, termine les handles concernés et invalide les préparations visant la piste. Elle retire `auditionTrackId` des états qui la référencent, tout en conservant le clip ouvert, ses notes sélectionnées et sa tête.
+
+Ces effets sont coordonnés avec la publication du nouveau projet et ne se produisent pas si la suppression est refusée. Restaurer ensuite la piste via l’historique ne restaure ni une audition arrêtée ni un choix applicatif effacé. Une suppression collective qui retire aussi des occurrences suit en plus la réconciliation ordinaire de `PROJECT`.
+
 #### Préécoutes du piano roll
 
-Les deux préécoutes utilisent l’instrument du clip actuellement édité, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
+Les deux préécoutes utilisent l’instrument de `clipEditor.auditionTrackId`, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
 
 ##### Préécoute d’une hauteur
 
@@ -1165,7 +1225,7 @@ Les mises à jour reçues dans un même cycle sûr de planification sont coalesc
 
 ##### Préparation de l’instrument
 
-`PlaybackService` demande le préchargement de l’instrument dès l’ouverture du piano roll. `previewPitch` et `previewSelection` effectuent d’abord leur validation synchrone et retournent `err(PreviewValidationError)` sans handle lorsque l’entrée est invalide.
+`PlaybackService` demande le préchargement de l’instrument à l’ouverture du piano roll lorsqu’une piste d’écoute est définie, ou lors de son choix explicite. Sans piste, aucune banque n’est préparée. `previewPitch` et `previewSelection` effectuent d’abord leur validation synchrone et retournent `err(PreviewValidationError)` sans handle lorsque l’entrée est invalide.
 
 Lorsqu’un handle est retourné, il l’est immédiatement, même si la banque n’est pas encore disponible. Sa propriété `ready` expose l’issue asynchrone de la préparation :
 
@@ -1187,9 +1247,9 @@ occurrenceInterval = [occurrence.start,
 projectEnd = max(occurrenceInterval.end), ou 0 sans occurrence
 ```
 
-Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément, indépendamment de leurs lignes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique et d’harmonie du clip.
+Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément, indépendamment de leurs pistes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique et d’harmonie du clip.
 
-Pour un transport `CLIP`, le service parcourt les événements du `clipId` attaché à la session entre son curseur local et `clip.duration`. Aucun placement global ni `repeatCount` n'intervient.
+Pour un transport `CLIP`, le service parcourt les événements du `clipId` attaché à la session entre son curseur local et `clip.duration`, avec l’instrument de son `trackId`. Aucun placement global ni `repeatCount` n'intervient.
 
 Le tempo unique du projet convertit les ticks en secondes dans les deux portées :
 
@@ -1227,7 +1287,7 @@ La lecture utilise trois niveaux d'identité opaques et transitoires :
 | `PlaybackContextId` | Une unité audio isolée appartenant à une session |
 | `NoteOccurrenceId` | Une attaque précise dans un contexte |
 
-Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions et des réattaques complètes d’une sélection. Deux notes issues de clips associés au même instrument, avec la même hauteur et le même instant, restent ainsi indépendantes, sauf la déduplication explicite propre à `previewSelection`.
+Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions et des réattaques complètes d’une sélection. Deux notes issues d’occurrences utilisant le même instrument, avec la même hauteur et le même instant, restent ainsi indépendantes, sauf la déduplication explicite propre à `previewSelection`.
 
 Un nouveau contexte est créé à chaque activation d'une occurrence dans un transport `PROJECT`, pour le clip isolé d'un transport `CLIP`, pour chaque `previewPitch` et pour une préécoute de sélection. Les répétitions d'une même occurrence réutilisent son contexte et son instance d'instrument, mais produisent de nouvelles occurrences de notes. Deux occurrences simultanées référençant le même `ClipId` possèdent toujours des contextes distincts.
 
@@ -1252,7 +1312,7 @@ interface TransportAnchor {
 
 type ActiveTransport =
   | { kind: "PROJECT"; sessionId: PlaybackSessionId; anchor: TransportAnchor }
-  | { kind: "CLIP"; sessionId: PlaybackSessionId; clipId: ClipId; anchor: TransportAnchor };
+  | { kind: "CLIP"; sessionId: PlaybackSessionId; clipId: ClipId; trackId: TrackId; anchor: TransportAnchor };
 ```
 
 | Catégorie | Kind | Règle de concurrence |
@@ -1282,7 +1342,7 @@ Le mode par défaut est `GRACEFUL` :
 
 #### AudioEngine
 
-`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Il ne reçoit pas la catégorie applicative de la session. Le `PlaybackService` copie le `Clip.instrumentId` dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
+`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Il ne reçoit pas la catégorie applicative de la session. Le `PlaybackService` résout le `Track.instrumentId` depuis l’occurrence pour `PROJECT` ou depuis la piste d’écoute capturée pour `CLIP` et les préécoutes, puis le copie dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
 
 ```ts
 type AudioCommand = {
@@ -1418,15 +1478,15 @@ La présentation offre une grille temporelle bidimensionnelle qui affiche direct
 
 ### Grille globale
 
-L'axe horizontal représente des `Tick` depuis le début du projet. Il est commun à tous les clips et continu sur toute la composition. L'axe vertical est formé de lignes d'organisation numérotées.
+L'axe horizontal représente des `Tick` depuis le début du projet. Il est commun à tous les clips et continu sur toute la composition. L’axe vertical présente les pistes dans l’ordre de `Project.tracks`, avec leur nom et leur instrument.
 
 ```mermaid
 block-beta
     columns 5
     t0["0–2 s"] t1["2–4 s"] t2["4–5 s"] t3["5–6 s"] t4["6–8 s"]
-    intro["L0 · Introduction"] space:3 conclusion["L0 · Conclusion"]
-    space grooveA["L1 · Groove A"] grooveB["L1 · Groove B"]:2 space
-    space bass["L2 · Basse"]:2 space:2
+    intro["Piano · Introduction"] space:3 conclusion["Piano · Conclusion"]
+    space grooveA["Percussions · Groove A"] grooveB["Percussions · Groove B"]:2 space
+    space bass["Basse"]:2 space:2
 ```
 
 Ce schéma reprend le cas 3 ; ses colonnes représentent des intervalles de durées différentes et ne constituent pas une échelle proportionnelle.
@@ -1437,13 +1497,13 @@ Dans cette représentation :
 | --- | --- |
 | Position horizontale | `ClipOccurrence.start` sauvegardé |
 | Longueur d'un bloc | `clip.duration * occurrence.repeatCount`, convertie par le tempo du projet |
-| Position verticale | `ClipOccurrence.line` sauvegardé |
-| Blocs chevauchants, sur une même ligne ou non | Occurrences lues simultanément |
+| Position verticale | Rang de la piste référencée par `ClipOccurrence.trackId` dans `Project.tracks` |
+| Blocs chevauchants, sur une même piste ou non | Occurrences lues simultanément |
 | Tête globale verticale | Position dérivée du transport actif, sinon `EditorState.projectPlayhead` |
 
-Une ligne ne possède aucun instrument implicite. Deux occurrences successives d'une même ligne peuvent référencer des clips associés à des instruments différents. Chaque clip conserve toutefois un seul instrument pour toutes ses notes. Déplacer une occurrence verticalement ne change donc jamais le son et reste valide même si elle se superpose à un autre bloc de la ligne cible. La présentation doit permettre de distinguer et sélectionner ces blocs ; leur ordre visuel reste une convention de présentation sans effet sur le domaine ou le mixage.
+Toutes les occurrences d’une piste utilisent son instrument. Déplacer une occurrence verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
-La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `clipId`, crée le `ClipEditorState` avec une position mémorisée au tick `0` et édite le contenu source partagé ; si ce clip est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; toutes les occurrences correspondantes reflètent immédiatement la modification. Pendant un geste, `EditService` dérive `transientProject` de la commande quantifiée. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `clipId` et son `trackId`, initialise la piste d’écoute et crée, si le clip change, le `ClipEditorState` avec une position mémorisée au tick `0` et édite le contenu source partagé ; si ce clip est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; toutes les occurrences correspondantes reflètent immédiatement la modification. Pendant un geste, `EditService` dérive `transientProject` de la commande quantifiée. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
 ### Piano roll et collisions
 
@@ -1506,7 +1566,7 @@ Une session ouverte reste vivante pendant les silences, même sans contexte viva
 Il possède notamment :
 
 - un bus de sortie propre ;
-- l'`InstrumentId` du clip joué et son unique `InstrumentInstance`, créés paresseusement au premier `NOTE_ON` ;
+- l’`InstrumentId` résolu depuis la piste et son unique `InstrumentInstance`, créés paresseusement au premier `NOTE_ON` ;
 - une table `NoteOccurrenceId -> VoiceHandle` ;
 - les commandes programmées qui doivent pouvoir être annulées ;
 - un état `SCHEDULED`, `ACTIVE`, `DRAINING` ou `DISPOSED`.
@@ -1547,7 +1607,7 @@ Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peu
 
 Si une occurrence est déplacée au-delà de la tête alors que son ancien contexte est déjà `DRAINING`, ce contexte conserve uniquement ses releases et tails jusqu'au silence. Il n'est ni réactivé ni coupé. Si le nouveau placement requiert des attaques futures, le service ouvre un autre contexte indépendant.
 
-Un contexte de clip correspond soit à l'activation audio d'une `ClipOccurrence` dans un transport `PROJECT`, soit à la lecture isolée du clip édité dans un transport `CLIP`. Dans le premier cas, le `ClipOccurrenceId`, le `ClipId` référencé et leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve seulement l'association entre le `ClipId` édité et l'unique contexte de la session. Deux occurrences du même clip ouvertes simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de l’instrument suit la préparation sonore des éditions et crée un nouveau contexte dans la même session.
+Un contexte de clip correspond soit à l'activation audio d'une `ClipOccurrence` dans un transport `PROJECT`, soit à la lecture isolée du clip édité dans un transport `CLIP`. Dans le premier cas, le `ClipOccurrenceId`, le `ClipId`, le `TrackId` référencés et leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve l’association entre le couple `ClipId` / `TrackId` et l’unique contexte de la session. Deux occurrences du même clip ouvertes simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de l’instrument suit la préparation sonore des éditions et crée un nouveau contexte dans la même session.
 
 Les deux formes de préécoute utilisent le même type de contexte. Le `PlaybackService` conserve les associations internes entre leurs handles publics, leurs sessions, leurs contextes et leurs occurrences sonores ; aucun descripteur supplémentaire n'est nécessaire.
 
@@ -1555,7 +1615,7 @@ Les deux formes de préécoute utilisent le même type de contexte. Le `Playback
 
 `InstrumentInstance` adapte une instance `smplr` au cycle de vie audio de Pianola.
 
-Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Comme toutes les notes d'un clip partagent son `InstrumentId`, un contexte de lecture de clip crée au plus une instance, paresseusement. Deux contextes jouant des clips associés au même instrument possèdent néanmoins des instances indépendantes.
+Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Un contexte utilise un seul instrument résolu depuis une piste et crée au plus une instance, paresseusement. Deux occurrences sur la même piste possèdent néanmoins des instances indépendantes ; il en va de même pour deux pistes utilisant le même instrument.
 
 Lors d'un `NOTE_ON`, l'instance déclenche la note à l'instant `at`. Le contrôle d'arrêt retourné par `smplr` est associé au `NoteOccurrenceId` par le contexte, afin qu'un `NOTE_OFF` puisse relâcher exactement la bonne occurrence.
 
@@ -1601,9 +1661,9 @@ interface ProjectFileData {
 }
 ```
 
-`ProjectData` est la représentation sérialisable de l’agrégat : identifiants, nom et métadonnées du projet, tempo en BPM, collections de clips et d’occurrences. Les clips contiennent leur durée en ticks, leur instrument, les notes, les changements de métrique et d’harmonie ; les occurrences contiennent `id`, `clipId`, `start`, `line` et `repeatCount`. Les Value Objects y sont représentés par leurs valeurs primitives validables. Les références et identités sont conservées exactement, sans dupliquer les contenus partagés.
+`ProjectData` est la représentation sérialisable de l’agrégat : identifiants, nom et métadonnées du projet, tempo en BPM, collection ordonnée de pistes, collections de clips et d’occurrences. Les pistes contiennent `id`, `name` et `instrumentId` ; leur ordre dans la collection est sauvegardé. Les clips contiennent leur durée en ticks, les notes, les changements de métrique et d’harmonie ; les occurrences contiennent `id`, `clipId`, `trackId`, `start` et `repeatCount`. Les Value Objects y sont représentés par leurs valeurs primitives validables. Les références et identités sont conservées exactement, sans dupliquer les contenus partagés.
 
-Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmoniques calculés, ni sélection, ni grille d’édition, ni tête, ni historique, ni ressources audio. Une version de schéma différente de `1` est refusée ; aucune migration implicite n’appartient au premier périmètre.
+Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmoniques calculés, ni sélection, ni grille d’édition, ni piste d’écoute du piano roll, ni tête, ni historique, ni ressources audio. Le schéma initial `1` décrit directement ce modèle à pistes instrumentales ; toute autre version est refusée.
 
 Le décodage vérifie l’enveloppe et la forme des données, puis reconstitue l’agrégat avec les mêmes factories et validations que la création interactive. Une incohérence métier produit une erreur de validation sans objet partiellement valide. Un problème de syntaxe, de version ou d’accès reste distinct. `ProjectFileService` contrôle ensuite le catalogue avant de publier le document.
 
@@ -1624,7 +1684,7 @@ La sauvegarde porte exclusivement sur la version validée capturée par le cas d
 
 Les invariants de composition et les contrats de publication ci-dessus sont définis. Les choix suivants restent à préciser sans ajouter de nouveaux concepts au domaine :
 
-- Comment distinguer et sélectionner les occurrences superposées sur une même ligne dans la présentation ?
+- Comment distinguer et sélectionner les occurrences superposées sur une même piste dans la présentation ?
 - Quelles valeurs techniques retenir pour la marge de planification, la durée maximale des préécoutes et tails et la capacité de l’historique ? Ces paramètres ne doivent pas modifier les règles de propriété ou de concurrence.
 - Quelle interaction proposer pour quitter ou remplacer un document modifié non sauvegardé ? L’ouverture réussie reste atomique et la sauvegarde porte toujours sur une version validée.
 
@@ -1639,6 +1699,7 @@ src/
 │   ├── models/
 │   │   ├── composition/
 │   │   │   ├── Project.ts
+│   │   │   ├── Track.ts
 │   │   │   ├── Clip.ts
 │   │   │   ├── ClipOccurrence.ts
 │   │   │   ├── Note.ts
@@ -1707,9 +1768,10 @@ src/
 | Module | Contenu |
 | --- | --- |
 | `domain/Result.ts` | `Result`, helpers et forme générique de `ValidationError` ; les erreurs concrètes restent auprès du modèle ou de l'opération qui les produit |
-| `domain/models/composition/Project.ts` | `Project`, `ProjectId`, factory, reconstitution et invariants de la racine d'agrégat |
+| `domain/models/composition/Project.ts` | `Project`, `ProjectId`, factory, reconstitution, `MAX_TRACK_COUNT`, ordre des pistes et invariants de référence de la racine d’agrégat |
+| `domain/models/composition/Track.ts` | `Track`, `TrackId`, factory et invariants propres à une piste |
 | `domain/models/composition/Clip.ts` | `Clip`, `ClipId`, références `ClipContentRef`, factory et invariants propres au contenu musical local |
-| `domain/models/composition/ClipOccurrence.ts` | `ClipOccurrence`, `ClipOccurrenceId`, `LineIndex`, limites de lignes et de répétitions et invariants de placement |
+| `domain/models/composition/ClipOccurrence.ts` | `ClipOccurrence`, `ClipOccurrenceId`, références de clip et de piste, limite de répétitions et invariants de placement |
 | `domain/models/composition/Note.ts` | `Note`, `NoteId`, factory et invariants d'une note isolée |
 | `domain/models/composition/Velocity.ts` | `Velocity`, bornes et validation |
 | `domain/models/time/Tick.ts` | `Tick` et `MAX_TICK` |
@@ -1725,8 +1787,8 @@ src/
 | `domain/models/harmony/Harmony.ts` | `Harmony`, union entre accord et gamme et modes `ROOT` ou `DEGREE` |
 | `domain/models/harmony/HarmonyChange.ts` | `HarmonyChange`, son identité et sa position locale persistante |
 | `domain/models/instrument/Instrument.ts` | `Instrument` public et `InstrumentId` |
-| `domain/operations/composition/ProjectTransformations.ts` | Commandes et fonctions pures qui ajoutent, déplacent, dupliquent ou suppriment les clips et leurs occurrences ; retournent un nouveau `Project` via `Result` |
-| `domain/operations/composition/ClipTransformations.ts` | Commandes et fonctions pures qui transforment les notes, la durée, l'instrument et les chronologies d'un clip ; retournent un nouveau `Clip` via `Result` |
+| `domain/operations/composition/ProjectTransformations.ts` | Commandes et fonctions pures qui créent, renomment, réordonnent, changent l’instrument ou suppriment les pistes, et ajoutent, déplacent, dupliquent ou suppriment les clips et leurs occurrences ; retournent un nouveau `Project` via `Result` |
+| `domain/operations/composition/ClipTransformations.ts` | Commandes et fonctions pures qui transforment les notes, la durée et les chronologies d’un clip ; retournent un nouveau `Clip` via `Result` |
 | `domain/operations/composition/NoteOverlap.ts` | `NoteOverlap`, `NoteOverlapError`, `NoteOverlapResolution`, détection et résolution `SLICE` ou `MERGE` |
 | `domain/operations/time/MeterTimeline.ts` | Ordonnancement des `MeterChange`, résolution de la métrique active et production des `MeterSection` dérivées |
 | `domain/operations/harmony/HarmonyTimeline.ts` | Ordonnancement des `HarmonyChange`, résolution de l'harmonie active et production des `HarmonySection` dérivées |
@@ -1734,7 +1796,7 @@ src/
 | `application/ProjectState.ts` | `ProjectState`, `TransientProject`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
 | `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
-| `application/EditorState.ts` | `EditorState`, `ClipEditorState`, positions mémorisées et contexte d’édition |
+| `application/EditorState.ts` | `EditorState`, `ClipEditorState`, positions mémorisées, piste d’écoute optionnelle et contexte d’édition |
 | `application/Selection.ts` | `ClipContentSelection`, `ClipOccurrenceSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution` et quantification des intentions dans leur référentiel |
 | `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
