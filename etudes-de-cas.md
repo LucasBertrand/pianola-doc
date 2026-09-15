@@ -335,9 +335,9 @@ Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisate
 
 Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_COLLISION` d’`EditDecisionRequest`, place les conflits dans `details.collisions`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
+Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
-Avec `submitEditDecision({ decisionId, kind: "NOTE_COLLISION", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
+Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
 | Note résultante | Hauteur | Intervalle | Identité | Vélocité |
 | --- | --- | --- | --- | ---: |
@@ -532,7 +532,7 @@ Les préécoutes suivent une forme différente parce que leur contrôle doit êt
 
 Un geste déplace une note et un changement harmonique. `EditService.beginEdit` capture le projet validé dans `EditSession.baseProject`. Chaque `updateEdit` remplace le delta total de la commande ; les transformations sont recalculées depuis cette base avec les mêmes fonctions pures que la validation finale.
 
-Un delta qui placerait une note avant `0` est refusé sans changer la dernière projection admissible. Un delta qui crée seulement une collision de même hauteur peut être prévisualisé ; au commit, `NOTE_OVERLAP` est traduit en décision `NOTE_COLLISION`, le brouillon est conservé et la commande reste figée. Une seconde édition ou `undo()` pendant cette attente retourne `EDIT_IN_PROGRESS`.
+Un delta qui placerait une note avant `0` est refusé sans changer la dernière projection admissible. Un delta qui crée seulement un chevauchement de même hauteur peut être prévisualisé ; au commit, `NOTE_OVERLAP` est traduit en décision `NOTE_OVERLAP`, le brouillon est conservé et la commande reste figée. Une seconde édition ou `undo()` pendant cette attente retourne `EDIT_IN_PROGRESS`.
 
 La présentation soumet le choix `SLICE` avec l’identité de la décision. Il produit un seul nouveau projet et une seule entrée d’historique. Une réponse portant une ancienne identité est refusée. Une annulation aurait supprimé le brouillon sans rien inscrire. Si une préparation audio était en cours, `cancelEdit` l’aurait rendue obsolète ; sa réponse tardive ne pourrait ni modifier le projet ni démarrer des notes.
 
