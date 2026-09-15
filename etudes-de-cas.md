@@ -375,11 +375,14 @@ La lecture d'une sauvegarde suit le même chemin de validation. Une référence 
 
 Un transport `PROJECT` joue deux occurrences actives du même clip `Ostinato`, actuellement associé au piano. L’utilisateur choisit un vibraphone dont la banque n’est pas encore chargée.
 
-`EditService` ouvre une édition portant la commande de changement d’instrument. Sa préparation est suivie par `PendingEditPreparation`, liée à l’identité et à la révision de cette commande. `PlaybackService` demande au moteur :
+`EditService` ouvre une édition portant la commande de changement d’instrument. Sa préparation est suivie par `PendingEditPreparation`, liée à l’identité et à la révision de cette commande. Il demande la préparation à `PlaybackService`, unique appelant applicatif du moteur :
 
 ```ts
-await audioEngine.prepareInstruments([vibraphoneId]);
+const preparation = await audioEngine.prepareInstruments([vibraphoneId]);
+// Result<"READY", InstrumentPreparationError>
 ```
+
+`PlaybackService` transmet le résultat à l’orchestration d’édition. `PendingEditPreparation` protège la continuation de cette édition ; il ne constitue pas un second chargeur.
 
 Pendant le chargement :
 
@@ -392,7 +395,7 @@ Lorsque la banque est prête et la commande toujours courante, le service calcul
 
 Les releases et tails du piano peuvent donc coexister temporairement avec les nouvelles voix de vibraphone. Aucun nouveau transport n’est créé et la tête globale ne se déplace pas.
 
-Si la préparation échoue, aucun contexte n’est remplacé et l’`InstrumentId` du clip reste celui du piano.
+Si la préparation retourne `err(InstrumentPreparationError)`, aucun contexte n’est remplacé et l’`InstrumentId` du clip reste celui du piano.
 
 ## Cas 21 — Réconciliation après modification d’une répétition
 
