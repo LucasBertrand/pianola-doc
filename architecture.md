@@ -1472,9 +1472,9 @@ L'infrastructure audio possède :
 
 Le moteur et son `AudioContext` Web Audio sont globaux. Un `PlaybackContext` constitue un périmètre logique et une chaîne audio isolée, pas un nouvel `AudioContext` natif.
 
-### BuiltInInstrumentCatalog
+### BuiltInCatalog
 
-`BuiltInInstrumentCatalog` est l’adaptateur concret du port `InstrumentCatalog`. Il expose uniquement les `Instrument` publics à la couche applicative et permet de résoudre un `InstrumentId` vers la définition technique correspondante pour le moteur audio.
+`BuiltInCatalog` est l’adaptateur concret du port `InstrumentCatalog`. Il expose uniquement les `Instrument` publics à la couche applicative et permet de résoudre un `InstrumentId` vers la définition technique correspondante pour le moteur audio.
 
 Il consomme la collection immuable déclarée par `SmplrInstruments`. Cette relation conserve une seule source de vérité sans introduire de second port ni de registre parallèle.
 
@@ -1665,7 +1665,7 @@ src/
 ├── infrastructure/
 │   ├── audio/
 │   │   ├── instruments/
-│   │   │   ├── BuiltInInstrumentCatalog.ts
+│   │   │   ├── BuiltInCatalog.ts
 │   │   │   └── SmplrInstruments.ts
 │   │   └── engine/
 │   │       ├── WebAudioEngine.ts
@@ -1703,7 +1703,7 @@ src/
 | `application/ports/AudioEngine.ts` | `StopMode`, identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, contrat universel de préparation, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; ne connaît ni `PlaybackSessionKind`, ni l’obsolescence applicative |
 | `application/ports/InstrumentCatalog.ts` | Contrat de consultation des `Instrument` publics et résolution des `InstrumentId` |
 | `application/ports/ProjectFileStore.ts` | Contrat abstrait de sélection, lecture et écriture de fichier, erreurs techniques et composition avec les erreurs de validation du domaine ; aucun schéma JSON |
-| `infrastructure/audio/instruments/BuiltInInstrumentCatalog.ts` | Adaptateur concret du port `InstrumentCatalog` et résolution des définitions techniques |
+| `infrastructure/audio/instruments/BuiltInCatalog.ts` | Adaptateur concret du port `InstrumentCatalog` et résolution des définitions techniques |
 | `infrastructure/audio/instruments/SmplrInstruments.ts` | `InstrumentDefinition`, collection intégrée, sources d’échantillons et factories propres à `smplr` |
 | `infrastructure/audio/engine/WebAudioEngine.ts` | Implémentation du port, horloge technique, planification et mixage Web Audio |
 | `infrastructure/audio/engine/PlaybackSession.ts` | État technique transitoire et propriété des contextes d’une session |
