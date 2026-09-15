@@ -345,7 +345,7 @@ Dans un autre scénario, `playScore()` démarre le score `Motif`, puis l'utilisa
 
 Un score contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
+Pendant le geste, le `ProjectCandidate` conservé dans `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
 Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -680,6 +680,21 @@ Si une sauvegarde intervient pendant le geste, le fichier contient seulement `sc
 Lorsque le geste est validé, `score-b` et son réglage de `240` ticks sont publiés atomiquement. Si le geste est annulé, aucun des deux ne subsiste.
 
 Dans une variante où `score-b` est une duplication indépendante de `score-a`, sa résolution de geste puis sa résolution publiée valent `120` ticks, valeur capturée depuis le score source au début de la commande. Une modification persistante de résolution ne peut cibler `score-b` qu’après son commit.
+
+## Cas 42 — Transformation collective et violations différées
+
+Un score contient deux notes de même hauteur qui ne se chevauchent pas :
+
+| Note | Intervalle initial | Intervalle final demandé |
+| --- | --- | --- |
+| `note-a` | `[0, 960)` | `[1920, 2880)` |
+| `note-b` | `[1920, 2880)` | `[0, 960)` |
+
+Le geste demande leur échange dans une seule commande. Les deux placements finaux sont exprimés relativement au même `baseProject`. `buildProjectCandidate` les applique collectivement, puis inspecte la collection obtenue. Il ne déplace jamais `note-a` et ne valide jamais cet état intermédiaire avant de déplacer `note-b`. Le candidat final ne contient aucun chevauchement ; `finalizeProjectCandidate` construit donc directement le nouveau `Project`.
+
+Si les intervalles finaux se recouvrent, la même inspection produit une `DeferredViolation` de type `NOTE_OVERLAP`. Le `ProjectCandidate` reste affichable et audible pendant le geste, mais ne peut pas être fourni à une opération exigeant un `Project`. Au commit, `finalizeProjectCandidate` exige une `DeferredResolution` `SLICE` ou `MERGE`, applique la résolution puis relance les mêmes inspections avant de construire le projet validé.
+
+Une durée nulle, une référence de score absente ou un dépassement de `MAX_TICK` produit au contraire une erreur bloquante : aucun candidat ne remplace la dernière projection admissible. Ajouter à l’avenir une autre violation différable nécessitera une nouvelle variante de `DeferredViolation`, sa variante de `DeferredResolution` et son résolveur métier ; le cycle générique de candidature et de finalisation restera inchangé.
 
 ## Référence des contrats
 
