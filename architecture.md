@@ -1036,7 +1036,7 @@ previewSelection(
 stop(mode?: StopMode): void;
 ```
 
-`StopMode` est déclaré dans `application/Playback.ts`, car il fait partie du vocabulaire applicatif partagé entre l’API publique de lecture et le port audio. `Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
+`StopMode` est déclaré par `application/ports/AudioEngine.ts`, qui constitue la source de vérité de cette politique d’arrêt. `PlaybackService` l’importe et le réexpose dans son API publique sans le redéfinir. `Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
 
 Les erreurs de validation sont déterminées avant toute préparation lorsque c’est possible. Les méthodes de transport les retournent néanmoins dans leur promesse de `Result` ; seules les validations des préécoutes sont retournées synchroniquement. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
 
@@ -1640,7 +1640,6 @@ src/
 │   ├── ProjectHistory.ts
 │   ├── Selection.ts
 │   ├── Grid.ts
-│   ├── Playback.ts
 │   ├── use-cases/
 │   │   ├── EditService.ts
 │   │   ├── PlaybackService.ts
@@ -1684,11 +1683,10 @@ src/
 | `application/EditorState.ts` | `EditorState`, `ClipEditorState`, positions mémorisées et contexte d’édition |
 | `application/Selection.ts` | `ClipContentSelection`, `ClipOccurrenceSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution` et quantification des intentions dans leur référentiel |
-| `application/Playback.ts` | `StopMode`, vocabulaire applicatif partagé par le service de lecture et le port audio |
 | `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
-| `application/use-cases/PlaybackService.ts` | Transport, préparation et planification, `PlaybackSessionKind`, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute |
+| `application/use-cases/PlaybackService.ts` | Transport, préparation et planification, `PlaybackSessionKind`, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute ; importe et réexpose `StopMode` |
 | `application/use-cases/ProjectFileService.ts` | Ouverture/sauvegarde, contrôle du catalogue et remplacement atomique du document |
-| `application/ports/AudioEngine.ts` | Identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; réutilise `StopMode` sans connaître `PlaybackSessionKind` |
+| `application/ports/AudioEngine.ts` | `StopMode`, identités audio, `AudioCommand`, `ContextCompletion`, plans, horloge, `ScheduleError`, `InstrumentPreparationError` et contrat moteur ; ne connaît pas `PlaybackSessionKind` |
 | `application/ports/InstrumentCatalog.ts` | Contrat de consultation des `Instrument` publics et résolution des `InstrumentId` |
 | `application/ports/ProjectFileStore.ts` | Contrat abstrait de sélection, lecture et écriture de fichier, erreurs techniques et composition avec les erreurs de validation du domaine ; aucun schéma JSON |
 | `infrastructure/audio/catalog/StaticInstrumentCatalog.ts` | Adaptateur concret du catalogue et collection immuable des définitions intégrées |
