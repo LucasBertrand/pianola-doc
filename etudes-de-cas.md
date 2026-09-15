@@ -1,6 +1,6 @@
 # Études de cas
 
-Ce document illustre les règles de composition et de lecture définies dans [architecture.md](architecture.md). Un `Clip` désigne un contenu musical local éditable dans le piano roll ; un bloc de la grille est une `ClipOccurrence` persistante qui référence ce contenu. Sauf indication contraire, chaque occurrence nommée dans les exemples référence un clip source de même nom. Une occurrence référence aussi une piste existante par `trackId` ; le clip ne possède aucun instrument.
+Ce document illustre les règles de composition et de lecture définies dans [architecture.md](architecture.md). Un `Pattern` désigne un contenu musical local éditable dans le piano roll ; un bloc de la grille est un `Clip` persistant qui référence ce contenu. Sauf indication contraire, chaque clip nommé dans les exemples référence un pattern source de même nom. Un clip référence aussi une piste existante par `trackId` ; le pattern ne possède aucun instrument.
 
 ## Conventions de calcul
 
@@ -12,22 +12,22 @@ durationSeconds = (durationTicks / 960) * (60 / 120)
 
 Les exemples utilisant les identifiants `track-piano`, `track-drums`, `track-bass` et `track-strings` supposent des pistes existantes associées respectivement au piano, aux percussions, à la basse et aux cordes, dans cet ordre d’affichage. Ces noms sont des identifiants stables illustratifs, pas des indices. Les exemples d’écoute isolée supposent une piste d’écoute explicitement choisie, sauf lorsque son absence est le sujet du cas.
 
-La métrique et la chronologie harmonique restent locales à chaque clip. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
+La métrique et la chronologie harmonique restent locales à chaque pattern. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
 
-La durée structurelle d'une occurrence et celle du projet suivent les règles suivantes :
+La durée structurelle d’un clip et celle du projet suivent les règles suivantes :
 
 ```text
-occurrenceEnd = occurrence.start + clip.duration * occurrence.repeatCount
-projectEnd    = maximum des occurrenceEnd, ou 0 si le projet ne contient aucune occurrence
+clipEnd = clip.start + pattern.duration * clip.repeatCount
+projectEnd    = maximum des valeurs `clipEnd`, ou 0 si le projet ne contient aucun clip
 ```
 
-Les intervalles sont semi-ouverts. Deux occurrences sont simultanées si leurs intervalles globaux se recouvrent avec une durée strictement positive. Ce recouvrement est valide sur une même piste comme sur des pistes différentes. La piste détermine l’instrument ; elle ne modifie pas le calcul des intervalles temporels.
+Les intervalles sont semi-ouverts. Deux clips sont simultanés si leurs intervalles globaux se recouvrent avec une durée strictement positive. Ce recouvrement est valide sur une même piste comme sur des pistes différentes. La piste détermine l’instrument ; elle ne modifie pas le calcul des intervalles temporels.
 
 ## Cas 1 — Placement explicite, espace vide et répétition
 
-Trois occurrences sont placées sur la piste `track-piano` :
+Trois clips sont placés sur la piste `track-piano` :
 
-| Occurrence | Début global | Durée du clip référencé | `repeatCount` | Fin globale |
+| Clip | Début global | Durée du pattern référencé | `repeatCount` | Fin globale |
 | --- | ---: | ---: | ---: | ---: |
 | `Ouverture` | 0 | 3840 ticks | 1 | 3840 |
 | `Motif` | 5760 | 1920 ticks | 2 | 9600 |
@@ -43,13 +43,13 @@ block-beta
 
 Les blocs du schéma indiquent leurs intervalles exacts ; leurs largeurs ne sont pas proportionnelles aux durées.
 
-Déplacer ou supprimer une occurrence ne rapproche jamais automatiquement les autres occurrences. Leurs coordonnées persistantes restent inchangées. Supprimer l'occurrence ne supprime pas son clip source, même s'il s'agissait de sa dernière occurrence : seule une suppression manuelle distincte peut ensuite supprimer ce clip non référencé.
+Déplacer ou supprimer un clip ne rapproche jamais automatiquement les autres clips. Leurs coordonnées persistantes restent inchangées. Supprimer le clip ne supprime pas son pattern source, même s'il s'agissait de son dernier clip : seule une suppression manuelle distincte peut ensuite supprimer ce pattern non référencé.
 
 ## Cas 2 — Chevauchement de clips aux métriques indépendantes
 
-Deux occurrences référencent des clips soumis au même tempo de projet, mais possédant des métriques locales différentes :
+Deux clips référencent des patterns soumis au même tempo de projet, mais possédant des métriques locales différentes :
 
-| Occurrence | `trackId` | Début | Durée du clip | Métrique locale | Intervalle réel |
+| Clip | `trackId` | Début | Durée du pattern | Métrique locale | Intervalle réel |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `Rythme` | `track-piano` | 0 | 3840 ticks | 4/4 | 0 à 2 s |
 | `Ligne de basse` | `track-bass` | 1920 ticks | 5760 ticks | 3/4 | 1 à 4 s |
@@ -68,9 +68,9 @@ La basse conserve ses mesures en 3/4, mais elle n'utilise ni tempo propre ni hor
 
 ## Cas 3 — Composition sur plusieurs pistes
 
-La grille contient des occurrences d'introduction, de deux grooves consécutifs, d'une basse superposée et d'une conclusion :
+La grille contient des clips d’introduction, de deux grooves consécutifs, d'une basse superposée et d'une conclusion :
 
-| Occurrence | `trackId` | Début global | Durée du clip | Intervalle réel |
+| Clip | `trackId` | Début global | Durée du pattern | Intervalle réel |
 | --- | --- | ---: | ---: | ---: |
 | `Introduction` | `track-piano` | 0 | 3840 ticks | 0 à 2 s |
 | `Groove A` | `track-drums` | 3840 | 3840 ticks | 2 à 4 s |
@@ -93,26 +93,26 @@ Les colonnes du schéma couvrent des durées différentes ; les valeurs du table
 
 ## Cas 4 — Déplacement vers une autre piste
 
-L’occurrence `Couplet` appartient à `track-piano`. L’occurrence `Contrechant` appartient à `track-strings`. Leurs intervalles globaux se chevauchent : leurs notes jouent simultanément au piano et aux cordes.
+Le clip `Couplet` appartient à `track-piano`. Le clip `Contrechant` appartient à `track-strings`. Leurs intervalles globaux se chevauchent : leurs notes jouent simultanément au piano et aux cordes.
 
-Déplacer `Contrechant` vers `track-piano` conserve son `clipId`, son début et ses répétitions, mais change son `trackId`. Les deux blocs peuvent se superposer sur cette piste et sont désormais joués au piano. Le contenu des deux clips reste intact ; les éventuelles autres occurrences de `Contrechant` sur `track-strings` continuent aux cordes.
+Déplacer `Contrechant` vers `track-piano` conserve son `patternId`, son début et ses répétitions, mais change son `trackId`. Les deux blocs peuvent se superposer sur cette piste et sont désormais joués au piano. Le contenu des deux patterns reste intact ; les éventuels autres clips de `Contrechant` sur `track-strings` continuent aux cordes.
 
-Pendant un transport `PROJECT`, si les notes de `Contrechant` couvrent la borne de replanification, le service attend la disponibilité du piano, remplace uniquement le contexte de cette occurrence et réattaque ces notes au nouvel instrument. Les cordes peuvent finir leurs tails ; `Couplet` conserve ses voix. Un déplacement vers une autre piste utilisant déjà les cordes conserve au contraire les voix lorsque les données temporelles sont inchangées.
+Pendant un transport `PROJECT`, si les notes de `Contrechant` couvrent la borne de replanification, le service attend la disponibilité du piano, remplace uniquement le contexte de ce clip et réattaque ces notes au nouvel instrument. Les cordes peuvent finir leurs tails ; `Couplet` conserve ses voix. Un déplacement vers une autre piste utilisant déjà les cordes conserve au contraire les voix lorsque les données temporelles sont inchangées.
 
-La piste d’écoute d’un piano roll déjà ouvert n’est pas automatiquement déplacée avec ce bloc. Rouvrir explicitement l’occurrence y applique sa nouvelle piste ; un transport `CLIP` existant conserve autrement son couple clip/piste.
+La piste d’écoute d’un piano roll déjà ouvert n’est pas automatiquement déplacée avec ce bloc. Rouvrir explicitement le clip y applique sa nouvelle piste ; un transport `PATTERN` existant conserve autrement son couple pattern/piste.
 
-## Cas 5 — Deux occurrences sur une même piste instrumentale
+## Cas 5 — Deux clips sur une même piste instrumentale
 
-Deux occurrences qui se chevauchent sur `track-piano` référencent chacune un clip contenant une note de même hauteur. Elles utilisent toutes deux l’instrument de cette piste.
+Deux clips qui se chevauchent sur `track-piano` référencent chacun un pattern contenant une note de même hauteur. Ils utilisent tous deux l’instrument de cette piste.
 
-| Occurrence | Source | Instrument | Hauteur | Début | Fin |
+| Clip | Source | Instrument | Hauteur | Début | Fin |
 | --- | --- | --- | --- | ---: | ---: |
-| `occurrence-a` | clip A · note A | piano | do | 0 s | 4 s |
-| `occurrence-b` | clip B · note B | piano | do | 1 s | 2 s |
+| `clip-a` | pattern A · note A | piano | do | 0 s | 4 s |
+| `clip-b` | pattern B · note B | piano | do | 1 s | 2 s |
 
-À deux secondes, le moteur relâche uniquement `occurrence-b`. La voix correspondant à `occurrence-a` continue jusqu'à quatre secondes. Une commande identifiée seulement par l'instrument et la hauteur serait insuffisante.
+À deux secondes, le moteur relâche uniquement `clip-b`. La voix correspondant à `clip-a` continue jusqu'à quatre secondes. Une commande identifiée seulement par l'instrument et la hauteur serait insuffisante.
 
-Chaque occurrence active possède son propre `PlaybackContext` et sa propre `InstrumentInstance` `smplr` du piano. Lors de chaque `NOTE_ON`, le moteur associe au `NoteOccurrenceId` le contrôle d'arrêt retourné par l'instance concernée. Les occurrences ne sont jamais fusionnées implicitement.
+Chaque clip actif possède son propre `PlaybackContext` et sa propre `InstrumentInstance` `smplr` du piano. Lors de chaque `NOTE_ON`, le moteur associe au `NoteOccurrenceId` le contrôle d'arrêt retourné par l'instance concernée. Les clips ne sont jamais fusionnés implicitement.
 
 ```mermaid
 block-beta
@@ -124,19 +124,19 @@ block-beta
 
 ## Cas 6 — Transports et deux formes de préécoute
 
-Le projet est lu depuis sa tête globale dans une session `PROJECT`. Le clip source `Motif` est parallèlement ouvert dans le piano roll ; sa piste d’écoute est `track-piano` et sa tête locale est restée au tick `960`.
+Le projet est lu depuis sa tête globale dans une session `PROJECT`. Le pattern source `Motif` est parallèlement ouvert dans le piano roll ; sa piste d’écoute est `track-piano` et sa tête locale est restée au tick `960`.
 
-Lorsque l'utilisateur appelle `playClip()`, le `PlaybackService` prépare l’instrument de la piste d’écoute de `Motif`, puis, une fois celui-ci disponible, retire le rôle de transport à `project-session-a`, annule ses attaques futures et relâche ses occurrences actives selon le mode `GRACEFUL`. Il ouvre ensuite `clip-session-b` de type `CLIP`, attachée au couple `Motif` / `track-piano`, au tick local `960`. La tête globale conserve sa position.
+Lorsque l'utilisateur appelle `playPattern()`, le `PlaybackService` prépare l’instrument de la piste d’écoute de `Motif`, puis, une fois celui-ci disponible, retire le rôle de transport à `project-session-a`, annule ses attaques futures et relâche ses notes actives selon le mode `GRACEFUL`. Il ouvre ensuite `pattern-session-b` de type `PATTERN`, attachée au couple `Motif` / `track-piano`, au tick local `960`. La tête globale conserve sa position.
 
 | Étape | Session | Type | État |
 | --- | --- | --- | --- |
 | Lecture de l'arrangement | `project-session-a` | `PROJECT` | transport actif |
-| Appel à `playClip()` | `project-session-a` | `PROJECT` | inactive ; contextes éventuellement `DRAINING` |
-| Appel à `playClip()` | `clip-session-b` | `CLIP` | nouveau transport actif |
+| Appel à `playPattern()` | `project-session-a` | `PROJECT` | inactive ; contextes éventuellement `DRAINING` |
+| Appel à `playPattern()` | `pattern-session-b` | `PATTERN` | nouveau transport actif |
 
-La session `CLIP` lit directement le contenu local de `Motif` jusqu'à sa durée structurelle. Elle ignore toutes ses occurrences, leurs positions globales et leurs répétitions.
+La session `PATTERN` lit directement le contenu local de `Motif` jusqu'à sa durée structurelle. Elle ignore tous les clips qui référencent ce pattern, leurs positions globales et leurs répétitions.
 
-Pendant ce transport, l’utilisateur maintient la touche `F♯4` du piano roll, même si aucune note de cette hauteur n’existe dans le clip :
+Pendant ce transport, l’utilisateur maintient la touche `F♯4` du piano roll, même si aucune note de cette hauteur n’existe dans le pattern :
 
 ```ts
 const pitchResult = previewPitch(Pitch.F_SHARP_4);
@@ -147,7 +147,7 @@ if (pitchResult.ok) {
 }
 ```
 
-`previewPitch` valide immédiatement l’entrée. Lorsque son `Result` contient un handle, celui-ci est disponible avant la banque et sa propriété `ready` décrit ensuite `STARTED`, `CANCELLED` ou un échec de préparation. La session `PITCH_PREVIEW` ne remplace jamais `clip-session-b` et soutient la voix jusqu’à `release()`. Un relâchement antérieur au chargement fait résoudre `ready` avec `ok("CANCELLED")` et empêche toute attaque tardive.
+`previewPitch` valide immédiatement l’entrée. Lorsque son `Result` contient un handle, celui-ci est disponible avant la banque et sa propriété `ready` décrit ensuite `STARTED`, `CANCELLED` ou un échec de préparation. La session `PITCH_PREVIEW` ne remplace jamais `pattern-session-b` et soutient la voix jusqu’à `release()`. Un relâchement antérieur au chargement fait résoudre `ready` avec `ok("CANCELLED")` et empêche toute attaque tardive.
 
 L’utilisateur commence ensuite une transposition de quatre notes sélectionnées, dont deux possèdent initialement la même hauteur :
 
@@ -164,13 +164,13 @@ const selectionPreview =
 
 Le service ignore leurs positions et leurs durées, déduplique leurs hauteurs et produit une attaque brève simultanée lorsque `selectionPreview.ready` peut démarrer l’audition. Lorsqu’une seule des quatre notes change de hauteur, l’attaque précédente encore active est relâchée et toutes les hauteurs actuelles de la sélection sont dédupliquées puis réattaquées. Les hauteurs restées identiques sont donc elles aussi rejouées. Un déplacement seulement temporel ne provoque aucune nouvelle attaque.
 
-`selectionPreview?.stop()` cesse de suivre le geste, fait résoudre une préparation encore en attente avec `ok("CANCELLED")`, annule les attaques futures et relâche les voix brèves encore actives. La session `SELECTION_PREVIEW` n’a jamais remplacé le transport `CLIP`.
+`selectionPreview?.stop()` cesse de suivre le geste, fait résoudre une préparation encore en attente avec `ok("CANCELLED")`, annule les attaques futures et relâche les voix brèves encore actives. La session `SELECTION_PREVIEW` n’a jamais remplacé le transport `PATTERN`.
 
-Un appel ultérieur à `playProject(5760)` remplace à son tour le transport `CLIP`, déplace uniquement la tête globale au tick demandé et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
+Un appel ultérieur à `playProject(5760)` remplace à son tour le transport `PATTERN`, déplace uniquement la tête globale au tick demandé et reprend la lecture de l'arrangement. La tête locale conserve son dernier tick.
 
 ## Cas 7 — Répétitions et occurrences de notes
 
-Un clip contient une note `note-a` et possède une durée locale de 1920 ticks. Une occurrence qui le référence possède un `repeatCount` de `3` et occupe donc 5760 ticks globaux à partir de son `start`.
+Un pattern contient une note `note-a` et possède une durée locale de 1920 ticks. Un clip qui le référence possède un `repeatCount` de `3` et occupe donc 5760 ticks globaux à partir de son `start`.
 
 | Répétition | Note persistante | Occurrence d'exécution |
 | ---: | --- | --- |
@@ -178,13 +178,13 @@ Un clip contient une note `note-a` et possède une durée locale de 1920 ticks. 
 | 2 | `note-a` | `occurrence-a-2` |
 | 3 | `note-a` | `occurrence-a-3` |
 
-Les trois répétitions de cette même occurrence de clip réutilisent le même `PlaybackContextId` et la même `InstrumentInstance`, mais chaque attaque reçoit un `NoteOccurrenceId` distinct. Une release peut continuer au début de la répétition suivante sans confondre les deux occurrences de note.
+Les trois répétitions de ce même clip réutilisent le même `PlaybackContextId` et la même `InstrumentInstance`, mais chaque attaque reçoit un `NoteOccurrenceId` distinct. Une release peut continuer au début de la répétition suivante sans confondre les deux occurrences de note.
 
 Si une voix a déjà été volée, le `NOTE_OFF` programmé pour son ancienne occurrence devient une opération sans effet. Les relâchements sont donc idempotents.
 
 ## Cas 8 — Fin structurelle et tail audio
 
-L'occurrence `Nappe` occupe `[0, 3840)`, soit deux secondes. L’instrument de sa piste produit une release et une réverbération qui restent audibles une seconde supplémentaire. L'occurrence `Conclusion` est placée explicitement au tick `3840`.
+Le clip `Nappe` occupe `[0, 3840)`, soit deux secondes. L’instrument de sa piste produit une release et une réverbération qui restent audibles une seconde supplémentaire. Le clip `Conclusion` est placé explicitement au tick `3840`.
 
 | Temps réel | Événement structurel | État audio de `Nappe` |
 | --- | --- | --- |
@@ -192,13 +192,13 @@ L'occurrence `Nappe` occupe `[0, 3840)`, soit deux secondes. L’instrument de s
 | 2 s | fin de `Nappe`, début de `Conclusion` | `DRAINING` |
 | 3 s | aucun changement de placement | `DISPOSED` après extinction du tail |
 
-Le tail ne modifie ni la fin globale de l'occurrence `Nappe`, ni le `start` de l'occurrence `Conclusion`. Il peut se superposer à l'occurrence suivante. Le contexte de `Nappe` refuse toute nouvelle attaque après deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'à une durée maximale de sécurité.
+Le tail ne modifie ni la fin globale du clip `Nappe`, ni le `start` du clip `Conclusion`. Il peut se superposer au clip suivant. Le contexte de `Nappe` refuse toute nouvelle attaque après deux secondes, mais conserve ses instances jusqu'au silence ou jusqu'à une durée maximale de sécurité.
 
 ## Cas 9 — Lecture globale depuis un tick explicite
 
-La grille contient les occurrences suivantes :
+La grille contient les clips suivants :
 
-| Occurrence | `trackId` | Intervalle réel |
+| Clip | `trackId` | Intervalle réel |
 | --- | --- | ---: |
 | `Introduction` | `track-piano` | 0 à 2 s |
 | `Piano` | `track-piano` | 2 à 6 s |
@@ -214,13 +214,13 @@ Les commandes suivantes choisissent une position sans changer la portée du tran
 | `playProject(3840)` | Place la tête globale à 2 s ; `Piano`, `Basse` et la partie encore active de `Percussions` participent au transport. |
 | `playProject(11520)` | Place la tête globale à 6 s et lit la fin du projet. |
 
-`playProject` reçoit directement un `Tick` global et aucune identité d'occurrence. `playClip(tick?)` utilise au contraire un tick local au clip édité. `previewPitch` et `previewSelection` ne déplacent aucune tête et ne modifient pas le transport.
+`playProject` reçoit directement un `Tick` global et aucun `ClipId`. `playPattern(tick?)` utilise au contraire un tick local au pattern édité. `previewPitch` et `previewSelection` ne déplacent aucune tête et ne modifient pas le transport.
 
 Si une note de `Percussions` a commencé avant deux secondes mais couvre encore cette position, la note chase minimale la réattaque au démarrage et programme son relâchement pour sa durée restante. Aucun état antérieur d'enveloppe ou de voix n'est reconstruit.
 
 ## Cas 10 — Alternance exclusive entre gamme et accord
 
-Un clip de 7680 ticks possède les changements harmoniques suivants :
+Un pattern de 7680 ticks possède les changements harmoniques suivants :
 
 | Tick local | `Harmony` |
 | --- | --- |
@@ -236,7 +236,7 @@ Un clip de 7680 ticks possède les changements harmoniques suivants :
 
 Chaque `HarmonyChange` remplace la variante précédente. Aucun accord et aucune gamme ne sont actifs simultanément.
 
-Le placement global des occurrences et le tempo du projet n’affectent pas cette chronologie locale.
+Le placement global des clips et le tempo du projet n’affectent pas cette chronologie locale.
 
 ## Cas 11 — Remplacement harmonique explicite
 
@@ -246,20 +246,20 @@ Le premier périmètre présente le catalogue pour un choix explicite, sans sugg
 
 ## Cas 12 — Gammes modales et pentatoniques
 
-Un clip possède successivement les changements harmoniques suivants :
+Un pattern possède successivement les changements harmoniques suivants :
 
 | Tick local | `Harmony` |
 | --- | --- |
 | `0` | `SCALE · D DORIAN` |
 | `3840` | `SCALE · A MINOR_PENTATONIC` |
 
-Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucun contexte supérieur implicite. La première `HarmonySection` couvre `[0, 3840)` et la seconde `[3840, clip.duration)`.
+Les deux gammes sauvegardent une `RootNote` explicite. Leur résolution ne dépend d’aucun contexte supérieur implicite. La première `HarmonySection` couvre `[0, 3840)` et la seconde `[3840, pattern.duration)`.
 
-Les occurrences du clip peuvent être placées n’importe où dans la grille. Leur piste et leur éventuel chevauchement avec d’autres occurrences ne changent pas ces analyses locales.
+Les clips du pattern peuvent être placés n’importe où dans la grille. Leur piste et leur éventuel chevauchement avec d’autres clips ne changent pas ces analyses locales.
 
 ## Cas 13 — Note tenue à travers plusieurs variantes d’harmonie
 
-Une note `E4` commence au tick local `960` et se termine au tick `5280`. Le clip possède `SCALE · C IONIAN` au tick `0`, `CHORD · C MAJOR` au tick `1920`, puis `SCALE · A MINOR_PENTATONIC` au tick `3840`.
+Une note `E4` commence au tick local `960` et se termine au tick `5280`. Le pattern possède `SCALE · C IONIAN` au tick `0`, `CHORD · C MAJOR` au tick `1920`, puis `SCALE · A MINOR_PENTATONIC` au tick `3840`.
 
 | Intervalle analysé | Harmonie active | Rôle de `E4` |
 | --- | --- | --- |
@@ -269,11 +269,11 @@ Une note `E4` commence au tick local `960` et se termine au tick `5280`. Le clip
 
 Les frontières des `HarmonySection` sont réunies avec celles du `TimeRange` pour produire ces portions. La note persistante conserve néanmoins un seul intervalle et n’est jamais découpée.
 
-Si une occurrence du clip commence au tick global `10000`, ces bornes locales correspondent aux ticks globaux `10960`, `11920`, `13840` et `15280`. Les objets locaux ne sont pas réécrits pour autant.
+Si un clip du pattern commence au tick global `10000`, ces bornes locales correspondent aux ticks globaux `10960`, `11920`, `13840` et `15280`. Les objets locaux ne sont pas réécrits pour autant.
 
 ## Cas 14 — Replanification du projet transitoire
 
-Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement une occurrence déjà active et déplace un changement local situé plus loin dans le clip qu'elle référence. La commande fournit une nouvelle projection candidate. Elle deviendra l’`effectiveProject` partagé par la présentation et l’audio après acceptation de sa replanification.
+Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement un clip déjà actif et déplace un changement local situé plus loin dans le pattern qu’il référence. La commande fournit une nouvelle projection candidate. Elle deviendra l’`effectiveProject` partagé par la présentation et l’audio après acceptation de sa replanification.
 
 Le `PlaybackService` consulte l’horloge de la session :
 
@@ -293,45 +293,45 @@ const updateResult = audioEngine.replaceSchedule(transportSessionId, {
 
 Si la borne est encore sûre, le moteur conserve les événements antérieurs, remplace atomiquement les commandes et fins de contexte à partir de cette borne et retourne `ok(undefined)`. Si elle est dépassée, `updateResult` contient `SCHEDULE_TOO_LATE` et aucune collection n’est modifiée ; le service recalcule depuis une nouvelle borne avant publication. Dans la suite de ce cas, « tête » désigne le tick de cette borne acceptée.
 
-Si l'ancien et le nouveau début global de la note restent avant la tête, tandis que sa fin reste après, l'occurrence de note audible est conservée et seul son `NOTE_OFF` est replanifié. Si le déplacement de la `ClipOccurrence` place l'attaque après la tête, l'occurrence de note reçoit un `NOTE_OFF` à la borne et sa future attaque est replanifiée. Une note auparavant inactive qui couvre désormais la tête reçoit un `NOTE_ON` à cette borne.
+Si l'ancien et le nouveau début global de la note restent avant la tête, tandis que sa fin reste après, l'occurrence de note audible est conservée et seul son `NOTE_OFF` est replanifié. Si le déplacement d’un `Clip` place l'attaque après la tête, l'occurrence de note reçoit un `NOTE_OFF` à la borne et sa future attaque est replanifiée. Une note auparavant inactive qui couvre désormais la tête reçoit un `NOTE_ON` à cette borne.
 
-Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Un changement d’instrument utilise la préparation sonore commune aux éditions : l’ancien instrument continue de jouer jusqu’à ce que la nouvelle banque soit prête, puis chaque occurrence active concernée de cette piste bascule vers un nouveau contexte tandis que l’ancien se draine. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
+Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Un changement d’instrument utilise la préparation sonore commune aux éditions : l’ancien instrument continue de jouer jusqu’à ce que la nouvelle banque soit prête, puis chaque clip actif concerné de cette piste bascule vers un nouveau contexte tandis que l’ancien se draine. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
 
 Le changement local appartient à la même édition atomique, mais ne produit aucun événement sonore en lui-même. Le `PlaybackSessionId` et l’origine temporelle ne changent pas ; la position poursuit son avance continue. Le document est publié après acceptation du plan, et le son le rejoint à la borne sûre.
 
-Si le transport actif était `CLIP` sur ce même clip, le service ignorerait le déplacement de la `ClipOccurrence` et réconcilierait uniquement le contenu local depuis la tête du clip. Une modification d’un autre clip n’affecterait pas cette session ; le tempo du projet et l’instrument de sa piste d’écoute continueraient en revanche à s’y appliquer. La portée reste le clip attaché à la session, même si le piano roll en affiche un autre.
+Si le transport actif était `PATTERN` sur ce même pattern, le service ignorerait le déplacement d’un `Clip` et réconcilierait uniquement le contenu local depuis la tête du pattern. Une modification d’un autre pattern n’affecterait pas cette session ; le tempo du projet et l’instrument de sa piste d’écoute continueraient en revanche à s’y appliquer. La portée reste le pattern attaché à la session, même si le piano roll en affiche un autre.
 
-## Cas 15 — Un clip partagé entre plusieurs instruments
+## Cas 15 — Un pattern partagé entre plusieurs instruments
 
-Le clip source `Ostinato` possède une durée de 1920 ticks et contient `note-a`. Deux blocs de la grille le référencent. Une piste `track-vibes` utilise le vibraphone :
+Le pattern source `Ostinato` possède une durée de 1920 ticks et contient `note-a`. Deux blocs de la grille le référencent. Une piste `track-vibes` utilise le vibraphone :
 
-| `ClipOccurrence` | `clipId` | `trackId` | Début | `repeatCount` |
+| `Clip` | `patternId` | `trackId` | Début | `repeatCount` |
 | --- | --- | --- | ---: | ---: |
 | `ostinato-a` | `ostinato` | `track-piano` | 0 | 2 |
 | `ostinato-b` | `ostinato` | `track-vibes` | 960 | 1 |
 
-Les deux occurrences se chevauchent. La première joue au piano, la seconde au vibraphone, dans deux `PlaybackContext` distincts. Les attaques issues de `note-a` reçoivent des `NoteOccurrenceId` distincts ; elles ne partagent ni voix ni instance audio malgré leur `ClipId` commun.
+Les deux clips se chevauchent. Le premier joue au piano, le second au vibraphone, dans deux `PlaybackContext` distincts. Les attaques issues de `note-a` reçoivent des `NoteOccurrenceId` distincts ; elles ne partagent ni voix ni instance audio malgré leur `PatternId` commun.
 
-Ouvrir l’un ou l’autre bloc édite le même clip `Ostinato`, avec la piste d’écoute du bloc ouvert. Transposer `note-a`, modifier sa vélocité, déplacer un changement local ou redimensionner le clip met à jour les deux occurrences, chacune avec son instrument propre.
+Ouvrir l’un ou l’autre bloc édite le même pattern `Ostinato`, avec la piste d’écoute du bloc ouvert. Transposer `note-a`, modifier sa vélocité, déplacer un changement local ou redimensionner le pattern met à jour les deux clips, chacun avec son instrument propre.
 
-Changer l’instrument de `track-piano` affecte seulement `ostinato-a` et les autres occurrences de cette piste. `ostinato-b` conserve le vibraphone. La préparation puis la réconciliation suivent les règles communes de changement d’instrument.
+Changer l’instrument de `track-piano` affecte seulement `ostinato-a` et les autres clips de cette piste. `ostinato-b` conserve le vibraphone. La préparation puis la réconciliation suivent les règles communes de changement d’instrument.
 
-Déplacer `ostinato-b`, changer son `trackId` ou son `repeatCount` ne modifie pas `ostinato-a`. Dupliquer `ostinato-a` conserve son `clipId` et, par défaut, son `trackId` : le nouveau bloc partage le contenu et utilise le piano. Le premier périmètre ne propose aucune commande pour rendre cette occurrence unique ou la délier.
+Déplacer `ostinato-b`, changer son `trackId` ou son `repeatCount` ne modifie pas `ostinato-a`. Dupliquer `ostinato-a` conserve son `patternId` et, par défaut, son `trackId` : le nouveau bloc partage le contenu et utilise le piano. Le premier périmètre ne propose aucune commande pour rendre ce clip unique ou le délier.
 
 ## Cas 16 — Harmonie chromatique initiale
 
-À sa création, un clip possède obligatoirement un `HarmonyChange` au tick `0` dont la valeur est `SCALE · C CHROMATIC`. Ce changement initial ne peut être ni supprimé ni déplacé, mais il peut être remplacé par une autre gamme ou par un accord.
+À sa création, un pattern possède obligatoirement un `HarmonyChange` au tick `0` dont la valeur est `SCALE · C CHROMATIC`. Ce changement initial ne peut être ni supprimé ni déplacé, mais il peut être remplacé par une autre gamme ou par un accord.
 
 Si un changement `CHORD · F MAJOR_SEVENTH` est ajouté au tick `3840` :
 
 | Intervalle local | Harmonie active |
 | --- | --- |
 | `[0, 3840)` | do chromatique |
-| `[3840, clip.duration)` | `Fmaj7` |
+| `[3840, pattern.duration)` | `Fmaj7` |
 
 Dans la première section, toute note est `SCALE_TONE`. Dans la seconde, une note de l’accord est `CHORD_TONE` et toute autre note est `OUTSIDE_TONE`.
 
-Aucun marqueur n’accepte `null` ou `CLEAR`. La dernière harmonie déclarée reste active jusqu’à la fin du clip.
+Aucun marqueur n’accepte `null` ou `CLEAR`. La dernière harmonie déclarée reste active jusqu’à la fin du pattern.
 
 ## Cas 17 — Préchargement, seek et fermeture du piano roll
 
@@ -339,11 +339,11 @@ Le projet est arrêté avec une tête globale au tick `1920`. `playProject()` re
 
 Pendant la lecture, `seekProject(7680)` crée une requête identifiée, prépare les instruments requis à partir du tick `7680`, puis remplace gracieusement la session par une nouvelle session `PROJECT` à ce tick lorsque les banques sont disponibles. Un `stop(IMMEDIATE)` ultérieur coupe le son mais laisse la tête globale au tick atteint ; la tête locale n'est pas modifiée.
 
-Dans un autre scénario, `playClip()` démarre le clip `Motif`, puis l'utilisateur ferme le piano roll ou ouvre `Couplet`. La session `CLIP` continue sur `Motif` avec sa piste d’écoute capturée et son propre curseur d’exécution. La tête locale du nouvel éditeur ne suit pas ce transport. Un nouvel appel à `playClip()` remplace la session et cible alors `Couplet`.
+Dans un autre scénario, `playPattern()` démarre le pattern `Motif`, puis l'utilisateur ferme le piano roll ou ouvre `Couplet`. La session `PATTERN` continue sur `Motif` avec sa piste d’écoute capturée et son propre curseur d’exécution. La tête locale du nouvel éditeur ne suit pas ce transport. Un nouvel appel à `playPattern()` remplace la session et cible alors `Couplet`.
 
 ## Cas 18 — Collision de notes de même hauteur
 
-Un clip contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
+Un pattern contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
 Pendant le geste, `transientProject` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
 
@@ -377,13 +377,13 @@ const result = Tempo.create(1000.0);
 
 Aucun `Tempo` invalide n'est construit. Le cas d'usage conserve le tempo précédent et la présentation traduit le code stable vers son propre message.
 
-De même, déplacer une occurrence vers un `trackId` absent retourne un `ProjectEditError` de code `TRACK_NOT_FOUND`. Créer une 129e piste produit `TRACK_LIMIT_EXCEEDED`. Cette intention ne remplace ni le `Project` d’origine ni la dernière projection transitoire admissible. En revanche, un déplacement valide qui superpose deux occurrences sur la même piste est accepté sans résolution de collision. Une opération valide du domaine retourne `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer `project`.
+De même, déplacer un clip vers un `trackId` absent retourne un `ProjectEditError` de code `TRACK_NOT_FOUND`. Créer une 129e piste produit `TRACK_LIMIT_EXCEEDED`. Cette intention ne remplace ni le `Project` d’origine ni la dernière projection transitoire admissible. En revanche, un déplacement valide qui superpose deux clips sur la même piste est accepté sans résolution de collision. Une opération valide du domaine retourne `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer `project`.
 
-La lecture d'une sauvegarde suit le même chemin de validation. Une référence vers un clip absent produit une erreur métier typée, tandis qu'un échec d'accès au stockage reste une erreur technique distincte.
+La lecture d'une sauvegarde suit le même chemin de validation. Une référence vers un pattern absent produit une erreur métier typée, tandis qu'un échec d'accès au stockage reste une erreur technique distincte.
 
 ## Cas 20 — Changement d’instrument pendant la lecture
 
-Un transport `PROJECT` joue deux occurrences actives sur `track-piano` : l’une référence `Ostinato`, l’autre `Contrechant`. L’utilisateur choisit un vibraphone pour cette piste ; sa banque n’est pas encore chargée. Une autre occurrence d’`Ostinato` sur `track-strings` reste jouée aux cordes.
+Un transport `PROJECT` joue deux clips actifs sur `track-piano` : le premier référence `Ostinato`, le second `Contrechant`. L’utilisateur choisit un vibraphone pour cette piste ; sa banque n’est pas encore chargée. Un autre clip d’`Ostinato` sur `track-strings` reste joué aux cordes.
 
 `EditService` ouvre une édition portant la commande de changement d’instrument de `track-piano`. Sa préparation est suivie par `PendingEditPreparation`, liée à l’identité et à la révision de cette commande. Il demande la préparation à `PlaybackService`, unique appelant applicatif du moteur :
 
@@ -401,15 +401,15 @@ Pendant le chargement :
 - la présentation indique que le vibraphone est en préparation ;
 - une annulation ou un autre choix rend cette demande obsolète.
 
-Lorsque la banque est prête et la commande toujours courante, le service calcule un plan commun aux deux occurrences à la même borne sûre. Il ouvre leurs nouveaux contextes de vibraphone et inclut les relâchements et fins des anciens contextes dans `replaceSchedule`. Après acceptation, l’édition est publiée ; à la borne choisie, les pianos passent à `DRAINING` et les notes couvrant cette borne sont réattaquées au vibraphone. Les attaques futures sont planifiées dans les nouveaux contextes. Un refus temporel conserve l’ancien plan et provoque un nouveau calcul, sans appliquer le changement d’instrument ni relâcher prématurément les pianos.
+Lorsque la banque est prête et la commande toujours courante, le service calcule un plan commun aux deux clips à la même borne sûre. Il ouvre leurs nouveaux contextes de vibraphone et inclut les relâchements et fins des anciens contextes dans `replaceSchedule`. Après acceptation, l’édition est publiée ; à la borne choisie, les pianos passent à `DRAINING` et les notes couvrant cette borne sont réattaquées au vibraphone. Les attaques futures sont planifiées dans les nouveaux contextes. Un refus temporel conserve l’ancien plan et provoque un nouveau calcul, sans appliquer le changement d’instrument ni relâcher prématurément les pianos.
 
 Les releases et tails du piano peuvent donc coexister temporairement avec les nouvelles voix de vibraphone. Aucun nouveau transport n’est créé et la tête globale ne se déplace pas.
 
-Si la préparation retourne `err(InstrumentPreparationError)`, aucun contexte n’est remplacé et `Track.instrumentId` reste celui du piano. Les occurrences sur `track-strings` n’ont jamais été affectées.
+Si la préparation retourne `err(InstrumentPreparationError)`, aucun contexte n’est remplacé et `Track.instrumentId` reste celui du piano. Les clips sur `track-strings` n’ont jamais été affectés.
 
 ## Cas 21 — Réconciliation après modification d’une répétition
 
-Une occurrence commence au tick global `0`, référence un clip de `3840` ticks et possède un `repeatCount` de `3`.
+Un clip commence au tick global `0`, référence un pattern de `3840` ticks et possède un `repeatCount` de `3`.
 
 | `repeatIndex` | Intervalle initial |
 | ---: | --- |
@@ -417,7 +417,7 @@ Une occurrence commence au tick global `0`, référence un clip de `3840` ticks 
 | 1 | `[3840, 7680)` |
 | 2 | `[7680, 11520)` |
 
-À la tête globale `7000`, les voix en cours appartiennent à la répétition `1`. La durée du clip est ensuite réduite à `3000` ticks :
+À la tête globale `7000`, les voix en cours appartiennent à la répétition `1`. La durée du pattern est ensuite réduite à `3000` ticks :
 
 | `repeatIndex` | Intervalle recalculé |
 | ---: | --- |
@@ -425,7 +425,7 @@ Une occurrence commence au tick global `0`, référence un clip de `3840` ticks 
 | 1 | `[3000, 6000)` |
 | 2 | `[6000, 9000)` |
 
-Les voix de la répétition `1` ne sont jamais renommées en répétition `2`. Elles sont conservées uniquement si leur propre intervalle de note recalculé couvre encore la tête ; sinon elles sont relâchées. Les notes de la répétition `2` qui couvrent désormais le tick `7000` produisent de nouvelles occurrences sonores identifiées par `(occurrenceId, 2, noteId)`.
+Les voix de la répétition `1` ne sont jamais renommées en répétition `2`. Elles sont conservées uniquement si leur propre intervalle de note recalculé couvre encore la tête ; sinon elles sont relâchées. Les notes de la répétition `2` qui couvrent désormais le tick `7000` produisent de nouvelles occurrences sonores identifiées par `(clipId, 2, noteId)`.
 
 Si seul `repeatCount` passe ensuite de `3` à `2`, les répétitions `0` et `1` ne changent ni de frontière ni d’indice. La répétition terminale `2` est supprimée, ses commandes futures sont annulées et ses éventuelles voix actives sont relâchées.
 
@@ -469,33 +469,33 @@ Un projet possède une fin structurelle au tick `11520`. Lorsque sa session atte
 - `playProject(11521)` retourne une erreur de validation ;
 - un projet vide conserve sa tête à `0` et n’ouvre aucune session.
 
-Le même comportement s’applique à `playClip()` et `playClip(tick)` avec `clip.duration`, à l’exception qu’un clip possède toujours une durée strictement positive.
+Le même comportement s’applique à `playPattern()` et `playPattern(tick)` avec `pattern.duration`, à l’exception qu’un pattern possède toujours une durée strictement positive.
 
 ## Cas 24 — Raccourcissement derrière la tête
 
-Un transport `CLIP` se trouve au tick local `6000`. Une édition valide réduit `clip.duration` de `7680` à `4800` ticks.
+Un transport `PATTERN` se trouve au tick local `6000`. Une édition valide réduit `pattern.duration` de `7680` à `4800` ticks.
 
 Le service prépare la fin du plan à une borne sûre. Après acceptation, l’application publie la durée et mémorise la tête locale à `4800`. Le plan annule les attaques futures remplaçables et relâche les voix actives à la borne acceptée. L’`ActiveTransport` est supprimé ; la session est fermée à cette borne puis libérée après drainage. Les contextes possédant encore des releases ou tails passent à `DRAINING`.
 
 Si la nouvelle durée avait été `7000`, la tête serait restée à `6000` et le transport aurait continué jusqu’à sa nouvelle fin replanifiée. Si aucun transport n’avait été actif, seul le clamp de la tête aurait été nécessaire.
 
-## Cas 25 — Suppression du clip lu isolément
+## Cas 25 — Suppression du pattern lu isolément
 
-Le clip non placé `Esquisse` est ouvert dans le piano roll et joué par une session `CLIP` utilisant explicitement `track-piano`. Comme aucune `ClipOccurrence` ne le référence, l’utilisateur peut demander sa suppression.
+Le pattern non placé `Esquisse` est ouvert dans le piano roll et joué par une session `PATTERN` utilisant explicitement `track-piano`. Comme aucun `Clip` ne le référence, l’utilisateur peut demander sa suppression.
 
 Le cas d’usage produit d’abord un candidat validé, sans le publier. Au remplacement effectif du projet, il :
 
-1. arrête gracieusement la session `CLIP` ;
+1. arrête gracieusement la session `PATTERN` ;
 2. annule ses attaques futures et relâche ses voix actives ;
 3. supprime l’`ActiveTransport` ;
 4. arrête les préécoutes liées à `Esquisse` ;
 5. invalide ses préparations devenues sans objet ; aucune édition concurrente n’est acceptée ;
-6. ferme son `ClipEditorState` et fait disparaître sa tête locale ;
-7. supprime enfin le clip du projet.
+6. ferme son `PatternEditorState` et fait disparaître sa tête locale ;
+7. supprime enfin le pattern du projet.
 
-Les contextes peuvent terminer leurs tails en `DRAINING`, mais la session ne continue pas à lire une copie orpheline du clip. Une tête locale n’est jamais transférée au prochain clip ouvert.
+Les contextes peuvent terminer leurs tails en `DRAINING`, mais la session ne continue pas à lire une copie orpheline du pattern. Une tête locale n’est jamais transférée au prochain pattern ouvert.
 
-Supprimer un clip non placé pendant un transport `PROJECT` n’affecte pas ce transport, car aucune occurrence de ce clip ne participe à sa portée.
+Supprimer un pattern non placé pendant un transport `PROJECT` n’affecte pas ce transport, car aucun clip de ce pattern ne participe à sa portée.
 
 ## Cas 26 — Bornes du domaine et changement au tick final
 
@@ -508,17 +508,17 @@ Le premier périmètre accepte notamment :
 - `FLAT`, `NATURAL` et `SHARP`, mais pas encore les doubles altérations ;
 - un `repeatCount` de `65_535`, sous réserve que la fin globale calculée ne dépasse pas `MAX_TICK`.
 
-Une occurrence est refusée même lorsque ses valeurs individuelles sont valides si le calcul suivant dépasse `2_147_483_647` :
+Un clip est refusé même lorsque ses valeurs individuelles sont valides si le calcul suivant dépasse `2_147_483_647` :
 
 ```text
-occurrence.start + clip.duration * occurrence.repeatCount
+clip.start + pattern.duration * clip.repeatCount
 ```
 
-Un clip se termine au tick `7680`. L’utilisateur ajoute un `HarmonyChange` exactement à cette position. Le changement est valide et sauvegardé, mais sa section vaut `[7680, 7680)` : elle n’affecte aucune note et ne produit aucun événement audio.
+Un pattern se termine au tick `7680`. L’utilisateur ajoute un `HarmonyChange` exactement à cette position. Le changement est valide et sauvegardé, mais sa section vaut `[7680, 7680)` : elle n’affecte aucune note et ne produit aucun événement audio.
 
-Si le clip est ensuite allongé jusqu’au tick `11520`, ce même changement devient le début de la section `[7680, 11520)` sans être déplacé ni recréé.
+Si le pattern est ensuite allongé jusqu’au tick `11520`, ce même changement devient le début de la section `[7680, 11520)` sans être déplacé ni recréé.
 
-Un `MeterChange` placé à la fin suit la même règle. À l’inverse, raccourcir le clip en dessous d’un changement existant est refusé, sauf si le même geste déplace ou supprime également ce changement.
+Un `MeterChange` placé à la fin suit la même règle. À l’inverse, raccourcir le pattern en dessous d’un changement existant est refusé, sauf si le même geste déplace ou supprime également ce changement.
 
 ## Cas 27 — Préparation remplacée et projet modifié
 
@@ -526,7 +526,7 @@ Le projet est arrêté au tick `1920`. Un premier `playProject()` crée la requ�
 
 Avant la fin du chargement, l’utilisateur appelle `playProject(7680)`. Le service crée `request-b`, rend `request-a` obsolète et résout sa promesse avec `ok("SUPERSEDED")`. Même si le piano termine ensuite son chargement pour `request-a`, cette ancienne requête ne peut ouvrir aucune session.
 
-Pendant la préparation de `request-b`, l’utilisateur modifie `effectiveProject` et ajoute après le tick `7680` une occurrence sur une piste utilisant un vibraphone. `effectiveProjectRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
+Pendant la préparation de `request-b`, l’utilisateur modifie `effectiveProject` et ajoute après le tick `7680` un clip sur une piste utilisant un vibraphone. `effectiveProjectRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
 
 Si `stop()` intervient pendant cette seconde préparation :
 
@@ -548,11 +548,11 @@ La présentation soumet le choix `SLICE` avec l’identité de la décision. Il 
 
 ## Cas 29 — Placement sur une piste dont la banque n’est pas prête
 
-Le transport `PROJECT` lit les occurrences de `track-piano`. Une piste vide `track-vibes` utilise le vibraphone ; sa banque n’a pas été requise au démarrage. Un clip existe sans occurrence. L’utilisateur le place sur `track-vibes`, dans la portée encore à lire, avec un intervalle qui peut recouvrir celui d’une occurrence de piano.
+Le transport `PROJECT` lit les clips de `track-piano`. Une piste vide `track-vibes` utilise le vibraphone ; sa banque n’a pas été requise au démarrage. Un pattern existe sans clip. L’utilisateur le place sur `track-vibes`, dans la portée encore à lire, avec un intervalle qui peut recouvrir celui d’un clip de piano.
 
 La superposition est valide. La banque manquante déclenche toutefois `PendingEditPreparation` avant publication de cette nouvelle projection. L’ancien projet effectif continue de jouer ; le placement demandé dispose d’un repère en chargement. Aucun `NOTE_ON` de vibraphone n’est envoyé prématurément.
 
-À la fin du chargement, le service vérifie la commande et la portée actuelles, recalcule depuis la nouvelle borne sûre et publie après acceptation du plan. Les notes du clip qui couvrent cette borne sont poursuivies par une attaque minimale ; celles déjà entièrement passées ne sont pas rejouées. Annuler ou modifier le geste rend la préparation précédente obsolète. Un échec conserve l’ancien projet effectif et n’ajoute rien à l’historique.
+À la fin du chargement, le service vérifie la commande et la portée actuelles, recalcule depuis la nouvelle borne sûre et publie après acceptation du plan. Les notes du pattern qui couvrent cette borne sont poursuivies par une attaque minimale ; celles déjà entièrement passées ne sont pas rejouées. Annuler ou modifier le geste rend la préparation précédente obsolète. Un échec conserve l’ancien projet effectif et n’ajoute rien à l’historique.
 
 ## Cas 30 — Note terminée avant la borne de réconciliation
 
@@ -564,39 +564,39 @@ Si le calcul arrive trop tard et que le moteur exige désormais `from >= 5.08`, 
 
 ## Cas 31 — Silence sans destruction du transport
 
-Une occurrence se termine à deux secondes et la suivante commence à dix secondes. La planification glissante n’a pas encore ouvert le contexte de la seconde. Après extinction des tails, la session peut n’avoir aucun contexte vivant entre ces deux blocs.
+Un clip se termine à deux secondes et le suivant commence à dix secondes. La planification glissante n’a pas encore ouvert le contexte du second. Après extinction des tails, la session peut n’avoir aucun contexte vivant entre ces deux blocs.
 
 Elle reste ouverte : son horloge continue d’avancer et le service peut programmer le contexte suivant. Seule la fin structurelle du projet ou un arrêt ferme cette session. Sa destruction exige alors que tous ses contextes soient également détruits.
 
 ## Cas 32 — Historique et fichier de projet
 
-Une transposition collective puis un déplacement d’occurrence produisent deux versions validées. `undo()` restaure la version avant le déplacement et réconcilie la lecture ; un second undo restaure les notes avant transposition. `redo()` avance dans ces mêmes versions, sans recréer leurs identifiants. Les têtes de transport ne reviennent pas à leur position historique.
+Une transposition collective puis un déplacement de clip produisent deux versions validées. `undo()` restaure la version avant le déplacement et réconcilie la lecture ; un second undo restaure les notes avant transposition. `redo()` avance dans ces mêmes versions, sans recréer leurs identifiants. Les têtes de transport ne reviennent pas à leur position historique.
 
 Une sauvegarde pendant un nouveau geste écrit seulement le dernier projet validé, dans une enveloppe `schemaVersion: 1`. Le brouillon, les têtes et l’historique en sont absents. Une édition validée pendant cette écriture demeure une modification non sauvegardée.
 
-Rouvrir ce fichier reconstitue et valide les pistes ordonnées, les clips et les références `clipId` / `trackId` de chaque occurrence. Les clips ne contiennent aucun instrument ; les `instrumentId` des pistes sont contrôlés auprès du catalogue. La piste d’écoute du piano roll n’est pas sauvegardée. Si tous les instruments sont connus, le remplacement ferme les anciennes auditions, remet la tête globale à `0` et vide l’historique. Un instrument absent, un format invalide ou une version non prise en charge laisse au contraire le document courant intact.
+Rouvrir ce fichier reconstitue et valide les pistes ordonnées, les patterns et les références `patternId` / `trackId` de chaque clip. Les patterns ne contiennent aucun instrument ; les `instrumentId` des pistes sont contrôlés auprès du catalogue. La piste d’écoute du piano roll n’est pas sauvegardée. Si tous les instruments sont connus, le remplacement ferme les anciennes auditions, remet la tête globale à `0` et vide l’historique. Un instrument absent, un format invalide ou une version non prise en charge laisse au contraire le document courant intact.
 
 ## Cas 33 — Durée partagée et superpositions
 
-Un clip `Motif` de `1920` ticks possède deux occurrences sur la piste `track-piano`, commençant respectivement à `0` et `1920`, avec `repeatCount = 1`. Allonger le clip à `2880` ticks produit les intervalles `[0, 2880)` et `[1920, 4800)`.
+Un pattern `Motif` de `1920` ticks possède deux clips sur la piste `track-piano`, commençant respectivement à `0` et `1920`, avec `repeatCount = 1`. Allonger le pattern à `2880` ticks produit les intervalles `[0, 2880)` et `[1920, 4800)`.
 
-Cette édition est valide : les deux occurrences se superposent pendant `960` ticks, conservent leurs débuts et jouent simultanément dans des contextes indépendants. Aucun déplacement en cascade ni choix `SLICE`/`MERGE` n’est demandé. Ces modes concernent exclusivement les collisions de notes de même hauteur à l’intérieur d’un clip.
+Cette édition est valide : les deux clips se superposent pendant `960` ticks, conservent leurs débuts et jouent simultanément dans des contextes indépendants. Aucun déplacement en cascade ni choix `SLICE`/`MERGE` n’est demandé. Ces modes concernent exclusivement les collisions de notes de même hauteur à l’intérieur d’un pattern.
 
-Changer ensuite la métrique de `4/4` en `3/4` conserve cette durée de `2880` ticks. Elle représente désormais une mesure complète ; ni les notes ni les placements ne bougent. Le résultat est identique si le clip est vide : seule une commande explicite change sa durée.
+Changer ensuite la métrique de `4/4` en `3/4` conserve cette durée de `2880` ticks. Elle représente désormais une mesure complète ; ni les notes ni les placements ne bougent. Le résultat est identique si le pattern est vide : seule une commande explicite change sa durée.
 
 ## Cas 34 — Réordonner et supprimer des pistes
 
-Le projet contient les pistes ordonnées `[track-piano, track-vibes, track-bass]`. Réordonner cette collection en `[track-bass, track-piano, track-vibes]` déplace leurs rangées à l’écran. Les `trackId` des occurrences, leurs instruments, les voix actives et la piste d’écoute du piano roll restent inchangés. L’opération est persistante et annulable, sans replanification audio.
+Le projet contient les pistes ordonnées `[track-piano, track-vibes, track-bass]`. Réordonner cette collection en `[track-bass, track-piano, track-vibes]` déplace leurs rangées à l’écran. Les `trackId` des clips, leurs instruments, les voix actives et la piste d’écoute du piano roll restent inchangés. L’opération est persistante et annulable, sans replanification audio.
 
-Supprimer `track-piano` tant qu’une occurrence la référence retourne `TRACK_IN_USE`. Aucun bloc ni clip n’est supprimé implicitement. L’utilisateur peut déplacer ou supprimer explicitement les occurrences, puis supprimer la piste ; une commande collective réalise aussi ces actions atomiquement.
+Supprimer `track-piano` tant qu’un clip la référence retourne `TRACK_IN_USE`. Aucun bloc ni pattern n’est supprimé implicitement. L’utilisateur peut déplacer ou supprimer explicitement les clips, puis supprimer la piste ; une commande collective réalise aussi ces actions atomiquement.
 
-Une piste vide `track-vibes` sert à jouer `Esquisse` dans une session `CLIP`. Sa suppression est valide : l’application arrête cette session gracieusement, termine les préécoutes associées et invalide leurs préparations. Le clip reste ouvert, avec sa tête et sa sélection, mais sans `auditionTrackId`. Un undo restaure la piste et son identité sans redémarrer la lecture ni rétablir automatiquement ce choix d’écoute.
+Une piste vide `track-vibes` sert à jouer `Esquisse` dans une session `PATTERN`. Sa suppression est valide : l’application arrête cette session gracieusement, termine les préécoutes associées et invalide leurs préparations. Le pattern reste ouvert, avec sa tête et sa sélection, mais sans `auditionTrackId`. Un undo restaure la piste et son identité sans redémarrer la lecture ni rétablir automatiquement ce choix d’écoute.
 
-## Cas 35 — Éditer et écouter un clip sans occurrence
+## Cas 35 — Éditer et écouter un pattern sans clip
 
-Un projet contient un clip `Esquisse`, sans piste ni occurrence. Ouvrir ce clip permet de modifier ses notes et de déplacer sa tête locale. `playClip()` et `previewPitch()` retournent `NO_AUDITION_TRACK` ; aucun instrument arbitraire n’est utilisé.
+Un projet contient un pattern `Esquisse`, sans piste ni clip. Ouvrir ce pattern permet de modifier ses notes et de déplacer sa tête locale. `playPattern()` et `previewPitch()` retournent `NO_AUDITION_TRACK` ; aucun instrument arbitraire n’est utilisé.
 
-L’utilisateur crée une piste vide `track-piano`, puis appelle `setAuditionTrack(trackPianoId)`. Le service prépare le piano et retourne `ok("APPLIED")` lorsque le choix devient effectif. `ClipEditorState.auditionTrackId` référence alors cette piste. `playClip()` et les préécoutes peuvent jouer `Esquisse` au piano, sans créer d’occurrence.
+L’utilisateur crée une piste vide `track-piano`, puis appelle `setAuditionTrack(trackPianoId)`. Le service prépare le piano et retourne `ok("APPLIED")` lorsque le choix devient effectif. `PatternEditorState.auditionTrackId` référence alors cette piste. `playPattern()` et les préécoutes peuvent jouer `Esquisse` au piano, sans créer de clip.
 
 Le projet garde une durée structurelle de zéro. La piste et son instrument sont sauvegardés, mais le choix applicatif du piano roll ne l’est pas.
 
@@ -604,17 +604,17 @@ Le projet garde une durée structurelle de zéro. La piste et son instrument son
 
 `Motif` est joué isolément via `track-piano`, au tick local `1200`. L’utilisateur choisit `track-vibes` avec `setAuditionTrack`. Le vibraphone est encore en préparation : le piano continue et l’ancienne piste d’écoute reste effective.
 
-Une fois la banque prête, la demande toujours courante et le plan accepté, la session conserve son identité et son avance locale, mais son `trackId` et l’`auditionTrackId` de l’éditeur deviennent `track-vibes`. Les notes couvrant la borne sûre sont réattaquées au vibraphone dans un nouveau contexte ; le piano termine ses tails. Les handles de préécoute du choix précédent sont terminés. Aucune occurrence n’est déplacée, aucun clip n’est modifié et aucune entrée d’historique n’est créée.
+Une fois la banque prête, la demande toujours courante et le plan accepté, la session conserve son identité et son avance locale, mais son `trackId` et l’`auditionTrackId` de l’éditeur deviennent `track-vibes`. Les notes couvrant la borne sûre sont réattaquées au vibraphone dans un nouveau contexte ; le piano termine ses tails. Les handles de préécoute du choix précédent sont terminés. Aucun clip n’est déplacé, aucun pattern n’est modifié et aucune entrée d’historique n’est créée.
 
 Si l’utilisateur choisit une troisième piste pendant le chargement, la demande précédente retourne `SUPERSEDED`. Si le piano roll ferme, elle retourne `CANCELLED` et la session déjà active poursuit sa lecture avec sa piste précédente. Si le chargement échoue, l’erreur conserve le contexte précédent. Une bascule entre deux pistes utilisant le même instrument ne réattaque pas les notes.
 
 ## Cas 37 — Déplacement collectif entre pistes
 
-Les pistes sont ordonnées `[track-piano, track-vibes, track-bass]`. Deux occurrences sélectionnées appartiennent respectivement à `track-piano` et `track-vibes`. Un geste les descend d’un rang et les décale de `960` ticks.
+Les pistes sont ordonnées `[track-piano, track-vibes, track-bass]`. Deux clips sélectionnés appartiennent respectivement à `track-piano` et `track-vibes`. Un geste les descend d’un rang et les décale de `960` ticks.
 
-L’application produit `MoveClipOccurrencesCommand` avec un `deltaTicks` de `960` et deux destinations explicites : la première vers `track-vibes`, la seconde vers `track-bass`. Leurs débuts restent espacés comme avant ; chaque occurrence utilise désormais l’instrument de sa destination. Les identifiants d’occurrence et de clip sont conservés.
+L’application produit `MoveClipsCommand` avec un `deltaTicks` de `960` et deux destinations explicites : le premier vers `track-vibes`, le second vers `track-bass`. Leurs débuts restent espacés comme avant ; chaque clip utilise désormais l’instrument de sa destination. Les identifiants de clip et de pattern sont conservés.
 
-Un déplacement supplémentaire qui placerait la seconde occurrence après la dernière piste est refusé pour l’ensemble du geste. Aucun bloc n’est déplacé partiellement et aucune piste n’est créée automatiquement. Si une banque cible manque pendant un transport actif, la projection précédente reste effective jusqu’à la préparation et à l’acceptation du plan commun.
+Un déplacement supplémentaire qui placerait le second clip après la dernière piste est refusé pour l’ensemble du geste. Aucun bloc n’est déplacé partiellement et aucune piste n’est créée automatiquement. Si une banque cible manque pendant un transport actif, la projection précédente reste effective jusqu’à la préparation et à l’acceptation du plan commun.
 
 ## Référence des contrats
 
