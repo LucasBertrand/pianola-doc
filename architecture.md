@@ -22,7 +22,7 @@ Pianola sépare quatre responsabilités :
 
 | Couche | Responsabilité | Exemples |
 | --- | --- | --- |
-| Domaine | Représenter la composition, garantir ses invariants et expliciter ses échecs attendus. | `Project`, `Pattern`, `Note`, `Result`, temps musical et pitch |
+| Domaine | Représenter la composition, garantir ses invariants et expliciter ses échecs attendus. | `Project`, `Score`, `Note`, `Result`, temps musical et pitch |
 | Application | Orchestrer l'édition et la lecture à partir du domaine. | état de l'éditeur, cas d'usage, ports |
 | Infrastructure | Réaliser les capacités techniques demandées par l'application. | Web Audio, catalogue concret, persistance |
 | Présentation | Afficher la grille et traduire les gestes utilisateur. | clips, piano roll, inspecteur |
@@ -45,15 +45,17 @@ Le premier périmètre comprend :
 - un axe horizontal représentant un temps global continu ;
 - des pistes instrumentales ordonnées sur l’axe vertical, chacune associée à un instrument ;
 - un placement horizontal et une référence de piste persistants pour chaque `Clip` ;
-- des `Clip` référençant un `Pattern` partagé : modifier ce contenu modifie tous les clips correspondants ;
+- des `Score` constituant des contenus musicaux indépendants, éditables et partageables, même sans clip ;
+- des `Clip` référençant obligatoirement un `Score` par `scoreId` : modifier ce contenu modifie tous les clips correspondants ;
+- la duplication de clips par référence ou avec création de scores indépendants ;
 - un tempo unique appartenant au projet ;
-- des patterns sans instrument propre, dont les notes sont jouées avec l’instrument de la piste de chaque clip ;
-- l'absence de chevauchement entre notes de même hauteur dans un pattern, avec résolution explicite `SLICE` ou `MERGE` ;
-- des chronologies locales de métrique et d’harmonie pour chaque pattern ;
+- des scores sans instrument propre, dont les notes sont jouées avec l’instrument de la piste de chaque clip ;
+- l'absence de chevauchement entre notes de même hauteur dans un score, avec résolution explicite `SLICE` ou `MERGE` ;
+- des chronologies locales de métrique et d’harmonie pour chaque score ;
 - la lecture simultanée de tous les clips dont les intervalles globaux se chevauchent, y compris sur une même piste ;
-- l'édition du contenu d’un pattern dans un piano roll ;
+- l'édition du contenu d’un score dans un piano roll ;
 - la lecture du projet depuis sa tête globale ou depuis un tick global explicite ;
-- la lecture isolée du pattern édité depuis sa tête locale ou depuis un tick local explicite ;
+- la lecture isolée du score édité depuis sa tête locale ou depuis un tick local explicite ;
 - la préécoute soutenue d’une hauteur avec l’instrument de la piste d’écoute du piano roll ;
 - la préécoute brève et simultanée des hauteurs uniques d’une sélection de notes ;
 - un catalogue d'instruments échantillonnés intégrés et non éditables, rendus par `smplr` ;
@@ -70,7 +72,7 @@ Il ne comprend pas :
 - les suggestions automatiques de remplacement harmonique ;
 - le redimensionnement automatique lors d’un changement de métrique.
 
-Les `Note` sont le seul contenu sonore des patterns. La métrique et l’harmonie sont des données structurelles locales, et non des automations.
+Les `Note` sont le seul contenu sonore des scores. La métrique et l’harmonie sont des données structurelles locales, et non des automations.
 
 ---
 
@@ -80,24 +82,26 @@ Le domaine représente les intentions musicales indépendamment de React, Zustan
 
 ### Modèle de composition
 
-Le `Project` possède des `Track` ordonnées, des `Pattern` constituant les contenus musicaux éditables et des `Clip` placés dans la composition. Chaque `Clip` référence exactement un pattern par son `PatternId` et une piste par son `TrackId`. Les trois collections appartiennent directement au projet ; les clips ne sont pas dupliqués dans les pistes.
+Le `Project` possède des `Track` ordonnées, des `Score` constituant les contenus musicaux éditables et des `Clip` placés dans la composition. Chaque `Clip` référence exactement un score par `scoreId: ScoreId` et une piste par `trackId: TrackId`. Les trois collections appartiennent directement au projet ; les clips ne sont pas dupliqués dans les pistes.
+
+Un score existe indépendamment de son utilisation dans la composition : il peut être créé et édité avant tout placement, puis référencé par zéro, un ou plusieurs clips. Le partage est uniquement une conséquence de l’égalité des `scoreId`. Aucun indicateur de partage, propriétaire privilégié, type de source hybride ou contenu musical embarqué dans un clip n’est nécessaire. Deux scores de contenu identique mais d’identités différentes restent indépendants.
 
 ```mermaid
 flowchart TD
     Project --> Tempo
-    Project --> Pattern["Pattern · contenu partagé"]
+    Project --> Score["Score · contenu musical indépendant"]
     Project --> OccA["Clip · placement A"]
     Project --> OccB["Clip · placement B"]
-    OccA --> Pattern
-    OccB --> Pattern
+    OccA --> Score
+    OccB --> Score
     Project --> Track["Track · piste instrumentale"]
     OccA --> Track
     OccB --> Track
     Track --> Instrument
-    Pattern --> Content["Notes · métrique · Harmony"]
+    Score --> Content["Notes · métrique · Harmony"]
 ```
 
-La coordonnée horizontale d’un clip est son instant de départ global. Sa position verticale est dérivée du rang de sa piste dans `Project.tracks`. La durée du bloc est dérivée de la durée locale du pattern référencé et du `repeatCount` du clip.
+La coordonnée horizontale d’un clip est son instant de départ global. Sa position verticale est dérivée du rang de sa piste dans `Project.tracks`. La durée du bloc est dérivée de la durée locale du score référencé et du `repeatCount` du clip.
 
 Les pistes possèdent une identité stable, un nom et un instrument. Leur ordre est persistant ; les réordonner ne change ni les références des clips ni leur son. Déplacer un clip vers une autre piste change son instrument effectif si les deux pistes utilisent des instruments différents. Deux clips peuvent se chevaucher sur une même piste comme sur des pistes différentes : ils sont lus simultanément, sans priorité ni contrainte de collision entre leurs notes. Chaque clip garde son contexte audio indépendant ; une piste n’introduit pas de bus de mixage partagé.
 
@@ -105,15 +109,15 @@ Les pistes possèdent une identité stable, un nom et un instrument. Leur ordre 
 
 | Concept | Nature | Rôle principal |
 | --- | --- | --- |
-| `Project` | Entity et racine d'agrégat | Posséder le document musical, le tempo, les pistes ordonnées, les patterns et les clips qui les référencent |
+| `Project` | Entity et racine d'agrégat | Posséder le document musical, le tempo, les pistes ordonnées, les scores et les clips qui les référencent |
 | `Track` | Entity interne | Porter l’identité, le nom et l’instrument d’une piste |
-| `Pattern` | Entity interne | Porter un contenu musical local partagé et éditable, sans instrument propre |
-| `Clip` | Entity interne | Référencer un pattern et une piste, porter son début global et ses répétitions |
+| `Score` | Entity interne | Porter un contenu musical indépendant, éditable et partageable, sans instrument propre |
+| `Clip` | Entity interne | Référencer un score et une piste, porter son début global et ses répétitions |
 | `Note` | Entity interne | Représenter une note locale ; son instrument est résolu depuis la piste lors de la lecture |
 | `Instrument` | Entity de référence | Décrire publiquement un instrument intégré |
 | `Tempo` | Value Object | Définir la vitesse unique du projet |
-| `MeterChange` | Entity interne | Placer une métrique sur la chronologie locale d’un pattern |
-| `HarmonyChange` | Entity interne | Placer un accord ou une gamme sur la chronologie harmonique locale d’un pattern |
+| `MeterChange` | Entity interne | Placer une métrique sur la chronologie locale d’un score |
+| `HarmonyChange` | Entity interne | Placer un accord ou une gamme sur la chronologie harmonique locale d’un score |
 
 ### Result et validation du domaine
 
@@ -151,7 +155,7 @@ type NoteOverlap = {
 
 type NoteOverlapError = ValidationError<
   "NOTE_OVERLAP",
-  { overlaps: readonly NoteOverlap[] }
+  { scoreId: ScoreId; overlaps: readonly NoteOverlap[] }
 >;
 ```
 
@@ -161,11 +165,11 @@ Les constructeurs capables de créer un état invalide restent privés. Les fact
 
 ```ts
 Tempo.create(bpm: number): Result<Tempo, TempoValidationError>;
-Pattern.create(input: CreatePatternInput): Result<Pattern, PatternValidationError>;
+Score.create(input: CreateScoreInput): Result<Score, ScoreValidationError>;
 Clip.create(input: CreateClipInput): Result<Clip, ClipValidationError>;
 Project.create(input: CreateProjectInput): Result<Project, ProjectValidationError>;
 moveClips(project: Project, command: MoveClipsCommand): Result<Project, ProjectEditError>;
-editNote(pattern: Pattern, command: EditNoteCommand): Result<Pattern, PatternValidationError>;
+editNote(score: Score, command: EditNoteCommand): Result<Score, ScoreValidationError>;
 ```
 
 Une branche `ok: false` ne modifie jamais l'objet d'origine et ne publie aucun état partiel. Dans le premier périmètre, une opération retourne la première erreur selon un ordre de validation déterministe ; l'accumulation de plusieurs erreurs pourra être ajoutée sans changer la forme de `Result`.
@@ -201,7 +205,7 @@ Toute factory valide également les résultats composés, pas seulement leurs op
 
 ```text
 timeRange.start + timeRange.duration
-clip.start + pattern.duration * clip.repeatCount
+clip.start + score.duration * clip.repeatCount
 ticksPerMeasure = beatsPerMeasure * (3840 / beatUnit)
 ```
 
@@ -217,7 +221,7 @@ Attributs possibles :
 - `name` ;
 - `tempo` ;
 - `tracks` : collection ordonnée de pistes ;
-- `patterns` ;
+- `scores` ;
 - `clips` ;
 - `createdAt` ;
 - `updatedAt`.
@@ -225,18 +229,28 @@ Attributs possibles :
 Responsabilités et invariants :
 
 - servir de racine de sauvegarde ;
-- posséder directement les pistes, tous les patterns et tous les clips ;
+- posséder directement les pistes, tous les scores et tous les clips ;
 - posséder exactement un `Tempo` ;
-- garantir l’unicité des `TrackId`, des `PatternId` et des `ClipId` dans leurs collections respectives ;
+- garantir l’unicité des `TrackId`, des `ScoreId` et des `ClipId` dans leurs collections respectives ;
 - limiter la collection à `MAX_TRACK_COUNT = 128` pistes ;
-- garantir que chaque `Clip.patternId` référence un pattern existant et chaque `trackId` une piste existante ;
+- garantir que chaque `Clip.scoreId` référence un score existant et chaque `trackId` une piste existante ;
 - permettre la création, le renommage, le réordonnancement et le changement d’instrument des pistes ;
 - interdire la suppression d’une piste encore référencée par un clip ;
-- permettre la création et l'édition des patterns ainsi que l’ajout, le déplacement, la duplication et la suppression des clips qui les référencent ;
-- interdire la suppression d’un pattern encore référencé par un clip ;
-- accepter un projet sans piste ni clip, des pistes vides et des patterns sans clip.
+- permettre la création et l'édition des scores ainsi que l’ajout, le déplacement, la duplication et la suppression des clips qui les référencent ;
+- interdire la suppression d’un score encore référencé par un clip ;
+- accepter un projet sans piste ni clip, des pistes vides et des scores sans clip.
 
-Supprimer le dernier clip d’un pattern ne supprime jamais implicitement sa source. Le pattern reste disponible pour être replacé et ne disparaît que par une commande manuelle de suppression, valide uniquement lorsqu’aucun clip ne le référence.
+Supprimer le dernier clip d’un score ne supprime jamais implicitement sa source. Le score reste disponible pour être replacé et ne disparaît que par une commande manuelle de suppression, valide uniquement lorsqu’aucun clip ne le référence.
+
+Une création de clip avec un nouveau contenu insère le score et le clip dans une même transaction. Le projet ne publie jamais un clip sans score ni une référence en attente de résolution. Les erreurs de référence appartiennent à `ProjectValidationError` et sont propagées par `ProjectEditError` :
+
+| Code | Détails | Condition |
+| --- | --- | --- |
+| `SCORE_NOT_FOUND` | `scoreId`, et `clipId` si la référence vient d’un clip | Identité de score absente de `Project.scores` |
+| `SCORE_IN_USE` | `scoreId`, `clipIds` | Suppression d’un score encore référencé dans le résultat de la commande |
+| `DUPLICATE_SCORE_ID` | `scoreId` | Plusieurs scores portent la même identité dans la collection |
+
+Un `scoreId` absent, nul ou mal formé relève de `ClipValidationError` (`INVALID_SCORE_ID`) avant la résolution de référence. Les mêmes validations s’appliquent à une création interactive, une duplication et une reconstitution depuis un fichier. Une commande collective peut retirer les clips puis leur score explicitement ; seul un résultat complet valide est publié.
 
 Le tempo ne possède ni position, ni changement programmé. Il s'applique uniformément à toute la timeline et convertit les ticks globaux ou locaux en secondes.
 
@@ -254,19 +268,19 @@ Attributs :
 
 Une piste référence exactement un instrument. Son rang est donné uniquement par l’ordre de `Project.tracks` : aucun indice de placement ni champ d’ordre redondant n’est sauvegardé dans la piste ou dans les clips. Plusieurs pistes peuvent porter le même nom ou utiliser le même instrument ; leur identité les distingue.
 
-La piste détermine l’instrument de tous les clips qui la référencent, sans posséder leur contenu musical. Un même pattern peut ainsi être joué au piano sur une piste et au vibraphone sur une autre. Modifier l’instrument d’une piste ne modifie aucun pattern et n’affecte pas les clips placés ailleurs.
+La piste détermine l’instrument de tous les clips qui la référencent, sans posséder leur contenu musical. Un même score peut ainsi être joué au piano sur une piste et au vibraphone sur une autre. Modifier l’instrument d’une piste ne modifie aucun score et n’affecte pas les clips placés ailleurs.
 
 Une piste vide est valide et peut servir de piste d’écoute au piano roll. La suppression d’une piste non vide retourne `TRACK_IN_USE`, sans suppression en cascade ni déplacement implicite. Une commande collective peut déplacer ou supprimer explicitement les clips qui la référencent puis supprimer la piste, sous réserve que le résultat complet reste valide.
 
 La création au-delà de la limite retourne `TRACK_LIMIT_EXCEEDED` ; une référence absente retourne `TRACK_NOT_FOUND`. Ces erreurs structurées appartiennent aux validations du projet. Le réordonnancement doit conserver exactement les identités existantes, sans doublon ni omission. Les contrôles de volume, mute, solo, effets et routage ne font pas partie de ce premier périmètre.
 
-### Pattern
+### Score
 
-`Pattern` représente un contenu musical local éditable dans le piano roll et partageable par plusieurs clips, indépendamment de l’instrument utilisé pour le jouer.
+`Score` représente un contenu musical indépendant, éditable dans le piano roll et partageable par plusieurs clips. Il décrit les notes et leur organisation locale sans imposer de placement, de répétition ou d’instrument de lecture.
 
 Attributs possibles :
 
-- `id` ;
+- `id: ScoreId` ;
 - `name` ;
 - `duration` ;
 - `notes` ;
@@ -283,62 +297,79 @@ Responsabilités et invariants :
 - posséder un `HarmonyChange` initial obligatoire au tick `0`, dont la valeur peut être un accord ou une gamme ; la création utilise `SCALE · C CHROMATIC` par défaut ;
 - garantir la cohérence locale de ses notes et changements.
 
-Un `Pattern` ne possède ni début global, ni piste, ni instrument, ni nombre de répétitions. Modifier son contenu ou sa durée modifie la source commune observée et jouée par tous les clips qui le référencent.
+Un `Score` ne possède ni début global, ni piste, ni instrument, ni nombre de répétitions. Modifier son contenu ou sa durée modifie la source commune observée et jouée par tous les clips qui le référencent.
+
+Ses identités locales (`NoteId`, `MeterChangeId`, `HarmonyChangeId`) sont uniques dans leurs collections respectives. Une référence de contenu se résout toujours dans un `ScoreId` explicite. Une duplication indépendante crée un nouveau `ScoreId` et de nouvelles identités pour toutes ses notes et tous ses changements, y compris les changements initiaux ; elle conserve leurs valeurs musicales et leur ordre. Elle ne conserve aucun lien de synchronisation avec l’original. Les Value Objects immuables peuvent être réutilisés en mémoire sans partager l’identité des entités.
 
 ### Clip
 
-`Clip` représente l’application concrète d’un `Pattern` dans la composition. Il prend la forme d’un bloc persistant dans la grille globale.
+`Clip` représente l’application concrète d’un `Score` dans la composition. Il prend la forme d’un bloc persistant dans la grille globale.
 
 Attributs possibles :
 
 - `id` ;
-- `patternId` ;
+- `scoreId: ScoreId` ;
 - `start` ;
 - `trackId` ;
 - `repeatCount`.
 
-`start` est un `Tick` interprété depuis le début du projet. `trackId` est un `TrackId` stable référençant une piste existante. Un clip référence exactement un `Pattern` existant et ne duplique jamais son contenu local. Son instrument est obtenu en recherchant dans `Project.tracks` la piste dont l’identité vaut `trackId`, puis en lisant son `instrumentId`.
+`start` est un `Tick` interprété depuis le début du projet. `trackId` est un `TrackId` stable référençant une piste existante. Un clip référence exactement un `Score` existant et ne duplique jamais son contenu local. Son instrument est obtenu en recherchant dans `Project.tracks` la piste dont l’identité vaut `trackId`, puis en lisant son `instrumentId`.
 
-`repeatCount` vaut `1` par défaut. Il accepte un entier de `1` à `MAX_REPEAT_COUNT = 65_535` et indique le nombre total de lectures contiguës du pattern référencé. Chaque répétition recommence au tick local `0`.
+`repeatCount` vaut `1` par défaut. Il accepte un entier de `1` à `MAX_REPEAT_COUNT = 65_535` et indique le nombre total de lectures contiguës du score référencé. Chaque répétition recommence au tick local `0`.
 
 La fin globale structurelle est calculée ainsi :
 
 ```text
 clipEnd = clip.start
-              + pattern.duration * clip.repeatCount
+              + score.duration * clip.repeatCount
 ```
 
-Déplacer un clip modifie son `start` ou son `trackId`. Le déplacement horizontal change son instant de lecture ; le déplacement vers une autre piste change son instrument effectif si les deux pistes utilisent des instruments différents. Le pattern source et les autres clips restent inchangés. Le redimensionner depuis la grille globale ne modifie jamais la durée du pattern partagé : l’opération ajoute ou retire uniquement des répétitions complètes en modifiant son `repeatCount`.
+Déplacer un clip modifie son `start` ou son `trackId`. Le déplacement horizontal change son instant de lecture ; le déplacement vers une autre piste change son instrument effectif si les deux pistes utilisent des instruments différents. Le score source et les autres clips restent inchangés. Le redimensionner depuis la grille globale ne modifie jamais la durée du score partagé : l’opération ajoute ou retire uniquement des répétitions complètes en modifiant son `repeatCount`.
 
 Le bord droit conserve `start` et détermine le nouveau nombre de répétitions depuis sa position quantifiée :
 
 ```text
 repeatCount = max(
   1,
-  round((quantizedRightEdge - clip.start) / pattern.duration)
+  round((quantizedRightEdge - clip.start) / score.duration)
 )
 ```
 
 Le bord gauche conserve l’ancienne fin globale et modifie atomiquement `start` et `repeatCount` :
 
 ```text
-previousEnd = clip.start + pattern.duration * clip.repeatCount
+previousEnd = clip.start + score.duration * clip.repeatCount
 repeatCount = max(
   1,
-  round((previousEnd - quantizedLeftEdge) / pattern.duration)
+  round((previousEnd - quantizedLeftEdge) / score.duration)
 )
-start = previousEnd - pattern.duration * repeatCount
+start = previousEnd - score.duration * repeatCount
 ```
 
 Dans les deux cas, le bord effectivement retenu s’aimante à une frontière de répétition complète. Chaque répétition recommence au tick local `0` ; aucune durée partielle ni aucun décalage de phase propre au clip n’est introduit. L’opération reste soumise aux bornes globales ; un chevauchement avec un autre clip, quelle que soit sa piste, est valide.
 
-Dupliquer un bloc crée un nouvel identifiant `ClipId` qui conserve le même `patternId` et, par défaut, le même `trackId` ; les deux blocs restent donc liés au même contenu. Le premier périmètre ne permet ni de délier un clip, ni de transformer un clip lié en copie indépendante.
+Dupliquer un bloc par référence crée un nouveau `ClipId` qui conserve le même `scoreId` et, par défaut, le même `trackId`. C’est le comportement de duplication par défaut. Une duplication indépendante crée également une copie du score avec un nouveau `ScoreId`, puis fait référencer cette copie par le nouveau clip. Le clip d’origine conserve son score. Dans les deux cas, le placement de la copie est explicite et validé ; aucun déplacement des autres clips n’est implicite.
+
+Rendre un clip existant indépendant applique la même copie de contenu, puis remplace uniquement son `scoreId`, en conservant son `ClipId`, son `trackId`, son `start` et son `repeatCount`. La création du score et le changement de référence sont atomiques. Le score d’origine reste disponible même s’il perd son dernier clip. Cette opération ne crée aucun nouveau type de clip : chaque bloc référence toujours exactement un score.
 
 Les intervalles des clips sont semi-ouverts. Leur recouvrement avec une durée strictement positive exprime une lecture simultanée, y compris sur une même piste ; des bornes contiguës ne constituent pas un recouvrement. La piste détermine l’instrument, sans modifier le calcul des intervalles temporels.
 
+### Partage et duplication
+
+| Intention | Résultat persistant | Effet des éditions ultérieures |
+| --- | --- | --- |
+| Créer un score sans clip | Un nouveau `Score` dans `Project.scores` | Contenu éditable avant tout placement |
+| Placer un score existant | Un nouveau `Clip` avec son `scoreId` | Tous les clips de ce score reflètent les modifications |
+| Dupliquer un clip par référence | Un nouveau `ClipId`, même `scoreId` | Contenu commun |
+| Dupliquer un clip indépendamment | Un nouveau `ClipId` et un nouveau score | Original et copie évoluent séparément |
+| Rendre un clip existant indépendant | Même `ClipId`, nouveau score référencé | Seul ce clip utilise la copie à sa création |
+| Dupliquer un score seul | Un nouveau score, aucun clip ajouté | La copie peut être éditée puis placée séparément |
+
+Pour une sélection de clips, la duplication par référence conserve les relations existantes. La duplication indépendante crée un score distinct pour chaque clip copié, même si les originaux partageaient un score. Pour réutiliser ensuite une même copie dans plusieurs clips, il suffit de placer ce nouveau score ou de dupliquer l’un de ses clips par référence. Aucun score n’est fusionné automatiquement sur la base de son contenu ou de son nom.
+
 ### Note
 
-`Note` représente une note placée dans un pattern. Elle ne porte aucun instrument : celui-ci est résolu depuis la piste du clip ou la piste d’écoute du piano roll.
+`Note` représente une note placée dans un score. Elle ne porte aucun instrument : celui-ci est résolu depuis la piste du clip ou la piste d’écoute du piano roll.
 
 Attributs possibles :
 
@@ -353,9 +384,9 @@ Invariants :
 
 - la position locale de début est positive ou nulle ;
 - la durée est strictement positive ;
-- la note se termine au plus tard à la fin locale du pattern ;
+- la note se termine au plus tard à la fin locale du score ;
 - `Pitch.midiNumber` reste entre `0` et `127`, et `Velocity` entre `1` et `127` ;
-- deux notes de même `Pitch` ne se chevauchent jamais avec une durée strictement positive dans un même pattern ;
+- deux notes de même `Pitch` ne se chevauchent jamais avec une durée strictement positive dans un même score ;
 - son rôle dans l’accord ou la gamme active est dérivé et n’est pas sauvegardé ;
 - une note extérieure à l’accord ou à la gamme active reste valide.
 
@@ -363,7 +394,7 @@ Les intervalles sont semi-ouverts : deux notes de même hauteur peuvent être co
 
 Une création, un déplacement, un redimensionnement ou une transposition qui produirait un chevauchement de même hauteur n'est jamais appliqué implicitement. Le domaine signale la collision à l'application, qui doit obtenir de la présentation un mode de résolution `SLICE` ou `MERGE` avant de soumettre une nouvelle tentative explicite.
 
-Modifier le tempo du projet ou la métrique locale ne déplace pas la note : sa position et sa durée restent exprimées dans les ticks canoniques du pattern.
+Modifier le tempo du projet ou la métrique locale ne déplace pas la note : sa position et sa durée restent exprimées dans les ticks canoniques du score.
 
 Lorsqu’une note traverse un `HarmonyChange`, son `TimeRange` est analysé par portions délimitées par ces changements ainsi que par le début et la fin de la note. Chaque portion produit son rôle dans l’accord ou la gamme active. Cette segmentation est une vue dérivée : elle ne découpe ni ne modifie la `Note` persistante.
 
@@ -377,7 +408,7 @@ Les événements instantanés `NoteOn` et `NoteOff` ne sont pas des objets persi
 type NoteOverlapResolution = "SLICE" | "MERGE";
 ```
 
-L'invariant d'absence de chevauchement appartient au modèle `Pattern`. Sa détection et sa résolution sont cependant des algorithmes purs isolés dans `domain/operations/composition/NoteOverlap.ts`. Les transformations de pattern les utilisent pour valider la collection complète sans alourdir `Pattern.ts`. Le cas d’usage obtient le choix utilisateur auprès de la présentation et transmet ce mode au domaine.
+L'invariant d'absence de chevauchement appartient au modèle `Score`. Sa détection et sa résolution sont cependant des algorithmes purs isolés dans `domain/operations/composition/NoteOverlap.ts`. Les transformations de score les utilisent pour valider la collection complète sans alourdir `Score.ts`. Le cas d’usage obtient le choix utilisateur auprès de la présentation et transmet ce mode au domaine.
 
 Une commande collective fournit ses `manipulatedNoteIds` dans un ordre stable. Cet ordre définit la priorité de résolution sans introduire de `primaryNoteId` supplémentaire.
 
@@ -389,9 +420,9 @@ Une commande collective fournit ses `manipulatedNoteIds` dans un ordre stable. C
 
 `MERGE` calcule séparément l'union de chaque groupe transitif de notes de même hauteur en collision. La note résultante conserve le `NoteId`, le `Pitch` et la `Velocity` de la première note manipulée du groupe selon l’ordre de la commande ; les autres notes du groupe sont supprimées. Deux notes seulement contiguës ne sont ni en collision ni fusionnées automatiquement.
 
-Une détection collective retourne une seule `NoteOverlapError` dont `details.overlaps` contient toutes les collisions, dans l’ordre stable des notes manipulées. Chaque entrée associe une note manipulée à tous ses `overlappingNoteIds`, qu’ils désignent des notes manipulées ou non manipulées.
+Une détection collective retourne une seule `NoteOverlapError` dont `details.scoreId` désigne le score concerné et `details.overlaps` contient toutes ses collisions, dans l’ordre stable des notes manipulées. Chaque entrée associe une note manipulée à tous ses `overlappingNoteIds`, qu’ils désignent des notes manipulées ou non manipulées. Une commande touchant plusieurs scores les valide dans un ordre déterministe et retourne la première erreur ; aucune collision n’est recherchée entre des notes de scores différents ou entre leurs clips.
 
-Après résolution, le `Pattern` valide de nouveau l'ensemble de ses notes. Il retourne `ok(pattern)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le pattern d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique sur l’ensemble de la commande.
+Après résolution, le `Score` valide de nouveau l'ensemble de ses notes. Il retourne `ok(score)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le score d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique sur l’ensemble de la commande.
 
 ### Instrument
 
@@ -404,7 +435,7 @@ Attributs possibles :
 
 `InstrumentId` est un type stable et opaque déclaré avec `Instrument` dans `domain/models/instrument/Instrument.ts`.
 
-Une `Track` sauvegarde uniquement cet identifiant, et non une référence directe vers l’objet `Instrument`. Plusieurs pistes peuvent référencer le même instrument. Les notes d’un clip utilisent l’instrument de sa piste ; déplacer le clip vers une autre piste peut donc modifier cette association sonore sans changer son pattern.
+Une `Track` sauvegarde uniquement cet identifiant, et non une référence directe vers l’objet `Instrument`. Plusieurs pistes peuvent référencer le même instrument. Les notes d’un clip utilisent l’instrument de sa piste ; déplacer le clip vers une autre piste peut donc modifier cette association sonore sans changer son score.
 
 `Instrument` appartient à un modèle de référence distinct de l'agrégat `Project`. Il ne contient ni configuration d'échantillons, ni état de voix, ni objet du moteur audio.
 
@@ -435,11 +466,11 @@ Pour la répétition d'indice `i`, commençant à zéro, la position globale d'u
 
 ```text
 noteGlobalStart = clip.start
-                + i * pattern.duration
+                + i * score.duration
                 + note.range.start
 ```
 
-La métrique du pattern n'intervient pas dans cette conversion. Elle structure les mesures et les repères locaux sans créer une horloge indépendante.
+La métrique du score n'intervient pas dans cette conversion. Elle structure les mesures et les repères locaux sans créer une horloge indépendante.
 
 `TimeRange` facilite notamment la détection des chevauchements ainsi que les opérations de déplacement et de redimensionnement.
 
@@ -502,14 +533,14 @@ type ScaleTypeId =
 
 Les types d’accords et de gammes définissent leurs classes de hauteur à partir de la fondamentale ou de la tonique. Le choix d’une nouvelle valeur est explicite dans l’éditeur et n’est pas limité par l’harmonie précédente. Les suggestions de remplacements compatibles sont hors du premier périmètre.
 
-### Chronologies locales du pattern
+### Chronologies locales du score
 
-Un pattern possède deux collections ordonnées de changements :
+Un score possède deux collections ordonnées de changements :
 
 | Changement | Valeur | Changement initial au tick `0` | Positions suivantes |
 | --- | --- | --- | --- |
 | `MeterChange` | `Meter` | Obligatoire | Début d’une nouvelle mesure locale ; peut tronquer la précédente |
-| `HarmonyChange` | `Harmony` | Obligatoire, `SCALE · C CHROMATIC` par défaut | N'importe quel tick local du pattern |
+| `HarmonyChange` | `Harmony` | Obligatoire, `SCALE · C CHROMATIC` par défaut | N'importe quel tick local du score |
 
 Chaque changement possède une identité, une position locale et sa nouvelle valeur. Les règles communes sont :
 
@@ -517,20 +548,20 @@ Chaque changement possède une identité, une position locale et sa nouvelle val
 - la nouvelle valeur s'applique à partir de la position du changement, incluse ;
 - un changement peut être déplacé ou modifié sans perdre son identité ;
 - un changement ferme la section précédente du même type et commence la suivante ;
-- un changement peut être placé de `0` à `pattern.duration` inclus ;
+- un changement peut être placé de `0` à `score.duration` inclus ;
 - aucun changement n'accepte `null` ni une variante `CLEAR`.
 
 Le `HarmonyChange` initial au tick `0` ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée par un accord ou une autre gamme. `SCALE · C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
 
 Chaque nouveau `HarmonyChange` remplace indifféremment l’accord ou la gamme précédente. Il est donc impossible qu’un `Chord` et une `Scale` soient actifs simultanément ou que deux marqueurs harmoniques occupent le même tick.
 
-Un changement placé exactement à `pattern.duration` est valide et persistant. Il n’affecte aucune note et ne produit aucun événement audio tant que la durée ne change pas. Si le pattern est allongé, il devient automatiquement le début de la nouvelle section terminale. Si un raccourcissement placerait un changement au-delà de la nouvelle durée, l’opération doit également déplacer ou supprimer ce changement, faute de quoi la validation échoue.
+Un changement placé exactement à `score.duration` est valide et persistant. Il n’affecte aucune note et ne produit aucun événement audio tant que la durée ne change pas. Si le score est allongé, il devient automatiquement le début de la nouvelle section terminale. Si un raccourcissement placerait un changement au-delà de la nouvelle durée, l’opération doit également déplacer ou supprimer ce changement, faute de quoi la validation échoue.
 
 Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
 
 ### Sections dérivées
 
-`MeterSection` et `HarmonySection` sont des vues locales dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du pattern.
+`MeterSection` et `HarmonySection` sont des vues locales dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du score.
 
 Elles ne sont pas sauvegardées comme des objets autonomes.
 
@@ -546,11 +577,11 @@ fullMeasureCount = floor(sectionDuration / ticksPerMeasure)
 trailingMeasureDuration = sectionDuration % ticksPerMeasure
 ```
 
-Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Cette mesure tronquée est valide aussi bien à la fin du pattern qu’avant un `MeterChange`. Chaque `MeterChange` termine immédiatement la section précédente, même au milieu de sa mesure théorique, puis commence une nouvelle mesure complète dans la nouvelle métrique.
+Une valeur non nulle de `trailingMeasureDuration` représente une dernière mesure incomplète. Cette mesure tronquée est valide aussi bien à la fin du score qu’avant un `MeterChange`. Chaque `MeterChange` termine immédiatement la section précédente, même au milieu de sa mesure théorique, puis commence une nouvelle mesure complète dans la nouvelle métrique.
 
-Une section dérivée peut être vide : un changement placé à `pattern.duration` produit l’intervalle semi-ouvert `[pattern.duration, pattern.duration)`. Les calculs d’intersection et la planification l’ignorent naturellement ; aucune valeur n’est active au tick final, situé hors de l’intervalle sonore du pattern.
+Une section dérivée peut être vide : un changement placé à `score.duration` produit l’intervalle semi-ouvert `[score.duration, score.duration)`. Les calculs d’intersection et la planification l’ignorent naturellement ; aucune valeur n’est active au tick final, situé hors de l’intervalle sonore du score.
 
-Grâce au changement initial obligatoire, une `HarmonySection` couvre toujours chaque tick de `[0, pattern.duration)`. Pour analyser une note, les intervalles pertinents sont dérivés de l'union des frontières de `HarmonySection` et du `TimeRange` de la note. Chaque portion expose un rôle exclusif :
+Grâce au changement initial obligatoire, une `HarmonySection` couvre toujours chaque tick de `[0, score.duration)`. Pour analyser une note, les intervalles pertinents sont dérivés de l'union des frontières de `HarmonySection` et du `TimeRange` de la note. Chaque portion expose un rôle exclusif :
 
 ```ts
 type NoteHarmonyRole =
@@ -565,7 +596,9 @@ type NoteHarmonyRole =
 
 Les entités internes conservent des identifiants stables afin d'être ciblées par l'éditeur et les cas d'usage. Elles ne possèdent cependant ni repository ni cycle de persistance autonomes.
 
-Une opération peut être déléguée à un `Pattern` ou une `Track` pour préserver ses invariants locaux. Le projet garantit les références de piste et de pattern ainsi que l’ordre des pistes. Le `Project` valide ensuite le résultat complet avant publication : modifier la durée d’un pattern doit notamment préserver les bornes des fins globales calculées de tous ses clips. Les superpositions entre clips sont valides et ne demandent aucune résolution. Une validation locale réussie ne suffit donc pas à accepter l’édition de l’agrégat.
+L’indépendance du `Score` concerne son contenu et son utilisation : elle n’en fait pas une seconde racine de sauvegarde. Dans ce périmètre, le partage relie des clips du même projet à une entrée de `Project.scores`. Les scores sans clip sont conservés dans ce document au même titre que les scores utilisés.
+
+Une opération peut être déléguée à un `Score` ou une `Track` pour préserver ses invariants locaux. Le projet garantit les références de piste et de score ainsi que l’ordre des pistes. Le `Project` valide ensuite le résultat complet avant publication : modifier la durée d’un score doit notamment préserver les bornes des fins globales calculées de tous ses clips. Les superpositions entre clips sont valides et ne demandent aucune résolution. Une validation locale réussie ne suffit donc pas à accepter l’édition de l’agrégat.
 
 Les `Instrument` sont extérieurs à cet agrégat et sont fournis par un catalogue.
 
@@ -584,13 +617,13 @@ Elle possède l'état transitoire de l'éditeur et les états d'orchestration n�
 Deux sélections indépendantes correspondent à deux espaces d'édition distincts.
 
 ```ts
-type PatternContentRef =
+type ScoreContentRef =
   | { kind: "NOTE"; noteId: NoteId }
   | { kind: "METER_CHANGE"; meterChangeId: MeterChangeId }
   | { kind: "HARMONY_CHANGE"; harmonyChangeId: HarmonyChangeId };
 
-interface PatternContentSelection {
-  items: readonly PatternContentRef[];
+interface ScoreContentSelection {
+  items: readonly ScoreContentRef[];
 }
 
 interface ClipSelection {
@@ -598,42 +631,44 @@ interface ClipSelection {
 }
 ```
 
-`PatternContentSelection` contient les notes et changements du pattern source actuellement édité. Elle est portée par le même `PatternEditorState` que l'identité et la tête de lecture locale du pattern. Elle est vidée lorsque ce pattern change ou est fermé.
+`ScoreContentSelection` contient les notes et changements du score source actuellement édité. Elle est portée par le même `ScoreEditorState` que l'identité et la tête de lecture locale du score. Elle est vidée lorsque ce score change ou est fermé.
 
-`ClipSelection` contient les clips sélectionnés dans la grille de composition. Elle sert notamment à leur déplacement temporel ou vertical, à leur duplication et à leur suppression. Dupliquer cette sélection crée par défaut de nouveaux clips référençant les mêmes patterns.
+`ClipSelection` contient les clips sélectionnés dans la grille de composition. Elle sert notamment à leur déplacement temporel ou vertical, à leur duplication et à leur suppression. Dupliquer cette sélection crée par défaut de nouveaux clips référençant les mêmes scores ; l’intention explicite de duplication indépendante crée les nouveaux scores décrits dans le domaine.
 
 ```ts
-interface PatternEditorState {
-  patternId: PatternId;
+interface ScoreEditorState {
+  scoreId: ScoreId;
   auditionTrackId?: TrackId;
   playhead: Tick;
   gridResolution: GridResolution;
-  selection: PatternContentSelection;
+  selection: ScoreContentSelection;
 }
 
 interface EditorState {
   projectPlayhead: Tick;
   gridResolution: GridResolution;
-  patternEditor?: PatternEditorState;
+  scoreEditor?: ScoreEditorState;
   clipSelection: ClipSelection;
 }
 ```
 
-Le pattern source édité et la sélection de clips expriment des faits différents. Un geste d'interface peut les mettre à jour ensemble, mais aucun lien implicite n'est imposé entre eux. Regrouper `patternId`, la tête locale et la sélection empêche qu'un état local subsiste sans pattern édité.
+Le score source édité et la sélection de clips expriment des faits différents. Un geste d'interface peut les mettre à jour ensemble, mais aucun lien implicite n'est imposé entre eux. Regrouper `scoreId`, la tête locale et la sélection empêche qu'un état local subsiste sans score édité.
+
+Le changement de `scoreId` d’un clip n’affecte pas automatiquement le `ScoreEditorState` existant : celui-ci reste attaché au score ouvert. Ouvrir explicitement la copie crée l’état local du nouveau score et vide la sélection locale ; aucune référence de note ou de changement de l’original n’est réutilisée dans la copie. Une sélection de clips conserve en revanche l’identité d’un clip rendu indépendant puisqu’il garde son `ClipId`.
 
 La couche applicative choisit explicitement la sélection correspondant à l'action, résout ses références et transmet au domaine les identifiants concernés. Le domaine ne connaît jamais la notion de sélection.
 
 #### Piste d’écoute du piano roll
 
-`PatternEditorState.auditionTrackId` désigne la piste dont l’instrument sert à `playPattern`, `previewPitch` et `previewSelection`. Ce choix applicatif n’est ni une propriété du pattern, ni un clip supplémentaire ; il n’entre pas dans la sauvegarde ou l’historique du projet.
+`ScoreEditorState.auditionTrackId` désigne la piste dont l’instrument sert à `playScore`, `previewPitch` et `previewSelection`. Ce choix applicatif n’est ni une propriété du score, ni un clip supplémentaire ; il n’entre pas dans la sauvegarde ou l’historique du projet.
 
-Ouvrir un clip initialise le contexte depuis son `patternId` et son `trackId`. Pour un nouvel éditeur, la référence de piste est disponible immédiatement ; sa banque peut encore être en préparation et aucun son ne démarre avant sa disponibilité. Ouvrir directement un pattern source, sans passer par un clip, laisse la piste d’écoute absente, jusqu’à un choix explicite. Le contenu reste éditable et la tête locale déplaçable sans piste, mais les appels produisant du son retournent `NO_AUDITION_TRACK`. Aucune piste ou instrument de remplacement n’est choisi implicitement.
+Ouvrir un clip initialise le contexte depuis son `scoreId` et son `trackId`. Pour un nouvel éditeur, la référence de piste est disponible immédiatement ; sa banque peut encore être en préparation et aucun son ne démarre avant sa disponibilité. Ouvrir directement un score source, sans passer par un clip, laisse la piste d’écoute absente, jusqu’à un choix explicite. Le contenu reste éditable et la tête locale déplaçable sans piste, mais les appels produisant du son retournent `NO_AUDITION_TRACK`. Aucune piste ou instrument de remplacement n’est choisi implicitement.
 
-`PlaybackService.setAuditionTrack(trackId)` valide la piste et prépare son instrument via le même port que les transports. Tant que la préparation dure, le choix précédent reste effectif et le nouveau choix apparaît en attente. En cas d’échec, le choix précédent est conservé. Une fois la demande encore courante prête, le choix devient effectif ; si le pattern édité est encore joué par le transport `PATTERN`, son `trackId` bascule avec le plan accepté à une borne sûre, sans changer la session ni la position locale. Si l’instrument effectif est identique, aucun contexte ni aucune voix n’est recréé. Une session `PROJECT` ou une session `PATTERN` attachée à un autre pattern reste inchangée.
+`PlaybackService.setAuditionTrack(trackId)` valide la piste et prépare son instrument via le même port que les transports. Tant que la préparation dure, le choix précédent reste effectif et le nouveau choix apparaît en attente. En cas d’échec, le choix précédent est conservé. Une fois la demande encore courante prête, le choix devient effectif ; si le score édité est encore joué par le transport `SCORE`, son `trackId` bascule avec le plan accepté à une borne sûre, sans changer la session ni la position locale. Si l’instrument effectif est identique, aucun contexte ni aucune voix n’est recréé. Une session `PROJECT` ou une session `SCORE` attachée à un autre score reste inchangée.
 
-Ouvrir un autre clip du même pattern conserve ses notes sélectionnées et sa tête, mais applique explicitement ce changement de piste d’écoute. Ouvrir un autre pattern crée un nouvel état local et laisse le transport existant attaché à son ancien couple pattern/piste. Déplacer ultérieurement le clip d’origine ne modifie pas automatiquement la piste d’écoute : l’éditeur conserve une référence de piste, pas un lien vivant vers ce bloc.
+Ouvrir un autre clip du même score conserve ses notes sélectionnées et sa tête, mais applique explicitement ce changement de piste d’écoute. Ouvrir un autre score crée un nouvel état local et laisse le transport existant attaché à son ancien couple score/piste. Déplacer ultérieurement le clip d’origine ne modifie pas automatiquement la piste d’écoute : l’éditeur conserve une référence de piste, pas un lien vivant vers ce bloc.
 
-Chaque préécoute capture `patternId`, `trackId` et l’instrument résolu. Changer le pattern édité, fermer le piano roll, changer effectivement sa piste d’écoute ou l’instrument de cette piste arrête les handles concernés, y compris leurs préparations, sans réattaque automatique. Les nouveaux gestes utilisent le nouveau contexte. Une simple réorganisation des pistes n’invalide aucune audition.
+Chaque préécoute capture `scoreId`, `trackId` et l’instrument résolu. Changer le score édité, fermer le piano roll, changer effectivement sa piste d’écoute ou l’instrument de cette piste arrête les handles concernés, y compris leurs préparations, sans réattaque automatique. Les nouveaux gestes utilisent le nouveau contexte. Une simple réorganisation des pistes n’invalide aucune audition.
 
 #### GridResolution
 
@@ -648,43 +683,43 @@ Les deux espaces possèdent des réglages indépendants :
 | Espace | État | Valeur initiale |
 | --- | --- | ---: |
 | Grille globale | `EditorState.gridResolution` | `960` ticks, soit une noire |
-| Piano roll | `PatternEditorState.gridResolution` | `240` ticks, soit une double croche |
+| Piano roll | `ScoreEditorState.gridResolution` | `240` ticks, soit une double croche |
 
 La résolution globale sert au déplacement et au redimensionnement des clips ainsi qu’au positionnement quantifié de la tête globale. Elle travaille dans le référentiel global et ne dépend d’aucune métrique locale. Pour le redimensionnement d’un clip, la position quantifiée du bord est ensuite convertie en un `repeatCount` entier ; le bord effectif s’aligne donc sur la frontière de répétition complète la plus proche.
 
-La résolution locale sert à créer, déplacer et redimensionner les notes, à déplacer les changements de métrique ou d’harmonie et à positionner la tête locale. Elle travaille dans le référentiel du pattern.
+La résolution locale sert à créer, déplacer et redimensionner les notes, à déplacer les changements de métrique ou d’harmonie et à positionner la tête locale. Elle travaille dans le référentiel du score.
 
-Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre. Ouvrir un pattern initialise son `PatternEditorState.gridResolution` à `240` ticks ; changer ou rouvrir un pattern recrée cette valeur initiale.
+Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre. Ouvrir un score initialise son `ScoreEditorState.gridResolution` à `240` ticks ; changer ou rouvrir un score recrée cette valeur initiale.
 
 Les deux instances utilisent le même Value Object et la même unité `Tick`, sans pour autant partager leur valeur. Les résolutions et sélections ne sont pas sauvegardées comme des données musicales. Leur persistance éventuelle relève des préférences ou de la restauration de session.
 
 #### Têtes de lecture
 
-Les positions mémorisées `EditorState.projectPlayhead` et `PatternEditorState.playhead` sont des ticks applicatifs, initialisés à `0` et non sauvegardés dans le projet. Elles déterminent le départ d’une portée inactive.
+Les positions mémorisées `EditorState.projectPlayhead` et `ScoreEditorState.playhead` sont des ticks applicatifs, initialisés à `0` et non sauvegardés dans le projet. Elles déterminent le départ d’une portée inactive.
 
-Pendant la lecture, `PlaybackService` est la seule autorité sur la position de la portée active. Il la dérive de l’horloge de session et d’un ancrage temps/tick ; il ne conserve pas un second compteur `playhead` avançant indépendamment. La tête affichée du projet ou du même pattern est une projection de cette position. À l’arrêt, au remplacement ou à la fin naturelle, le dernier tick atteint est mémorisé dans l’état de l’éditeur correspondant, si cet espace existe encore.
+Pendant la lecture, `PlaybackService` est la seule autorité sur la position de la portée active. Il la dérive de l’horloge de session et d’un ancrage temps/tick ; il ne conserve pas un second compteur `playhead` avançant indépendamment. La tête affichée du projet ou du même score est une projection de cette position. À l’arrêt, au remplacement ou à la fin naturelle, le dernier tick atteint est mémorisé dans l’état de l’éditeur correspondant, si cet espace existe encore.
 
 | Situation | Source de la tête affichée |
 | --- | --- |
 | Transport `PROJECT` actif | Position globale dérivée du transport |
-| Transport `PATTERN` actif sur le pattern ouvert | Position locale dérivée du transport |
-| Portée inactive ou autre pattern ouvert | Position mémorisée dans `EditorState` ou `PatternEditorState` |
+| Transport `SCORE` actif sur le score ouvert | Position locale dérivée du transport |
+| Portée inactive ou autre score ouvert | Position mémorisée dans `EditorState` ou `ScoreEditorState` |
 
 L’ancrage interne conserve la précision temporelle nécessaire, y compris une fraction de tick. La position publique en `Tick` est le tick entier atteint (partie entière, bornée par la portée) ; elle n’est pas aimantée à `GridResolution`. Un changement de tempo prend effet à la borne acceptée de replanification : jusqu’à cette borne, l’ancien ancrage reste utilisé ; à partir d’elle, le nouvel ancrage conserve exactement la continuité de position. Ces données d’exécution ne constituent pas une chronologie persistante de tempo.
 
-Pour une portée de fin `endTick`, une tête accepte `[0, endTick]`, mais la lecture exige un départ dans `[0, endTick)`. Un tick supérieur produit une erreur de validation. `playProject(tick)` et `playPattern(tick)` positionnent immédiatement une tête inactive ; si leur portée est déjà active, le tick demandé reste une destination provisoire jusqu’au remplacement réussi, comme pour un seek. Un échec ne fait pas sauter la tête sonore existante.
+Pour une portée de fin `endTick`, une tête accepte `[0, endTick]`, mais la lecture exige un départ dans `[0, endTick)`. Un tick supérieur produit une erreur de validation. `playProject(tick)` et `playScore(tick)` positionnent immédiatement une tête inactive ; si leur portée est déjà active, le tick demandé reste une destination provisoire jusqu’au remplacement réussi, comme pour un seek. Un échec ne fait pas sauter la tête sonore existante.
 
-Les deux espaces restent indépendants. Une position globale ne détermine pas une position locale, car un pattern peut avoir plusieurs clips et répétitions. Une synchronisation à l’ouverture d’un bloc demande une action explicite de présentation.
+Les deux espaces restent indépendants. Une position globale ne détermine pas une position locale, car un score peut avoir plusieurs clips et répétitions. Une synchronisation à l’ouverture d’un bloc demande une action explicite de présentation.
 
 Un seek sur la portée active remplace gracieusement la session lorsqu’il est prêt. Un seek sur une portée inactive modifie seulement sa position mémorisée. Aller exactement à la fin termine le transport sans ouvrir de nouvelle session. `stop(GRACEFUL | IMMEDIATE)` conserve la position atteinte ; la fin naturelle mémorise exactement `endTick` et libère le rôle d’`ActiveTransport`, indépendamment des tails.
 
-Une session `PATTERN` reste attachée au couple `patternId` / `trackId` choisi à son ouverture, sauf changement explicite de piste d’écoute pour ce même pattern. Fermer le piano roll ou ouvrir un autre pattern ne l’arrête pas : sa position continue d’être dérivée en interne, sans modifier la tête du nouvel éditeur. Rouvrir le même pattern pendant sa lecture affiche la position du transport ; lorsqu’il est inactif, son nouvel éditeur commence au tick `0`. Supprimer le pattern lu suit la politique d’arrêt explicite définie plus loin.
+Une session `SCORE` reste attachée au couple `scoreId` / `trackId` choisi à son ouverture, sauf changement explicite de piste d’écoute pour ce même score. Fermer le piano roll ou ouvrir un autre score ne l’arrête pas : sa position continue d’être dérivée en interne, sans modifier la tête du nouvel éditeur. Rouvrir le même score pendant sa lecture affiche la position du transport ; lorsqu’il est inactif, son nouvel éditeur commence au tick `0`. Supprimer le score lu suit la politique d’arrêt explicite définie plus loin.
 
 #### Intention d’édition et projet transitoire
 
 `EditService` possède le cycle d’édition. La présentation traduit les événements bruts — pointeur, clavier ou commandes d’interface — en une `EditIntent` sémantique. Le service résout ensuite la sélection et la résolution concernées, quantifie l’intention et construit le `ProjectEditCommand` transmis aux opérations du domaine. La présentation ne construit donc directement ni commande métier, ni agrégat, ni projet transitoire.
 
-`EditIntent` est une union applicative fermée décrivant l’action demandée et son espace d’édition, sans pixel ni objet du domaine déjà transformé. Ses variantes peuvent demander l’utilisation de `PatternContentSelection` ou de `ClipSelection` ; `EditService` capture alors les identifiants concernés au début du geste. Les positions ou deltas qu’elle transporte sont exprimés dans le référentiel sémantique global ou local, puis quantifiés par le service.
+`EditIntent` est une union applicative fermée décrivant l’action demandée et son espace d’édition, sans pixel ni objet du domaine déjà transformé. Ses variantes peuvent demander l’utilisation de `ScoreContentSelection` ou de `ClipSelection` ; `EditService` capture alors les identifiants concernés au début du geste. Les positions ou deltas qu’elle transporte sont exprimés dans le référentiel sémantique global ou local, puis quantifiés par le service.
 
 ```ts
 interface EditSession {
@@ -716,7 +751,7 @@ interface PendingEditDecision<
 type EditDecisionRequest =
   | PendingEditDecision<
       "NOTE_OVERLAP",
-      { overlaps: readonly NoteOverlap[] },
+      { scoreId: ScoreId; overlaps: readonly NoteOverlap[] },
       NoteOverlapResolution
     >;
 
@@ -750,17 +785,49 @@ const effectiveProject: Project | TransientProject =
   state.transientProject ?? state.project;
 ```
 
-`project` est la version courante validée faisant autorité, éventuellement non encore sauvegardée. `EditSession.baseProject` référence cette version immuable au début du geste. Le mécanisme couvre toutes les modifications du document : contenu local d’un pattern dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de pattern ne possède donc ni session ni projet transitoire séparés.
+`project` est la version courante validée faisant autorité, éventuellement non encore sauvegardée. `EditSession.baseProject` référence cette version immuable au début du geste. Le mécanisme couvre toutes les modifications du document : contenu local d’un score dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de score ne possède donc ni session ni projet transitoire séparés.
 
 `ProjectEditCommand` est l’union applicative des commandes métier élémentaires que `EditService` sait composer et rejouer comme une seule transaction. Les commandes élémentaires restent déclarées près des opérations du domaine qui les exécutent ; l’union n’appartient pas à `Project`, car son exhaustivité décrit les capacités du cas d’usage d’édition. Ce nom désigne la portée transactionnelle de la commande, pas son origine dans la grille. Les paramètres expriment une transformation cumulée depuis `baseProject`, jamais depuis le brouillon précédent. Les identifiants des créations ordinaires sont alloués une fois et conservés dans la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
 
 Prévisualisation et validation réutilisent les mêmes calculs purs de transformation, déclarés auprès des entités du domaine. Ces calculs peuvent produire des données candidates sans construire un agrégat valide ; la publication d’un `Project` ajoute toujours la validation complète. Le domaine ignore les gestes, les sélections, l’audio et la notion applicative de `TransientProject`.
 
-Les fichiers `*Transformations.ts` sont classés selon le type qu’ils produisent, et non selon l’élément principalement ciblé par la commande. Une fonction qui retourne un `Pattern` appartient ainsi à `PatternTransformations.ts`. Toute fonction qui retourne un `Project` appartient à `ProjectTransformations.ts`, y compris lorsqu’elle ajoute, déplace, redimensionne, duplique ou supprime un clip, ou lorsqu’elle transforme une piste. Il n’existe donc pas de `ClipTransformations.ts` tant qu’aucune opération du domaine ne retourne un `Clip` isolé.
+Les fichiers `*Transformations.ts` sont classés selon le type qu’ils produisent, et non selon l’élément principalement ciblé par la commande. Une fonction qui retourne un `Score` appartient ainsi à `ScoreTransformations.ts`. Toute fonction qui retourne un `Project` appartient à `ProjectTransformations.ts`, y compris lorsqu’elle ajoute, déplace, redimensionne, duplique ou supprime un clip, ou lorsqu’elle transforme une piste. Il n’existe donc pas de `ClipTransformations.ts` tant qu’aucune opération du domaine ne retourne un `Clip` isolé.
+
+Cette convention s’applique aussi aux copies :
+
+```ts
+// domain/operations/composition/ScoreTransformations.ts
+duplicateScore(
+  score: Score,
+  command: DuplicateScoreCommand
+): Result<Score, ScoreValidationError>;
+
+// domain/operations/composition/ProjectTransformations.ts
+addScore(
+  project: Project,
+  command: AddScoreCommand
+): Result<Project, ProjectEditError>;
+
+duplicateClips(
+  project: Project,
+  command: DuplicateClipsCommand
+): Result<Project, ProjectEditError>;
+
+makeClipIndependent(
+  project: Project,
+  command: MakeClipIndependentCommand
+): Result<Project, ProjectEditError>;
+```
+
+`DuplicateScoreCommand` fournit la nouvelle identité du score, son nom et la correspondance complète des nouvelles identités de notes et de changements. Ces identités sont allouées une seule fois par l’application et conservées dans la commande ; les fonctions pures ne génèrent aucun identifiant aléatoire. `AddScoreCommand` insère un score valide dans l’agrégat. Dupliquer un score seul compose donc `duplicateScore` et `addScore` dans la même transaction applicative.
+
+`DuplicateClipsCommand` précise les clips sources, les nouveaux `ClipId`, les placements et le choix explicite `REFERENCE` ou `INDEPENDENT`. La branche `INDEPENDENT` fournit un `DuplicateScoreCommand` par clip copié ; la branche `REFERENCE` n’en fournit aucun. `MakeClipIndependentCommand` cible un clip existant et fournit la commande de copie de son score. Les opérations retournant un projet délèguent la copie locale à `ScoreTransformations`, puis valident ensemble les nouveaux scores et les références des clips. Le choix de duplication appartient uniquement à la commande : il ne devient pas une propriété persistante du clip ou du score.
 
 `TransientProject` est la projection applicative complète de ces données candidates. Les chevauchements de notes de même hauteur constituent la seule relaxation d’invariant du premier périmètre. Les bornes numériques, durées positives, références, identités, limites locales des notes et chronologies restent valides. Une intention violant une autre règle ne remplace pas la dernière projection admissible et retourne une erreur. Aucun `Project` invalide n’est construit.
 
 `transientProject` est un cache de projection de la commande, jamais une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni l’un ni l’autre ne peut être sauvegardé. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
+
+Cette projection contient une seule entrée par `ScoreId`, résolue par tous ses clips : une édition locale partagée n’est pas recopiée dans chaque bloc. Une copie indépendante introduit une nouvelle entrée avec ses propres identités, stables pendant toutes les actualisations du geste. Annuler ce geste retire simultanément ses créations et rétablit les références initiales ; aucun clip orphelin ni score créé par un geste annulé ne subsiste.
 
 Une seule édition du document est ouverte à la fois, y compris pendant une décision attendue ou un chargement requis par cette édition. Toute autre édition, annulation d’historique, rétablissement ou ouverture de fichier retourne `EDIT_IN_PROGRESS` ; l’utilisateur termine ou annule d’abord le geste. Les commandes de transport et la sauvegarde du dernier `project` validé restent disponibles. Aucun retour asynchrone ne remplace la base d’un geste en cours.
 
@@ -798,9 +865,9 @@ type EditError = ProjectEditError | EditValidationError | InstrumentPreparationE
 
 `beginEdit` capture la base, résout l’intention et construit la commande initiale ; `updateEdit` remplace cette intention, reconstruit la commande et recalcule sa projection. Une préparation éventuellement nécessaire est signalée par `pendingEditPreparation`, tandis que sa tâche reste privée au service. Son résultat technique est retourné par l’opération asynchrone qui l’attend, notamment `commitEdit`. Une nouvelle intention rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace ni l’intention ni la commande précédentes ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, valide la commande finale contre la même base et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
 
-Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_OVERLAP` dont `details.overlaps` contient les conflits et dont `choices` contient `SLICE` et `MERGE`.
+Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_OVERLAP` dont `details.scoreId` identifie le contenu à résoudre, `details.overlaps` contient les conflits et `choices` contient `SLICE` et `MERGE`. Le choix est appliqué à ce score ; les éventuelles collisions d’un autre score demandent une décision distincte avant la publication atomique de l’ensemble.
 
-La commande est figée jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, puis rejoue la même commande contre `baseProject` avec la politique de domaine correspondante. Si une future décision en entraîne une autre, le service peut remplacer `pendingDecision` et retourner de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
+La commande est figée jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, puis rejoue la même commande contre `baseProject` avec la politique de domaine correspondante. Si cette résolution révèle une autre décision, notamment dans un autre score, le service conserve les choix déjà acceptés dans la commande avec leur portée, remplace `pendingDecision` et retourne de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Les identifiants des fragments déjà alloués restent stables pendant ces reprises ; aucune résolution partielle n’est publiée comme projet validé. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
 
 `cancelEdit` est idempotente : elle invalide les préparations, résout un commit en attente avec `CANCELLED` et rétablit le `project` de base comme projet effectif. Les échecs ne créent aucune entrée d’historique et ne sauvegardent rien. Les défauts de programmation restent des exceptions.
 
@@ -815,7 +882,9 @@ redo(): Promise<Result<"APPLIED" | "NO_CHANGE", EditError>>;
 
 Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent la version précédente ou suivante par la même barrière de préparation et la même réconciliation audio que toute publication de projet. La cible reste privée tant qu’elle n’est pas prête ; pendant cette attente, aucune autre modification du document n’est acceptée. Un échec conserve le projet et les piles d’historique. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` et ne crée pas d’entrée ; une pile vide retourne également `NO_CHANGE`.
 
-Après publication, les références de sélection absentes sont retirées et les têtes immobiles sont ramenées dans les nouvelles bornes. Un éditeur dont le pattern a disparu est fermé ; les transports concernés suivent les règles de suppression et de fin de portée. Undo/redo n’a pas pour rôle de restaurer une sélection ou une ancienne position de transport.
+Après publication, les références de sélection absentes sont retirées et les têtes immobiles sont ramenées dans les nouvelles bornes. Un éditeur dont le score a disparu est fermé ; les transports concernés suivent les règles de suppression et de fin de portée. Undo/redo n’a pas pour rôle de restaurer une sélection ou une ancienne position de transport.
+
+La copie d’un score et la création ou la réaffectation de son clip constituent une seule entrée d’historique. Undo restaure les collections et les références précédentes ; redo restaure exactement les mêmes `ScoreId`, `ClipId` et identités locales, sans effectuer une nouvelle copie. Si undo retire le score actuellement édité ou joué isolément, l’éditeur est fermé et les auditions de ce score sont arrêtées selon les mêmes règles que sa suppression.
 
 ### EditService
 
@@ -835,19 +904,21 @@ Après publication, les références de sélection absentes sont retirées et le
 
 Exemples :
 
-- déplacer ensemble des notes et des changements appartenant à un même pattern ;
+- déplacer ensemble des notes et des changements appartenant à un même score ;
 - transposer ou redimensionner des notes ;
 - ajouter, déplacer ou supprimer un changement local ;
-- redimensionner le contenu d’un pattern, ce qui redimensionne tous ses clips ;
+- redimensionner le contenu d’un score, ce qui redimensionne tous ses clips ;
 - déplacer un ou plusieurs clips sur l’axe temporel ou entre les pistes ;
-- créer ou supprimer un pattern source ;
-- créer, dupliquer ou supprimer des clips liés à des patterns existants ;
+- créer ou supprimer un score source ;
+- dupliquer un score sans créer de clip ;
+- créer ou supprimer des clips référençant des scores existants ;
+- dupliquer des clips par référence ou indépendamment, ou rendre un clip existant indépendant ;
 - modifier le tempo unique du projet ;
 - modifier le `repeatCount` d’un clip ;
 - créer, renommer, réordonner ou supprimer des pistes ;
 - associer un instrument disponible à une piste.
 
-Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements, de pistes et de clips ; le résultat est validé et publié atomiquement. Les commandes métier élémentaires appartiennent aux modules du domaine qui réalisent leurs transformations. `ProjectEditCommand`, leur union et leur composition transactionnelle appartiennent à `EditService`. Les références de contenu `PatternContentRef` restent des adresses d’entités du domaine, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
+Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements, de pistes et de clips ; le résultat est validé et publié atomiquement. Les commandes métier élémentaires appartiennent aux modules du domaine qui réalisent leurs transformations. `ProjectEditCommand`, leur union et leur composition transactionnelle appartiennent à `EditService`. Les références de contenu `ScoreContentRef` restent des adresses d’entités du domaine, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
 
 Un cas d'usage propage explicitement une erreur de domaine ou la traduit vers une erreur applicative plus contextuelle. Il ne la remplace jamais par une exception et ne met à jour `ProjectState` que depuis la branche `ok: true`.
 
@@ -868,9 +939,9 @@ Chaque clip apparaît au plus une fois dans `placements`. Un déplacement unique
 Un déplacement temporel du contenu local peut recevoir une autre commande :
 
 ```ts
-interface MovePatternContentCommand {
-  patternId: PatternId;
-  items: readonly PatternContentRef[];
+interface MoveScoreContentCommand {
+  scoreId: ScoreId;
+  items: readonly ScoreContentRef[];
   deltaTicks: number;
   overlapResolution?: NoteOverlapResolution;
 }
@@ -896,23 +967,23 @@ Sans collision et après toute préparation nécessaire, le projet valide retour
 
 Pendant cette attente, le geste ne reçoit plus d'actualisation : sa géométrie finale et la commande quantifiée sont figées. Le domaine ne dépend d'aucune interaction utilisateur et ne reçoit jamais le projet transitoire potentiellement invalide.
 
-Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-chevauchements-de-notes). Le cas d’usage soumet le pattern résolu à la validation du `Project` avant publication. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule unité d’annulation.
+Les règles de `SLICE` et `MERGE` sont définies dans le [domaine](#résolution-des-chevauchements-de-notes). Le cas d’usage soumet le score résolu à la validation du `Project` avant publication. `ProjectEditError` réunit les erreurs locales et celles de l’agrégat. La validation entière constitue une seule unité d’annulation.
 
 Les intentions d’édition sont regroupées dans `EditService`, sans imposer un fichier par commande.
 
 #### Modification de la métrique
 
-Modifier la valeur d’une métrique conserve les ticks des notes, des changements et de la fin du pattern, même lorsque celui-ci est vide. Le nombre de mesures est recalculé et une dernière mesure tronquée reste valide. Aucune politique supplémentaire de conservation automatique du nombre de mesures n’appartient au premier périmètre.
+Modifier la valeur d’une métrique conserve les ticks des notes, des changements et de la fin du score, même lorsque celui-ci est vide. Le nombre de mesures est recalculé et une dernière mesure tronquée reste valide. Aucune politique supplémentaire de conservation automatique du nombre de mesures n’appartient au premier périmètre.
 
-À la création d’un pattern, un nombre de mesures et une métrique servent à calculer sa durée initiale en ticks. Par la suite, changer cette durée est une commande explicite de redimensionnement, pouvant être composée avec un changement de métrique dans une même intention atomique. Les notes et changements doivent rester dans les nouvelles bornes. Allonger le pattern allonge tous ses clips sans déplacer leurs débuts, même si de nouvelles superpositions en résultent.
+À la création d’un score, un nombre de mesures et une métrique servent à calculer sa durée initiale en ticks. Par la suite, changer cette durée est une commande explicite de redimensionnement, pouvant être composée avec un changement de métrique dans une même intention atomique. Les notes et changements doivent rester dans les nouvelles bornes. Allonger le score allonge tous ses clips sans déplacer leurs débuts, même si de nouvelles superpositions en résultent.
 
-L’ajout initial à la grille crée un clip référençant le pattern. Cette création peut être réunie avec celle du contenu dans une seule commande. Le tempo du projet n’intervient pas dans le calcul de la durée en ticks.
+L’ajout initial à la grille crée un clip référençant le score. Cette création peut être réunie avec celle du contenu dans une seule commande. Le tempo du projet n’intervient pas dans le calcul de la durée en ticks.
 
 ### ProjectFileService
 
 `ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne la publication avec `EditService` et `PlaybackService`. Cette vérification confirme seulement qu’un `InstrumentId` est disponible dans le catalogue : `ProjectFileService` ne prépare ni ne charge aucune banque.
 
-Une ouverture valide remplace le document complet, vide l’historique et les sélections et initialise la tête globale à `0`, sans pattern ouvert. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
+Une ouverture valide remplace le document complet, vide l’historique et les sélections et initialise la tête globale à `0`, sans score ouvert. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
 
 Le fichier est intégralement lu et validé avant de fermer l’ancien document. Une erreur ou l’annulation du choix de fichier conserve le projet, son historique et l’audio existants. Un `InstrumentId` inconnu produit `INSTRUMENT_UNAVAILABLE`, erreur applicative structurée contenant les identifiants concernés ; aucun remplacement sonore implicite n’est appliqué. Les versions de fichier non prises en charge sont refusées explicitement.
 
@@ -920,17 +991,17 @@ L’ouverture partage l’exclusion des modifications du document : elle est ref
 
 ### PlaybackService
 
-`PlaybackService` orchestre le transport global du projet, le transport local du pattern édité, la préécoute d’une hauteur et celle d’une sélection, puis produit les commandes audio correspondantes.
+`PlaybackService` orchestre le transport global du projet, le transport local du score édité, la préécoute d’une hauteur et celle d’une sélection, puis produit les commandes audio correspondantes.
 
 #### Projet effectif et modification en temps réel
 
 Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe, y compris ses collisions provisoires.
 
-Lorsqu’un transport est actif, chaque projection candidate susceptible d’affecter sa portée requiert le remplacement de la portion future de l’ancien plan. Le service obtient `safeAt` par `AudioEngine.getClock(sessionId)`, recalcule depuis cette borne avec la candidate et transmet une unique mise à jour atomique au moteur. La projection devient effective après acceptation du plan ; en cas de refus temporel, le calcul est repris sans publication partielle. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `PATTERN`, seules les modifications du pattern attaché, de l’instrument de sa piste d’écoute et du tempo du projet affectent la planification ; les placements et les autres patterns sont sans effet.
+Lorsqu’un transport est actif, chaque projection candidate susceptible d’affecter sa portée requiert le remplacement de la portion future de l’ancien plan. Le service obtient `safeAt` par `AudioEngine.getClock(sessionId)`, recalcule depuis cette borne avec la candidate et transmet une unique mise à jour atomique au moteur. La projection devient effective après acceptation du plan ; en cas de refus temporel, le calcul est repris sans publication partielle. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `SCORE`, seules les modifications du score attaché, de l’instrument de sa piste d’écoute et du tempo du projet affectent la planification ; les placements et les autres scores sont sans effet.
 
 Valider un brouillon sans en modifier la projection sonore ne doit provoquer ni nouvelle planification ni rupture. L'abandonner entraîne la même réconciliation que toute autre modification du projet effectif.
 
-La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipId, repeatIndex, NoteId)`. Pour un transport `PATTERN`, elle compare les notes du `patternId` attaché à la session. Dans les deux cas, la comparaison est faite au tick correspondant à `safeAt`, calculé avec l’ancien ancrage, et sur les voix que l’ancien plan aura encore actives à cette borne. Dans les règles ci-dessous, « tête » désigne cette position de réconciliation, et non le tick affiché au moment du geste :
+La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipId, ScoreId, repeatIndex, NoteId)`. Pour un transport `SCORE`, elle compare les notes par `(ScoreId, NoteId)` dans le score attaché à la session. Ces clés restent internes au service ; le moteur utilise les `NoteOccurrenceId`. Dans les deux cas, la comparaison est faite au tick correspondant à `safeAt`, calculé avec l’ancien ancrage, et sur les voix que l’ancien plan aura encore actives à cette borne. Dans les règles ci-dessous, « tête » désigne cette position de réconciliation, et non le tick affiché au moment du geste :
 
 | Avant | Après | Comportement |
 | --- | --- | --- |
@@ -939,7 +1010,11 @@ La réconciliation dépend de la portée du transport actif. Pour un transport `
 | La note n'est pas audible dans la portée active | Elle couvre désormais la tête | Créer une occurrence de note et produire un `NOTE_ON` à la borne |
 | La note n'est pas audible dans la portée active | Elle ne couvre toujours pas la tête | Replanifier uniquement ses éventuelles commandes futures |
 
-Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d’un `Clip`. Déplacer le début d'une note ou d’un clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Pattern` source déclenche la réconciliation séparément pour chacun de ses clips actifs ou planifiés. Dans un transport `PATTERN`, la même modification est réconciliée une seule fois dans le contexte local du pattern attaché à la session.
+Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d’un `Clip`. Déplacer le début d'une note ou d’un clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Score` source déclenche la réconciliation séparément pour chacun de ses clips actifs ou planifiés. Dans un transport `SCORE`, la même modification est réconciliée une seule fois dans le contexte local du score attaché à la session.
+
+Dupliquer un clip, par référence ou indépendamment, crée de nouvelles clés sonores parce que le `ClipId` est nouveau. Les voix des clips d’origine sont conservées ; seules les notes de la copie qui couvrent la borne sûre ou se trouvent dans le futur sont planifiées. Créer ou dupliquer un score sans le placer n’affecte pas un transport `PROJECT`, et les éditions d’une copie indépendante n’affectent jamais les clips de l’original.
+
+Rendre un clip existant indépendant change son `scoreId` et les identités locales résolues. Dans `PROJECT`, ses anciennes voix sont relâchées à la borne acceptée ; les notes du nouveau score couvrant cette borne sont réattaquées et ses événements futurs remplacent ceux de l’ancien contenu, même si les valeurs musicales copiées sont identiques. La session et la tête globale restent inchangées. Le contexte peut être conservé si son instrument est inchangé et s’il accepte encore des commandes ; un contexte déjà en drainage ne peut pas être réactivé. Les autres clips du score d’origine conservent leurs voix. Une session `SCORE` reste attachée à son `scoreId` initial : changer la référence d’un clip ne redirige ni ce transport ni les préécoutes vers la copie.
 
 Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque. Un `NOTE_OFF` déjà engagé avant `safeAt` ne peut toutefois plus être prolongé : si le nouvel intervalle couvre la borne après ce relâchement, une nouvelle attaque est nécessaire. Une édition limitée à la métrique ou à l’harmonie, sans effet sur les intervalles sonores, n’impose aucune replanification audio.
 
@@ -948,16 +1023,18 @@ Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propri
 Dans un transport `PROJECT`, chaque occurrence sonore issue d’une répétition est identifiée par :
 
 ```text
-(ClipId, repeatIndex, NoteId)
+(ClipId, ScoreId, repeatIndex, NoteId)
 ```
 
 `repeatIndex` est l’indice stable de la répétition qui a produit l’attaque. Une voix déjà créée ne change jamais d’indice et n’est jamais réattribuée à une autre répétition.
 
-Modifier `pattern.duration` recalcule le début global de chaque répétition :
+Le `ScoreId` de cette clé est celui référencé par le clip dans le plan concerné. Un changement de référence ne réattribue jamais une voix de l’ancien score au nouveau, même si des identifiants locaux ou des valeurs musicales coïncident.
+
+Modifier `score.duration` recalcule le début global de chaque répétition :
 
 ```text
 repeatStart =
-  clip.start + repeatIndex * pattern.duration
+  clip.start + repeatIndex * score.duration
 ```
 
 Pour chaque identité après ce recalcul :
@@ -971,13 +1048,13 @@ Modifier seulement `repeatCount` ne déplace et ne renumérote aucune frontière
 
 Le redimensionnement par le bord gauche modifie à la fois `start` et `repeatCount`. Le déplacement de `start` recalcule alors toutes les frontières globales selon les règles ordinaires de réconciliation, tandis que le changement de `repeatCount` ajoute ou retire seulement les indices terminaux.
 
-Pour un transport `PATTERN`, aucune de ces règles de répétition ne s’applique : il ignore les clips et lit directement le pattern jusqu’à `pattern.duration`.
+Pour un transport `SCORE`, aucune de ces règles de répétition ne s’applique : il ignore les clips et lit directement le score jusqu’à `score.duration`.
 
 ##### Préparation sonore des éditions
 
 `EditService` demande à `PlaybackService` d’évaluer et de préparer les banques nécessaires à la projection candidate avant de la publier. `PlaybackService` est l’unique consommateur applicatif de `AudioEngine.prepareInstruments` ; `EditService`, les composants de présentation et `ProjectFileService` ne l’appellent jamais directement.
 
-Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un pattern inutilisé, création d’un clip, déplacement vers une autre piste ou dans la partie restant à lire, changement d’instrument d’une piste ou restauration par undo/redo. Un changement explicite de `Track.instrumentId` prépare aussi la banque quand le transport est arrêté. Créer une piste vide ne charge pas sa banque tant qu’aucune audition ne la requiert ; les instruments sont néanmoins validés auprès du catalogue avant publication. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
+Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un score inutilisé, création d’un clip, déplacement vers une autre piste ou dans la partie restant à lire, changement d’instrument d’une piste ou restauration par undo/redo. Un changement explicite de `Track.instrumentId` prépare aussi la banque quand le transport est arrêté. Créer une piste vide ne charge pas sa banque tant qu’aucune audition ne la requiert ; les instruments sont néanmoins validés auprès du catalogue avant publication. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
 
 `pendingEditPreparation` identifie l’intention concernée et protège sa publication ; il ne représente ni le chargeur, ni le cache, et remplace le mécanisme spécialisé de changement d’instrument. Tant qu’une banque manque, la projection candidate n’est pas publiée : l’ancien `effectiveProject` reste affiché comme document et continue de jouer, tandis que le geste ou le choix en attente dispose d’un repère distinct en chargement.
 
@@ -987,7 +1064,7 @@ Quand toutes les ressources sont disponibles, une projection de geste peut deven
 
 Un changement d’instrument ouvre de nouveaux contextes dans la session existante. La mise à jour atomique contient les `NOTE_OFF` et `ContextCompletion` des anciens contextes à la borne choisie, ainsi que les nouvelles attaques et fins. Les anciens contextes peuvent se drainer pendant que les nouveaux jouent ; aucune voix n’est coupée avant l’acceptation du plan. Les notes couvrant cette borne sont réattaquées au nouvel instrument. Les contextes futurs encore remplaçables sont également recalculés.
 
-Chaque clip concerné de la piste possède sa propre substitution, même si elle référence un autre pattern. Les clips du même pattern sur d’autres pistes ne sont pas affectés. Une session `PATTERN` ne remplace son contexte local que si elle utilise cette piste. Déplacer un seul clip vers une piste d’instrument différent remplace uniquement son contexte dans `PROJECT` ; si l’instrument est identique, ses voix sont conservées selon les règles temporelles ordinaires. Renommer ou réordonner les pistes ne requiert aucune replanification sonore. Aucun nouveau transport n’est ouvert. En cas de calcul refusé, les contextes nouvellement ouverts qui ne sont utilisés par aucun plan accepté sont libérés, sans toucher aux contextes de l’ancien plan.
+Chaque clip concerné de la piste possède sa propre substitution, même si elle référence un autre score. Les clips du même score sur d’autres pistes ne sont pas affectés. Une session `SCORE` ne remplace son contexte local que si elle utilise cette piste. Déplacer un seul clip vers une piste d’instrument différent remplace uniquement son contexte dans `PROJECT` ; si l’instrument est identique, ses voix sont conservées selon les règles temporelles ordinaires. Renommer ou réordonner les pistes ne requiert aucune replanification sonore. Aucun nouveau transport n’est ouvert. En cas de calcul refusé, les contextes nouvellement ouverts qui ne sont utilisés par aucun plan accepté sont libérés, sans toucher aux contextes de l’ancien plan.
 
 Au choix de `SLICE` ou `MERGE`, le résultat valide remplace la projection provisoire comme une modification atomique : les notes supprimées sont relâchées si nécessaire, les fragments nouvellement créés sont planifiés selon leur position, et la note manipulée suit les règles ordinaires de modification de son attaque et de son `NOTE_OFF`.
 
@@ -1010,24 +1087,24 @@ type PreviewReadyOutcome =
   | "CANCELLED";
 
 type PlaybackValidationError = ValidationError<
-  "NO_PATTERN_EDITED" | "PATTERN_NOT_FOUND" | "TICK_OUT_OF_RANGE" |
+  "NO_SCORE_EDITED" | "SCORE_NOT_FOUND" | "TICK_OUT_OF_RANGE" |
   "NO_AUDITION_TRACK" | "TRACK_NOT_FOUND",
   {
     tick?: Tick;
-    patternId?: PatternId;
+    scoreId?: ScoreId;
     trackId?: TrackId;
     endTick?: Tick;
   }
 >;
 
 type PreviewValidationError = ValidationError<
-  "NO_PATTERN_EDITED" | "PITCH_OUT_OF_RANGE" |
-  "EMPTY_SELECTION" | "NOTE_NOT_IN_EDITED_PATTERN" |
+  "NO_SCORE_EDITED" | "PITCH_OUT_OF_RANGE" |
+  "EMPTY_SELECTION" | "NOTE_NOT_IN_EDITED_SCORE" |
   "NO_AUDITION_TRACK" | "TRACK_NOT_FOUND",
   {
     pitch?: number;
     noteIds?: readonly NoteId[];
-    patternId?: PatternId;
+    scoreId?: ScoreId;
     trackId?: TrackId;
   }
 >;
@@ -1066,7 +1143,7 @@ playProject(
   tick?: Tick
 ): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
 
-playPattern(
+playScore(
   tick?: Tick
 ): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
 
@@ -1074,7 +1151,7 @@ seekProject(
   tick: Tick
 ): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
 
-seekPattern(
+seekScore(
   tick: Tick
 ): Promise<Result<TransportRequestOutcome, PlaybackRequestError>>;
 
@@ -1092,7 +1169,7 @@ stop(mode?: StopMode): void;
 
 `StopMode` est déclaré par `application/ports/AudioEngine.ts`, qui constitue la source de vérité de cette politique d’arrêt. `PlaybackService` l’importe et le réexpose dans son API publique sans le redéfinir. `Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
 
-`setAuditionTrack` exige un pattern édité et un `TrackId` existant. Une piste d’écoute absente produit `NO_AUDITION_TRACK` pour les appels sonores ; une référence de piste invalide produit `TRACK_NOT_FOUND`. Les erreurs de validation sont déterminées avant toute préparation lorsque c’est possible. Les méthodes de transport les retournent néanmoins dans leur promesse de `Result` ; seules les validations des préécoutes sont retournées synchroniquement. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
+`setAuditionTrack` exige un score édité et un `TrackId` existant. Une piste d’écoute absente produit `NO_AUDITION_TRACK` pour les appels sonores ; une référence de piste invalide produit `TRACK_NOT_FOUND`. Les erreurs de validation sont déterminées avant toute préparation lorsque c’est possible. Les méthodes de transport les retournent néanmoins dans leur promesse de `Result` ; seules les validations des préécoutes sont retournées synchroniquement. `InstrumentPreparationError` représente un échec technique attendu du chargement et reste distinct d’une `ValidationError`. Les défauts de programmation et défaillances techniques non prévues restent des exceptions.
 
 `SUPERSEDED` et `CANCELLED` sont des résultats normaux d’orchestration : ils ne doivent pas produire de message d’erreur utilisateur.
 
@@ -1103,20 +1180,20 @@ Le service conserve au plus une requête en préparation pour le transport ou le
 ```ts
 interface PendingTransportRequest {
   id: TransportRequestId;
-  kind: "PLAY_PROJECT" | "PLAY_PATTERN" | "SEEK_PROJECT" | "SEEK_PATTERN" | "SET_AUDITION_TRACK";
+  kind: "PLAY_PROJECT" | "PLAY_SCORE" | "SEEK_PROJECT" | "SEEK_SCORE" | "SET_AUDITION_TRACK";
   targetTick: Tick;
-  patternId?: PatternId;
+  scoreId?: ScoreId;
   trackId?: TrackId;
   effectiveProjectRevision: number;
   status: "PREPARING";
 }
 ```
 
-Chaque `playProject`, `playPattern`, `seekProject`, `seekPattern` ou `setAuditionTrack` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
+Chaque `playProject`, `playScore`, `seekProject`, `seekScore` ou `setAuditionTrack` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
 
 `stop(mode)` invalide la requête en attente en plus d’arrêter l’éventuel transport actif. Sa promesse se résout avec `ok("CANCELLED")`. Le service transmet un signal d’annulation au chargement lorsque l’infrastructure le permet, mais l’identité de requête reste la protection obligatoire contre les réponses tardives.
 
-Pour les requêtes locales nécessitant une préparation, `patternId` et `trackId` capturent le contexte d’écoute ; ils sont absents pour le projet. `SET_AUDITION_TRACK` utilise le tick local courant comme repère initial, mais recalcule la borne de bascule si le transport avance ; il ne crée pas de transport et retourne `APPLIED` après publication du choix. Fermer ou changer le pattern édité invalide les requêtes locales encore en attente et les résout avec `CANCELLED`, sans arrêter une session déjà démarrée.
+Pour les requêtes locales nécessitant une préparation, `scoreId` et `trackId` capturent le contexte d’écoute ; ils sont absents pour le projet. `SET_AUDITION_TRACK` utilise le tick local courant comme repère initial, mais recalcule la borne de bascule si le transport avance ; il ne crée pas de transport et retourne `APPLIED` après publication du choix. Fermer ou changer le score édité invalide les requêtes locales encore en attente et les résout avec `CANCELLED`, sans arrêter une session déjà démarrée.
 
 La requête capture `effectiveProjectRevision` avant de déterminer les instruments nécessaires. Après chaque préparation réussie, le service compare cette révision à la valeur courante :
 
@@ -1125,7 +1202,7 @@ La requête capture `effectiveProjectRevision` avant de déterminer les instrume
 3. les banques déjà préparées sont réutilisées et seules les banques supplémentaires sont chargées ;
 4. le contrôle recommence avant le démarrage ou la publication du choix d’écoute.
 
-Une modification continue du projet ne publie donc jamais une session construite depuis une ancienne projection. Pour les requêtes de play/seek, si le tick est devenu supérieur à la nouvelle fin, la requête retourne `err(TICK_OUT_OF_RANGE)`. S’il est exactement à la fin, elle retourne `ok("NO_CONTENT")` sans ouvrir de session. `SET_AUDITION_TRACK` ne déplace pas la tête : il relit sa position courante et peut retourner `APPLIED` même à la fin du pattern ou après la fin naturelle du transport, sans le redémarrer.
+Une modification continue du projet ne publie donc jamais une session construite depuis une ancienne projection. Pour les requêtes de play/seek, si le tick est devenu supérieur à la nouvelle fin, la requête retourne `err(TICK_OUT_OF_RANGE)`. S’il est exactement à la fin, elle retourne `ok("NO_CONTENT")` sans ouvrir de session. `SET_AUDITION_TRACK` ne déplace pas la tête : il relit sa position courante et peut retourner `APPLIED` même à la fin du score ou après la fin naturelle du transport, sans le redémarrer.
 
 Lors d’un seek sur le transport actif, la tête sonore actuelle continue d’avancer pendant la préparation. La destination demandée est affichée séparément comme un repère provisoire en chargement ; elle ne devient pas encore la tête effective. Lorsque la préparation réussit, l’ancienne session est remplacée gracieusement et la tête saute à la destination.
 
@@ -1137,27 +1214,27 @@ Sans transport actif, un seek valide déplace immédiatement la tête immobile. 
 
 `playProject(tick)` valide explicitement le tick dans `[0, project.duration]`. Il positionne une tête inactive ; sur un transport `PROJECT` actif, la destination reste provisoire jusqu’au remplacement réussi. Si `tick === project.duration`, aucune session n’est ouverte et un transport `PROJECT` actif est terminé à cette destination ; si `tick > project.duration`, l’appel retourne une erreur de validation.
 
-#### Lecture du pattern édité
+#### Lecture du score édité
 
-`playPattern()` exige un `patternEditor` avec une piste d’écoute existante et capture son `patternId` et son `auditionTrackId` comme `trackId` de session. Il utilise le tick local dérivé si ce même pattern est en cours de lecture, sinon la position mémorisée `patternEditor.playhead`. Si cette tête se trouve à `pattern.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un pattern possède toujours une durée strictement positive.
+`playScore()` exige un `scoreEditor` avec une piste d’écoute existante et capture son `scoreId` et son `auditionTrackId` comme `trackId` de session. Il utilise le tick local dérivé si ce même score est en cours de lecture, sinon la position mémorisée `scoreEditor.playhead`. Si cette tête se trouve à `score.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un score possède toujours une durée strictement positive.
 
-`playPattern(tick)` valide explicitement le tick dans `[0, pattern.duration]`. Il positionne une tête inactive ; sur le transport du même pattern actif, la destination reste provisoire jusqu’au remplacement réussi. Si `tick === pattern.duration`, aucune session n’est ouverte et un transport du même pattern actif est terminé à cette destination ; si `tick > pattern.duration`, l’appel retourne une erreur de validation.
+`playScore(tick)` valide explicitement le tick dans `[0, score.duration]`. Il positionne une tête inactive ; sur le transport du même score actif, la destination reste provisoire jusqu’au remplacement réussi. Si `tick === score.duration`, aucune session n’est ouverte et un transport du même score actif est terminé à cette destination ; si `tick > score.duration`, l’appel retourne une erreur de validation.
 
 Ce transport :
 
-- lit uniquement le contenu du pattern édité ;
+- lit uniquement le contenu du score édité ;
 - ignore les clips, leurs positions et leurs `repeatCount` ;
 - utilise l’instrument de sa piste d’écoute et le tempo unique du projet ;
-- s'arrête structurellement à `pattern.duration` ;
-- ouvre un seul `PlaybackContext` pour ce pattern.
+- s'arrête structurellement à `score.duration` ;
+- ouvre un seul `PlaybackContext` pour ce score.
 
-`PROJECT` et `PATTERN` sont deux portées d'un même transport exclusif. Démarrer l'une remplace gracieusement l'autre sans modifier la tête inactive.
+`PROJECT` et `SCORE` sont deux portées d'un même transport exclusif. Démarrer l'une remplace gracieusement l'autre sans modifier la tête inactive.
 
-Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les clips susceptibles d’être lus entre le tick de départ et la fin du projet ; pour `PATTERN`, seulement l’instrument de la piste d’écoute capturée. Les pistes sans clip dans la portée ne sont pas préparées pour `PROJECT`. Chaque instrument requis est obtenu depuis le `trackId` du clip, et les identifiants d’instrument sont dédupliqués avant la préparation. La promesse se résout lorsque le transport a effectivement démarré, ou immédiatement lorsqu’aucune session ne doit être ouverte. Aucun transport ne commence avec une banque requise manquante.
+Avant d'ouvrir la session et de faire avancer sa tête, le service résout tous les `InstrumentId` nécessaires à la portée demandée et attend le chargement de leurs échantillons. Pour `PROJECT`, il considère les clips susceptibles d’être lus entre le tick de départ et la fin du projet ; pour `SCORE`, seulement l’instrument de la piste d’écoute capturée. Les pistes sans clip dans la portée ne sont pas préparées pour `PROJECT`. Chaque instrument requis est obtenu depuis le `trackId` du clip, et les identifiants d’instrument sont dédupliqués avant la préparation. La promesse se résout lorsque le transport a effectivement démarré, ou immédiatement lorsqu’aucune session ne doit être ouverte. Aucun transport ne commence avec une banque requise manquante.
 
-Sur une session `PATTERN` active du même pattern, `seekPattern` conserve le `trackId` de cette session, même si le pattern a été rouvert directement sans piste d’écoute dans l’éditeur. Le choix de piste relève de `setAuditionTrack` ou d’un nouveau `playPattern`, pas du seek.
+Sur une session `SCORE` active du même score, `seekScore` conserve le `trackId` de cette session, même si le score a été rouvert directement sans piste d’écoute dans l’éditeur. Le choix de piste relève de `setAuditionTrack` ou d’un nouveau `playScore`, pas du seek.
 
-`seekProject(tick)` et `seekPattern(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `PATTERN`, au même `patternId` — un déplacement avant la fin crée une requête asynchrone de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport et retourne `ok("NO_CONTENT")`. Lorsque la portée est inactive, le seek déplace seulement la tête et retourne `ok("POSITIONED")`, même si le pattern édité n’a pas encore de piste d’écoute.
+`seekProject(tick)` et `seekScore(tick)` acceptent la fin correspondante mais refusent toute valeur supérieure. Si la tête appartient au transport actif — et, pour `SCORE`, au même `scoreId` — un déplacement avant la fin crée une requête asynchrone de même portée, soumise à la même barrière de préparation ; un déplacement exactement à la fin termine naturellement le transport et retourne `ok("NO_CONTENT")`. Lorsque la portée est inactive, le seek déplace seulement la tête et retourne `ok("POSITIONED")`, même si le score édité n’a pas encore de piste d’écoute.
 
 #### Fin de portée après modification
 
@@ -1179,41 +1256,41 @@ Si sa position à la borne acceptée se trouve à la nouvelle fin ou au-delà, l
 
 Si la portée est inactive, seul le clamp de sa tête est nécessaire. L’allongement ultérieur d’une portée ne déplace jamais automatiquement sa tête.
 
-#### Suppression du pattern attaché à une session
+#### Suppression du score attaché à une session
 
-Un pattern ne peut être supprimé du domaine que s’il n’est référencé par aucun `Clip`. Le cas d’usage valide d’abord la suppression et l’ensemble de la commande, sans publier le projet. Si ce pattern est actuellement joué par une session `PATTERN`, il orchestre ensuite à la publication :
+Un score ne peut être supprimé du domaine que s’il n’est référencé par aucun `Clip`. Le cas d’usage valide d’abord la suppression et l’ensemble de la commande, sans publier le projet. Si ce score est actuellement joué par une session `SCORE`, il orchestre ensuite à la publication :
 
 1. l’arrêt `GRACEFUL` de la session et l’annulation de ses attaques futures ;
 2. le relâchement de ses voix actives et le drainage éventuel de ses contextes ;
 3. la suppression de l’`ActiveTransport` ;
 4. l’arrêt de ses `PITCH_PREVIEW` et `SELECTION_PREVIEW` ;
 5. l’invalidation des préparations devenues sans objet ; une édition concurrente reste interdite ;
-6. la fermeture de `PatternEditorState` s’il cible encore ce pattern ;
-7. la suppression du pattern dans le nouveau `project`.
+6. la fermeture de `ScoreEditorState` s’il cible encore ce score ;
+7. la suppression du score dans le nouveau `project`.
 
-La tête locale appartient au `PatternEditorState` supprimé : elle n’est ni conservée sans pattern, ni transférée au prochain pattern ouvert. Les tails de l’ancienne session peuvent continuer à se drainer après la suppression sans maintenir le pattern dans l’agrégat.
+La tête locale appartient au `ScoreEditorState` supprimé : elle n’est ni conservée sans score, ni transférée au prochain score ouvert. Les tails de l’ancienne session peuvent continuer à se drainer après la suppression sans maintenir le score dans l’agrégat.
 
-Supprimer un pattern non placé pendant un transport `PROJECT` n’a aucun effet sur cette session, puisqu’aucun clip ne peut le rendre audible.
+Supprimer un score non placé pendant un transport `PROJECT` n’a aucun effet sur cette session, puisqu’aucun clip ne peut le rendre audible.
 
 #### Suppression d’une piste utilisée pour l’écoute
 
-Le projet refuse une piste encore référencée par des clips. Une piste vide peut toutefois être utilisée par une session `PATTERN` ou des préécoutes. Lorsqu’une édition, une annulation de brouillon ou un undo/redo retire effectivement cette piste, l’application arrête gracieusement la session `PATTERN` liée, mémorise la tête locale si ce pattern est ouvert, termine les handles concernés et invalide les préparations visant la piste. Elle retire `auditionTrackId` des états qui la référencent, tout en conservant le pattern ouvert, ses notes sélectionnées et sa tête.
+Le projet refuse une piste encore référencée par des clips. Une piste vide peut toutefois être utilisée par une session `SCORE` ou des préécoutes. Lorsqu’une édition, une annulation de brouillon ou un undo/redo retire effectivement cette piste, l’application arrête gracieusement la session `SCORE` liée, mémorise la tête locale si ce score est ouvert, termine les handles concernés et invalide les préparations visant la piste. Elle retire `auditionTrackId` des états qui la référencent, tout en conservant le score ouvert, ses notes sélectionnées et sa tête.
 
 Ces effets sont coordonnés avec la publication du nouveau projet et ne se produisent pas si la suppression est refusée. Restaurer ensuite la piste via l’historique ne restaure ni une audition arrêtée ni un choix applicatif effacé. Une suppression collective qui retire aussi des clips suit en plus la réconciliation ordinaire de `PROJECT`.
 
 #### Préécoutes du piano roll
 
-Les deux préécoutes utilisent l’instrument de `patternEditor.auditionTrackId`, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
+Les deux préécoutes utilisent l’instrument de `scoreEditor.auditionTrackId`, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
 
 ##### Préécoute d’une hauteur
 
-`previewPitch(pitch, velocity?)` joue une hauteur explicite, qu’une `Note` correspondante existe ou non dans le pattern. La vélocité reçoit une valeur de préécoute par défaut lorsqu’elle est omise.
+`previewPitch(pitch, velocity?)` joue une hauteur explicite, qu’une `Note` correspondante existe ou non dans le score. La vélocité reçoit une valeur de préécoute par défaut lorsqu’elle est omise.
 
 L’audition est soutenue jusqu’à `PreviewPitchHandle.release()` ou jusqu’à une durée maximale de sécurité. `release()` est idempotente et relâche uniquement la voix créée par cet appel ; sa release et son tail peuvent ensuite se terminer naturellement. La présentation conserve le handle entre `pointerdown` et `pointerup` ou `pointercancel`.
 
 ##### Préécoute d’une sélection
 
-`previewSelection(noteIds)` résout les notes dans le pattern édité depuis l’`effectiveProject`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
+`previewSelection(noteIds)` résout les notes dans le score édité depuis l’`effectiveProject`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
 
 Le `PreviewSelectionHandle` reste toutefois actif pendant le geste afin de suivre les transformations. À chaque remplacement de l’`effectiveProject`, le service compare la hauteur de chaque `NoteId` sélectionné avec sa valeur précédente :
 
@@ -1242,17 +1319,17 @@ Le handle représente ainsi une intention immédiatement annulable, tandis que `
 
 #### Planification selon la portée
 
-Pour un transport `PROJECT`, le service obtient directement l’intervalle global de chaque clip depuis son `start`, son `repeatCount` et la durée du pattern référencé :
+Pour un transport `PROJECT`, le service obtient directement l’intervalle global de chaque clip depuis son `start`, son `repeatCount` et la durée du score référencé :
 
 ```text
 clipInterval = [clip.start,
-                      clip.start + pattern.duration * clip.repeatCount)
+                      clip.start + score.duration * clip.repeatCount)
 projectEnd = max(clipInterval.end), ou 0 sans clip
 ```
 
-Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément, indépendamment de leurs pistes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique et d’harmonie du pattern.
+Les intervalles sont semi-ouverts. Tous ceux qui se recouvrent sont planifiés simultanément, indépendamment de leurs pistes. Chaque répétition recommence au tick local `0` avec les valeurs initiales de métrique et d’harmonie du score.
 
-Pour un transport `PATTERN`, le service parcourt les événements du `patternId` attaché à la session entre son curseur local et `pattern.duration`, avec l’instrument de son `trackId`. Aucun placement global ni `repeatCount` n'intervient.
+Pour un transport `SCORE`, le service parcourt les événements du `scoreId` attaché à la session entre son curseur local et `score.duration`, avec l’instrument de son `trackId`. Aucun placement global ni `repeatCount` n'intervient.
 
 Le tempo unique du projet convertit les ticks en secondes dans les deux portées :
 
@@ -1261,8 +1338,8 @@ PROJECT:
 command.at = ((eventGlobalTick - sessionStartProjectTick) / 960)
            * (60 / project.tempo.bpm)
 
-PATTERN:
-command.at = ((eventLocalTick - sessionStartPatternTick) / 960)
+SCORE:
+command.at = ((eventLocalTick - sessionStartScoreTick) / 960)
            * (60 / project.tempo.bpm)
 ```
 
@@ -1276,9 +1353,9 @@ command.at = replanAt
            * (60 / effectiveProject.tempo.bpm)
 ```
 
-`eventTick` et `replanTick` sont interprétés dans le référentiel du transport actif. La borne conserve donc le tick global atteint pour `PROJECT`, ou le tick local atteint pour `PATTERN`.
+`eventTick` et `replanTick` sont interprétés dans le référentiel du transport actif. La borne conserve donc le tick global atteint pour `PROJECT`, ou le tick local atteint pour `SCORE`.
 
-Lorsqu’un transport commence au milieu d’un clip ou d’un pattern, le service applique une note chase minimale : toute note dont l'intervalle couvre la tête est réattaquée à l'ouverture de la session, puis relâchée à sa fin restante. Il ne tente pas de reconstruire une enveloppe ou un état de voix antérieur. Pour `PROJECT`, le service calcule d'abord la position locale dans chaque clip en tenant compte de sa répétition.
+Lorsqu’un transport commence au milieu d’un clip ou d’un score, le service applique une note chase minimale : toute note dont l'intervalle couvre la tête est réattaquée à l'ouverture de la session, puis relâchée à sa fin restante. Il ne tente pas de reconstruire une enveloppe ou un état de voix antérieur. Pour `PROJECT`, le service calcule d'abord la position locale dans chaque clip en tenant compte de sa répétition.
 
 #### Identités d'exécution
 
@@ -1286,15 +1363,15 @@ La lecture utilise trois niveaux d'identité opaques et transitoires :
 
 | Identité | Portée |
 | --- | --- |
-| `PlaybackSessionId` | Un transport de projet, un transport de pattern ou une préécoute |
+| `PlaybackSessionId` | Un transport de projet, un transport de score ou une préécoute |
 | `PlaybackContextId` | Une unité audio isolée appartenant à une session |
 | `NoteOccurrenceId` | Une attaque précise dans un contexte |
 
 Une nouvelle occurrence de note est créée à chaque attaque, y compris lors des répétitions et des réattaques complètes d’une sélection. Deux notes issues de clips utilisant le même instrument, avec la même hauteur et le même instant, restent ainsi indépendantes, sauf la déduplication explicite propre à `previewSelection`.
 
-Un nouveau contexte est créé à chaque activation d’un clip dans un transport `PROJECT`, pour le pattern isolé d’un transport `PATTERN`, pour chaque `previewPitch` et pour une préécoute de sélection. Les répétitions d’un même clip réutilisent son contexte et son instance d'instrument, mais produisent de nouvelles occurrences de notes. Deux clips simultanés référençant le même `PatternId` possèdent toujours des contextes distincts.
+Un nouveau contexte est créé à chaque activation d’un clip dans un transport `PROJECT`, pour le score isolé d’un transport `SCORE`, pour chaque `previewPitch` et pour une préécoute de sélection. Les répétitions d’un même clip réutilisent son contexte et son instance d'instrument, mais produisent de nouvelles occurrences de notes. Deux clips simultanés référençant le même `ScoreId` possèdent toujours des contextes distincts.
 
-Les identifiants persistants `PatternId`, `ClipId` et `NoteId` restent connus du domaine et du service. Ils ne sont pas transmis au moteur audio.
+Les identifiants persistants `ScoreId`, `ClipId` et `NoteId` restent connus du domaine et du service. Ils ne sont pas transmis au moteur audio.
 
 Ces identités d'exécution appartiennent au langage interne du port `AudioEngine` et ne sont jamais exposées à la présentation. `PreviewPitchHandle` et `PreviewSelectionHandle` exposent uniquement le contrôle nécessaire à leur audition.
 
@@ -1303,7 +1380,7 @@ Ces identités d'exécution appartiennent au langage interne du port `AudioEngin
 ```ts
 type PlaybackSessionKind =
   | "PROJECT"
-  | "PATTERN"
+  | "SCORE"
   | "PITCH_PREVIEW"
   | "SELECTION_PREVIEW";
 
@@ -1315,23 +1392,23 @@ interface TransportAnchor {
 
 type ActiveTransport =
   | { kind: "PROJECT"; sessionId: PlaybackSessionId; anchor: TransportAnchor }
-  | { kind: "PATTERN"; sessionId: PlaybackSessionId; patternId: PatternId; trackId: TrackId; anchor: TransportAnchor };
+  | { kind: "SCORE"; sessionId: PlaybackSessionId; scoreId: ScoreId; trackId: TrackId; anchor: TransportAnchor };
 ```
 
 | Catégorie | Kind | Règle de concurrence |
 | --- | --- | --- |
-| Transport global | `PROJECT` | Mutuellement exclusif avec `PATTERN` |
-| Transport local | `PATTERN` | Mutuellement exclusif avec `PROJECT` |
+| Transport global | `PROJECT` | Mutuellement exclusif avec `SCORE` |
+| Transport local | `SCORE` | Mutuellement exclusif avec `PROJECT` |
 | Touche du piano roll | `PITCH_PREVIEW` | Plusieurs sessions peuvent coexister entre elles et avec le transport |
 | Sélection manipulée | `SELECTION_PREVIEW` | Au plus une session de sélection ; peut coexister avec le transport et les préécoutes de hauteur |
 
 `PlaybackSessionKind` appartient à `PlaybackService` : il décrit les catégories de cas d’usage et leurs règles de concurrence. Il n’est pas transmis à `AudioEngine`, dont toutes les sessions suivent le même contrat technique.
 
-Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `playPattern` retire ce rôle au transport précédent et annule ses attaques futures lorsque la nouvelle portée est prête à démarrer. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif. Les deux têtes de lecture restent indépendantes.
+Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `playScore` retire ce rôle au transport précédent et annule ses attaques futures lorsque la nouvelle portée est prête à démarrer. Ses contextes peuvent néanmoins subsister jusqu'à la fin de leurs releases et tails ; cela ne constitue pas un second transport actif. Les deux têtes de lecture restent indépendantes.
 
 `previewPitch` et `previewSelection` ne remplacent jamais le transport. Démarrer une nouvelle préécoute de sélection arrête la précédente. Relâcher ou arrêter leurs handles termine structurellement leur session sans affecter les autres auditions.
 
-`stop(mode)` invalide d’abord toute `PendingTransportRequest`, puis arrête l'unique transport actif, qu'il soit `PROJECT` ou `PATTERN`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. Sans transport actif, l’opération annule encore la requête de transport en préparation ; sans transport ni requête en attente, elle est sans effet.
+`stop(mode)` invalide d’abord toute `PendingTransportRequest`, puis arrête l'unique transport actif, qu'il soit `PROJECT` ou `SCORE`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. Sans transport actif, l’opération annule encore la requête de transport en préparation ; sans transport ni requête en attente, elle est sans effet.
 
 Le mode par défaut est `GRACEFUL` :
 
@@ -1345,7 +1422,7 @@ Le mode par défaut est `GRACEFUL` :
 
 #### AudioEngine
 
-`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Il ne reçoit pas la catégorie applicative de la session. Le `PlaybackService` résout le `Track.instrumentId` depuis le clip pour `PROJECT` ou depuis la piste d’écoute capturée pour `PATTERN` et les préécoutes, puis le copie dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
+`AudioEngine` accepte des identités d'exécution, des commandes sonores et des bornes de cycle de vie sans exposer `smplr`, les définitions ou instances techniques d'instrument, ni les objets Web Audio. Il ne reçoit pas la catégorie applicative de la session. Le `PlaybackService` résout le `Track.instrumentId` depuis le clip pour `PROJECT` ou depuis la piste d’écoute capturée pour `SCORE` et les préécoutes, puis le copie dans chaque commande `NOTE_ON` ; la commande reste ainsi autonome au moment de son exécution sans attribuer l'instrument à la note persistante.
 
 ```ts
 type AudioCommand = {
@@ -1481,7 +1558,7 @@ La présentation offre une grille temporelle bidimensionnelle qui affiche direct
 
 ### Grille globale
 
-L'axe horizontal représente des `Tick` depuis le début du projet. Il est commun à tous les patterns et continu sur toute la composition. L’axe vertical présente les pistes dans l’ordre de `Project.tracks`, avec leur nom et leur instrument.
+L'axe horizontal représente des `Tick` depuis le début du projet. Il est commun à tous les scores et continu sur toute la composition. L’axe vertical présente les pistes dans l’ordre de `Project.tracks`, avec leur nom et leur instrument.
 
 ```mermaid
 block-beta
@@ -1499,14 +1576,16 @@ Dans cette représentation :
 | Élément visuel | Signification |
 | --- | --- |
 | Position horizontale | `Clip.start` sauvegardé |
-| Longueur d'un bloc | `pattern.duration * clip.repeatCount`, convertie par le tempo du projet |
+| Longueur d'un bloc | `score.duration * clip.repeatCount`, convertie par le tempo du projet |
 | Position verticale | Rang de la piste référencée par `Clip.trackId` dans `Project.tracks` |
 | Blocs chevauchants, sur une même piste ou non | Clips lus simultanément |
 | Tête globale verticale | Position dérivée du transport actif, sinon `EditorState.projectPlayhead` |
 
 Tous les clips d’une piste utilisent son instrument. Déplacer un clip verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
-La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `patternId` et son `trackId`, initialise la piste d’écoute et crée, si le pattern change, le `PatternEditorState` avec une position mémorisée au tick `0` et édite le contenu source partagé ; si ce pattern est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` dérive `transientProject` de la commande quantifiée. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` dérive `transientProject` de la commande quantifiée. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+
+Les actions de duplication distinguent clairement le partage du score et la création d’une copie indépendante. Le nombre de clips utilisant un score peut être dérivé de leurs `scoreId` pour informer l’utilisateur de la portée d’une édition. Cette information n’est ni un champ du document ni un mode d’édition : modifier le score ouvert modifie toujours ce score et tous les clips qui le référencent.
 
 ### Piano roll et collisions
 
@@ -1558,7 +1637,7 @@ La définition choisit l'instrument ou le preset `smplr` employé. Elle ne décr
 
 ### PlaybackSession
 
-`PlaybackSession` est l'état technique transitoire d’un transport de projet, d’un transport de pattern, d’une préécoute de hauteur ou d’une préécoute de sélection. Elle possède les contextes ouverts pour cette opération et permet leur arrêt collectif.
+`PlaybackSession` est l'état technique transitoire d’un transport de projet, d’un transport de score, d’une préécoute de hauteur ou d’une préécoute de sélection. Elle possède les contextes ouverts pour cette opération et permet leur arrêt collectif.
 
 Une session ouverte reste vivante pendant les silences, même sans contexte vivant ; la planification glissante peut ouvrir des contextes plus tard. Une session est libérée seulement après sa fermeture structurelle (`closeSession` ou `stopSession`) et après la destruction de tous ses contextes. Une session remplacée ne devient pas elle-même `DRAINING` : elle est fermée et subsiste comme propriétaire de contextes éventuellement en drainage.
 
@@ -1610,7 +1689,7 @@ Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peu
 
 Si un clip est déplacé au-delà de la tête alors que son ancien contexte est déjà `DRAINING`, ce contexte conserve uniquement ses releases et tails jusqu'au silence. Il n'est ni réactivé ni coupé. Si le nouveau placement requiert des attaques futures, le service ouvre un autre contexte indépendant.
 
-Un contexte de pattern correspond soit à l’activation audio d’un `Clip` dans un transport `PROJECT`, soit à la lecture isolée du pattern édité dans un transport `PATTERN`. Dans le premier cas, les identifiants `ClipId`, `PatternId` et `TrackId` référencés ainsi que leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve l’association entre le couple `PatternId` / `TrackId` et l’unique contexte de la session. Deux clips du même pattern ouverts simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de l’instrument suit la préparation sonore des éditions et crée un nouveau contexte dans la même session.
+Un contexte de lecture correspond soit à l’activation audio d’un `Clip` dans un transport `PROJECT`, soit à la lecture isolée du score attaché à un transport `SCORE`. Dans le premier cas, les identifiants `ClipId`, `ScoreId` et `TrackId` référencés ainsi que leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve l’association entre le couple `ScoreId` / `TrackId` et le contexte courant de la session. Deux clips du même score ouverts simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de l’instrument suit la préparation sonore des éditions et crée un nouveau contexte dans la même session ; l’ancien peut encore se drainer.
 
 Les deux formes de préécoute utilisent le même type de contexte. Le `PlaybackService` conserve les associations internes entre leurs handles publics, leurs sessions, leurs contextes et leurs occurrences sonores ; aucun descripteur supplémentaire n'est nécessaire.
 
@@ -1649,7 +1728,7 @@ La préparation constitue une barrière de démarrage : toutes les banques néce
 
 Le moteur audio concret implémente `AudioEngine`, crée les instances `smplr` propres aux contextes et produit leur mixage dans l'`AudioContext` global.
 
-`smplr` est utilisé uniquement comme moteur d'instrument. Son séquenceur n'est pas utilisé : le `PlaybackService` reste l'unique autorité qui transforme soit les clips placés, soit le contenu local du pattern attaché au transport, en commandes horodatées.
+`smplr` est utilisé uniquement comme moteur d'instrument. Son séquenceur n'est pas utilisé : le `PlaybackService` reste l'unique autorité qui transforme soit les clips placés, soit le contenu local du score attaché au transport, en commandes horodatées.
 
 Le premier périmètre repose sur les nœuds Web Audio natifs employés par `smplr` et ne nécessite aucun `AudioWorklet`. Tout l'état du moteur est transitoire et n'est jamais sauvegardé dans le `Project`.
 
@@ -1664,9 +1743,11 @@ interface ProjectFileData {
 }
 ```
 
-`ProjectData` est la représentation sérialisable de l’agrégat : identifiants, nom et métadonnées du projet, tempo en BPM, collection ordonnée de pistes, collections de patterns et de clips. Les pistes contiennent `id`, `name` et `instrumentId` ; leur ordre dans la collection est sauvegardé. Les patterns contiennent leur durée en ticks, les notes, les changements de métrique et d’harmonie ; les clips contiennent `id`, `patternId`, `trackId`, `start` et `repeatCount`. Les Value Objects y sont représentés par leurs valeurs primitives validables. Les références et identités sont conservées exactement, sans dupliquer les contenus partagés.
+`ProjectData` est la représentation sérialisable de l’agrégat : identifiants, nom et métadonnées du projet, tempo en BPM, collection ordonnée `tracks`, collections `scores` et `clips`. Les pistes contiennent `id`, `name` et `instrumentId` ; leur ordre dans la collection est sauvegardé. Chaque `ScoreData` contient `id`, `name`, `duration` en ticks, `notes`, `meterChanges` et `harmonyChanges`, avec les identités locales de ces entités. Chaque `ClipData` contient `id`, `scoreId`, `trackId`, `start` et `repeatCount` ; `scoreId` est toujours obligatoire. Les Value Objects y sont représentés par leurs valeurs primitives validables. Les références et identités sont conservées exactement, sans dupliquer les contenus partagés.
 
-Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmoniques calculés, ni sélection, ni grille d’édition, ni piste d’écoute du piano roll, ni tête, ni historique, ni ressources audio. Le schéma initial `1` décrit directement ce modèle à pistes instrumentales ; toute autre version est refusée.
+Un score est sérialisé une seule fois dans `scores`, qu’il soit référencé par zéro, un ou plusieurs clips. Une copie indépendante occupe une seconde entrée avec un autre `id`, même si son contenu est identique. Il n’existe aucun contenu musical inline, champ de liaison optionnel, indicateur de partage ni déduplication par valeur à la lecture. L’ouverture conserve donc à la fois le partage volontaire et l’indépendance des copies ; elle ne génère pas de nouveaux identifiants.
+
+Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmoniques calculés, ni sélection, ni grille d’édition, ni piste d’écoute du piano roll, ni tête, ni historique, ni ressources audio. Le schéma initial `1` décrit directement ce modèle de scores référencés et de pistes instrumentales ; toute autre version est refusée. Une enveloppe de version `1` dont les champs ne respectent pas cette structure est également refusée, sans alias de champs ni conversion implicite.
 
 Le décodage vérifie l’enveloppe et la forme des données, puis reconstitue l’agrégat avec les mêmes factories et validations que la création interactive. Une incohérence métier produit une erreur de validation sans objet partiellement valide. Un problème de syntaxe, de version ou d’accès reste distinct. `ProjectFileService` contrôle ensuite le catalogue avant de publier le document.
 
@@ -1703,7 +1784,7 @@ src/
 │   │   ├── composition/
 │   │   │   ├── Project.ts
 │   │   │   ├── Track.ts
-│   │   │   ├── Pattern.ts
+│   │   │   ├── Score.ts
 │   │   │   ├── Clip.ts
 │   │   │   ├── Note.ts
 │   │   │   └── Velocity.ts
@@ -1727,7 +1808,7 @@ src/
 │   └── operations/
 │       ├── composition/
 │       │   ├── ProjectTransformations.ts
-│       │   ├── PatternTransformations.ts
+│       │   ├── ScoreTransformations.ts
 │       │   └── NoteOverlap.ts
 │       ├── time/
 │       │   └── MeterTimeline.ts
@@ -1771,10 +1852,10 @@ src/
 | Module | Contenu |
 | --- | --- |
 | `domain/Result.ts` | `Result`, helpers et forme générique de `ValidationError` ; les erreurs concrètes restent auprès du modèle ou de l'opération qui les produit |
-| `domain/models/composition/Project.ts` | `Project`, `ProjectId`, factory, reconstitution, `MAX_TRACK_COUNT`, ordre des pistes et invariants de référence de la racine d’agrégat |
+| `domain/models/composition/Project.ts` | `Project`, `ProjectId`, factory, reconstitution, `MAX_TRACK_COUNT`, ordre des pistes, collection de scores et validations de référence, dont `SCORE_NOT_FOUND`, `SCORE_IN_USE` et `DUPLICATE_SCORE_ID` |
 | `domain/models/composition/Track.ts` | `Track`, `TrackId`, factory et invariants propres à une piste |
-| `domain/models/composition/Pattern.ts` | `Pattern`, `PatternId`, références `PatternContentRef`, factory et invariants propres au contenu musical local |
-| `domain/models/composition/Clip.ts` | `Clip`, `ClipId`, références de pattern et de piste, limite de répétitions et invariants de placement |
+| `domain/models/composition/Score.ts` | `Score`, `ScoreId`, références `ScoreContentRef`, factory, `ScoreValidationError` et invariants propres au contenu musical local |
+| `domain/models/composition/Clip.ts` | `Clip`, `ClipId`, références obligatoires de score et de piste, limite de répétitions et invariants de placement, dont `INVALID_SCORE_ID` |
 | `domain/models/composition/Note.ts` | `Note`, `NoteId`, factory et invariants d'une note isolée |
 | `domain/models/composition/Velocity.ts` | `Velocity`, bornes et validation |
 | `domain/models/time/Tick.ts` | `Tick` et `MAX_TICK` |
@@ -1787,11 +1868,11 @@ src/
 | `domain/models/pitch/RootNote.ts` | `RootNote`, `NoteLetter`, `Accidental` et cohérence de la classe chromatique |
 | `domain/models/harmony/Chord.ts` | `Chord` et catalogue des types d'accord |
 | `domain/models/harmony/Scale.ts` | `Scale` et catalogue des types de gamme |
-| `domain/models/harmony/Harmony.ts` | `Harmony`, union entre accord et gamme et modes `ROOT` ou `DEGREE` |
+| `domain/models/harmony/Harmony.ts` | `Harmony`, union exclusive entre accord et gamme avec une `RootNote` explicite |
 | `domain/models/harmony/HarmonyChange.ts` | `HarmonyChange`, son identité et sa position locale persistante |
 | `domain/models/instrument/Instrument.ts` | `Instrument` public et `InstrumentId` |
-| `domain/operations/composition/ProjectTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Project` via `Result`, y compris celles qui transforment principalement ses pistes, ses patterns ou ses clips |
-| `domain/operations/composition/PatternTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Pattern` via `Result`, notamment celles qui transforment ses notes, sa durée et ses chronologies |
+| `domain/operations/composition/ProjectTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Project` via `Result`, y compris `addScore`, `duplicateClips`, `makeClipIndependent` et les transformations des pistes, scores ou clips intégrées à l’agrégat |
+| `domain/operations/composition/ScoreTransformations.ts` | Toutes les commandes et fonctions pures retournant un nouveau `Score` via `Result`, notamment `duplicateScore` et les transformations de ses notes, de sa durée et de ses chronologies |
 | `domain/operations/composition/NoteOverlap.ts` | `NoteOverlap`, `NoteOverlapError`, `NoteOverlapResolution`, détection et résolution `SLICE` ou `MERGE` |
 | `domain/operations/time/MeterTimeline.ts` | Ordonnancement des `MeterChange`, résolution de la métrique active et production des `MeterSection` dérivées |
 | `domain/operations/harmony/HarmonyTimeline.ts` | Ordonnancement des `HarmonyChange`, résolution de l'harmonie active et production des `HarmonySection` dérivées |
@@ -1799,8 +1880,8 @@ src/
 | `application/ProjectState.ts` | `ProjectState`, `TransientProject`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
 | `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
-| `application/EditorState.ts` | `EditorState`, `PatternEditorState`, positions mémorisées, piste d’écoute optionnelle et contexte d’édition |
-| `application/Selection.ts` | `PatternContentSelection`, `ClipSelection` ; réutilise les références du domaine |
+| `application/EditorState.ts` | `EditorState`, `ScoreEditorState`, positions mémorisées, piste d’écoute optionnelle et contexte d’édition |
+| `application/Selection.ts` | `ScoreContentSelection`, `ClipSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution` et quantification des intentions dans leur référentiel |
 | `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
 | `application/use-cases/PlaybackService.ts` | Transport, préparation et planification ; unique appelant de `AudioEngine.prepareInstruments`, propriétaire de `PlaybackSessionKind`, `ActiveTransport`, `TransportAnchor`, requêtes en attente, résultats publics et handles de préécoute ; importe et réexpose `StopMode` |
@@ -1814,12 +1895,12 @@ src/
 | `infrastructure/audio/engine/PlaybackSession.ts` | État technique transitoire et propriété des contextes d’une session |
 | `infrastructure/audio/engine/PlaybackContext.ts` | Chaîne audio isolée, commandes programmées, voix et cycle `SCHEDULED → ACTIVE → DRAINING → DISPOSED` |
 | `infrastructure/audio/engine/InstrumentInstance.ts` | Adaptation d’une instance `smplr` au cycle de vie d’un contexte |
-| `infrastructure/persistence/JsonProjectFileStore.ts` | Adaptateur, `ProjectFileData`, `ProjectData`, encodage et reconstitution du format versionné |
+| `infrastructure/persistence/JsonProjectFileStore.ts` | Adaptateur, `ProjectFileData`, `ProjectData`, `ScoreData`, `ClipData`, encodage et reconstitution du format versionné |
 | `presentation/components/` | Rendu de la grille, du piano roll, des décisions et des états de chargement |
 | `presentation/stores/` | État strictement visuel et adaptation réactive de l’état applicatif, sans duplication du document ni des tâches |
 
 Les modules de `models/` décrivent des données immuables et empêchent leur construction dans un état invalide. Les modules de `operations/` ne les modifient jamais en place : une transformation reçoit un modèle valide et retourne une nouvelle version avec `Result`, tandis qu'une timeline ou une analyse produit uniquement une vue dérivée. Le terme « transformation » décrit donc un changement métier, et non une mutation de l'objet reçu.
 
-Les commandes et erreurs propres à une transformation restent dans son module. Les erreurs de création restent auprès du modèle qui protège l'invariant correspondant. `MeterSection`, `HarmonySection` et les segments de rôle sont dérivés par les opérations et ne sont pas persistés. `Clip` demeure possédé directement par `Project` malgré son fichier distinct. Enfin, `PatternContentRef` reste une adresse typée d'entité locale et non une sélection ; `Selection.ts` l'emploie sans déplacer sa propriété hors du domaine.
+Les commandes et erreurs propres à une transformation restent dans son module. Les erreurs de création restent auprès du modèle qui protège l'invariant correspondant. `MeterSection`, `HarmonySection` et les segments de rôle sont dérivés par les opérations et ne sont pas persistés. `Clip` demeure possédé directement par `Project` malgré son fichier distinct. Enfin, `ScoreContentRef` reste une adresse typée d'entité locale et non une sélection ; `Selection.ts` l'emploie sans déplacer sa propriété hors du domaine.
 
 Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` demande à `PlaybackService` la coordination sonore des publications ; `ProjectFileService` coordonne ses publications avec ces services. `PlaybackService` ne dépend pas en retour d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent l’état applicatif et conservent les détails d’interface ; ils ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
