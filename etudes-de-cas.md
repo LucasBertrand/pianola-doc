@@ -574,7 +574,7 @@ Une transposition collective puis un déplacement de clip produisent deux versio
 
 Une sauvegarde pendant un nouveau geste écrit seulement le dernier projet validé, dans une enveloppe `schemaVersion: 1`. Le brouillon, les têtes et l’historique en sont absents. Une édition validée pendant cette écriture demeure une modification non sauvegardée.
 
-Rouvrir ce fichier reconstitue et valide les pistes ordonnées, les scores et les références `scoreId` / `trackId` de chaque clip. Les scores ne contiennent aucun instrument ; les `instrumentId` des pistes sont contrôlés auprès du catalogue. La piste d’écoute du piano roll n’est pas sauvegardée. Si tous les instruments sont connus, le remplacement ferme les anciennes auditions, remet la tête globale à `0` et vide l’historique. Un instrument absent, un format invalide ou une version non prise en charge laisse au contraire le document courant intact.
+Rouvrir ce fichier reconstitue et valide les pistes ordonnées, les scores et les références `scoreId` / `trackId` de chaque clip. Les scores ne contiennent aucun instrument ; les `instrumentId` des pistes sont contrôlés auprès du catalogue. Aucun des trois états d’éditeur n’est sauvegardé. Si tous les instruments sont connus, le remplacement ferme les anciennes auditions et l’ancien `ScoreEditorState`, crée un nouvel `ArrangementEditorState` avec sa tête à `0` et sa sélection vide, puis vide l’historique. Le `GlobalEditorState`, toujours présent, reste inchangé. Un instrument absent, un format invalide ou une version non prise en charge laisse au contraire le document et les trois états courants intacts.
 
 Si `clip-a` et `clip-b` référencent `score-a`, tandis que `clip-c` référence sa copie indépendante `score-b`, le fichier contient exactement deux entrées dans `scores` pour ces contenus. Après réouverture, modifier `score-a` affecte encore `clip-a` et `clip-b`, jamais `clip-c`. Même si les deux scores contiennent les mêmes valeurs musicales, le décodage ne les fusionne pas. Un troisième score sans clip reste également sauvegardé et éditable.
 
@@ -596,7 +596,7 @@ Une piste vide `track-vibes` sert à jouer `Esquisse` dans une session `SCORE`. 
 
 ## Cas 35 — Éditer et écouter un score sans clip
 
-Un projet contient un score `Esquisse`, sans piste ni clip. Ouvrir ce score permet de modifier ses notes et de déplacer sa tête locale. `playScore()` et `previewPitch()` retournent `NO_AUDITION_TRACK` ; aucun instrument arbitraire n’est utilisé.
+Un projet contient un score `Esquisse`, sans piste ni clip. Son `ArrangementEditorState` existe malgré l’absence de blocs ; son `GlobalEditorState` était déjà présent avant l’ouverture du projet. Ouvrir ce score crée séparément un `ScoreEditorState`, permet de modifier ses notes et de déplacer sa tête locale. `playScore()` et `previewPitch()` retournent `NO_AUDITION_TRACK` ; aucun instrument arbitraire n’est utilisé.
 
 L’utilisateur crée une piste vide `track-piano`, puis appelle `setAuditionTrack(trackPianoId)`. Le service prépare le piano et retourne `ok("APPLIED")` lorsque le choix devient effectif. `ScoreEditorState.auditionTrackId` référence alors cette piste. `playScore()` et les préécoutes peuvent jouer `Esquisse` au piano, sans créer de clip.
 

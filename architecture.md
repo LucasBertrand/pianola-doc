@@ -608,13 +608,13 @@ Les `Instrument` sont extérieurs à cet agrégat et sont fournis par un catalog
 
 La couche applicative traduit les intentions de l'utilisateur en opérations sur le domaine et orchestre les interactions avec l'extérieur à travers des ports.
 
-Elle possède l'état transitoire de l'éditeur et les états d'orchestration nécessaires à la lecture. Elle ne contient ni configuration `smplr`, ni banque d'échantillons, ni `AudioNode`, ni détail de stockage.
+Elle possède les états transitoires des trois éditeurs et les états d'orchestration nécessaires à la lecture. Elle ne contient ni configuration `smplr`, ni banque d'échantillons, ni `AudioNode`, ni détail de stockage.
 
-### État de l'éditeur
+### États des éditeurs
 
 #### Sélections
 
-Deux sélections indépendantes correspondent à deux espaces d'édition distincts.
+Deux sélections indépendantes correspondent aux deux éditeurs spécialisés.
 
 ```ts
 type ScoreContentRef =
@@ -633,9 +633,15 @@ interface ClipSelection {
 
 `ScoreContentSelection` contient les notes et changements du score source actuellement édité. Elle est portée par le même `ScoreEditorState` que l'identité et la tête de lecture locale du score. Elle est vidée lorsque ce score change ou est fermé.
 
-`ClipSelection` contient les clips sélectionnés dans la grille de composition. Elle sert notamment à leur déplacement temporel ou vertical, à leur duplication et à leur suppression. Dupliquer cette sélection crée par défaut de nouveaux clips référençant les mêmes scores ; l’intention explicite de duplication indépendante crée les nouveaux scores décrits dans le domaine.
+`ClipSelection` contient les clips sélectionnés dans l’éditeur d’arrangement. Elle est portée par `ArrangementEditorState` et sert notamment au déplacement temporel ou vertical des clips, à leur duplication et à leur suppression. Dupliquer cette sélection crée par défaut de nouveaux clips référençant les mêmes scores ; l’intention explicite de duplication indépendante crée les nouveaux scores décrits dans le domaine.
 
 ```ts
+interface ArrangementEditorState {
+  playhead: Tick;
+  gridResolution: GridResolution;
+  selection: ClipSelection;
+}
+
 interface ScoreEditorState {
   scoreId: ScoreId;
   auditionTrackId?: TrackId;
@@ -644,17 +650,26 @@ interface ScoreEditorState {
   selection: ScoreContentSelection;
 }
 
-interface EditorState {
-  projectPlayhead: Tick;
-  gridResolution: GridResolution;
-  scoreEditor?: ScoreEditorState;
-  clipSelection: ClipSelection;
+interface GlobalEditorState {
+  // État propre à la vue globale, indépendante du projet ouvert.
 }
 ```
 
-Le score source édité et la sélection de clips expriment des faits différents. Un geste d'interface peut les mettre à jour ensemble, mais aucun lien implicite n'est imposé entre eux. Regrouper `scoreId`, la tête locale et la sélection empêche qu'un état local subsiste sans score édité.
+Ces trois états sont indépendants et possèdent chacun leur fichier. `GlobalEditorState` appartient à la vue globale toujours présente, quel que soit le statut de l’application. Il ne contient ni `ArrangementEditorState` ni `ScoreEditorState`. Ses propriétés concrètes seront déclarées lorsque cette vue aura des données applicatives à conserver ; les détails purement visuels restent dans la présentation.
 
-Le changement de `scoreId` d’un clip n’affecte pas automatiquement le `ScoreEditorState` existant : celui-ci reste attaché au score ouvert. Ouvrir explicitement la copie crée l’état local du nouveau score et vide la sélection locale ; aucune référence de note ou de changement de l’original n’est réutilisée dans la copie. Une sélection de clips conserve en revanche l’identité d’un clip rendu indépendant puisqu’il garde son `ClipId`.
+`ArrangementEditorState` existe lorsqu’un projet est ouvert dans la grille. Il possède la tête globale de la composition, la résolution de cette grille et la sélection de clips. Son champ `playhead` est global par son propriétaire : aucun préfixe `project` redondant n’est nécessaire.
+
+`ScoreEditorState` existe lorsqu’un score est ouvert dans le piano roll. Regrouper `scoreId`, la tête locale, la résolution, la piste d’écoute et la sélection empêche qu’un état local subsiste sans score édité. Il peut cibler un score sans clip, mais toujours un score du projet ouvert.
+
+Le score source édité et la sélection de clips expriment des faits différents. Un geste d'interface peut mettre à jour `ScoreEditorState` et `ArrangementEditorState` dans une même transaction, sans imposer de lien implicite entre leurs sélections. Le point d’assemblage applicatif conserve séparément l’unique `GlobalEditorState`, l’éventuel `ArrangementEditorState` et l’éventuel `ScoreEditorState` ; aucun quatrième modèle d’éditeur ne les enveloppe.
+
+| Situation | `GlobalEditorState` | `ArrangementEditorState` | `ScoreEditorState` |
+| --- | --- | --- | --- |
+| Aucun projet ouvert | Présent | Absent | Absent |
+| Projet ouvert | Présent | Présent | Absent |
+| Score ouvert dans le piano roll | Présent | Présent | Présent |
+
+Le changement de `scoreId` d’un clip n’affecte pas automatiquement le `ScoreEditorState` existant : celui-ci reste attaché au score ouvert. Ouvrir explicitement la copie remplace l’état local par celui du nouveau score et vide la sélection locale ; aucune référence de note ou de changement de l’original n’est réutilisée dans la copie. `ArrangementEditorState.selection` conserve en revanche l’identité d’un clip rendu indépendant puisqu’il garde son `ClipId`.
 
 La couche applicative choisit explicitement la sélection correspondant à l'action, résout ses références et transmet au domaine les identifiants concernés. Le domaine ne connaît jamais la notion de sélection.
 
@@ -682,10 +697,10 @@ Les deux espaces possèdent des réglages indépendants :
 
 | Espace | État | Valeur initiale |
 | --- | --- | ---: |
-| Grille globale | `EditorState.gridResolution` | `960` ticks, soit une noire |
+| Arrangement | `ArrangementEditorState.gridResolution` | `960` ticks, soit une noire |
 | Piano roll | `ScoreEditorState.gridResolution` | `240` ticks, soit une double croche |
 
-La résolution globale sert au déplacement et au redimensionnement des clips ainsi qu’au positionnement quantifié de la tête globale. Elle travaille dans le référentiel global et ne dépend d’aucune métrique locale. Pour le redimensionnement d’un clip, la position quantifiée du bord est ensuite convertie en un `repeatCount` entier ; le bord effectif s’aligne donc sur la frontière de répétition complète la plus proche.
+La résolution de l’arrangement sert au déplacement et au redimensionnement des clips ainsi qu’au positionnement quantifié de sa tête. Elle travaille dans le référentiel global du projet et ne dépend d’aucune métrique locale. Pour le redimensionnement d’un clip, la position quantifiée du bord est ensuite convertie en un `repeatCount` entier ; le bord effectif s’aligne donc sur la frontière de répétition complète la plus proche.
 
 La résolution locale sert à créer, déplacer et redimensionner les notes, à déplacer les changements de métrique ou d’harmonie et à positionner la tête locale. Elle travaille dans le référentiel du score.
 
@@ -695,7 +710,7 @@ Les deux instances utilisent le même Value Object et la même unité `Tick`, sa
 
 #### Têtes de lecture
 
-Les positions mémorisées `EditorState.projectPlayhead` et `ScoreEditorState.playhead` sont des ticks applicatifs, initialisés à `0` et non sauvegardés dans le projet. Elles déterminent le départ d’une portée inactive.
+Les positions mémorisées `ArrangementEditorState.playhead` et `ScoreEditorState.playhead` sont des ticks applicatifs, initialisés à `0` et non sauvegardés dans le projet. Elles déterminent le départ d’une portée inactive.
 
 Pendant la lecture, `PlaybackService` est la seule autorité sur la position de la portée active. Il la dérive de l’horloge de session et d’un ancrage temps/tick ; il ne conserve pas un second compteur `playhead` avançant indépendamment. La tête affichée du projet ou du même score est une projection de cette position. À l’arrêt, au remplacement ou à la fin naturelle, le dernier tick atteint est mémorisé dans l’état de l’éditeur correspondant, si cet espace existe encore.
 
@@ -703,7 +718,7 @@ Pendant la lecture, `PlaybackService` est la seule autorité sur la position de 
 | --- | --- |
 | Transport `PROJECT` actif | Position globale dérivée du transport |
 | Transport `SCORE` actif sur le score ouvert | Position locale dérivée du transport |
-| Portée inactive ou autre score ouvert | Position mémorisée dans `EditorState` ou `ScoreEditorState` |
+| Portée inactive ou autre score ouvert | Position mémorisée dans `ArrangementEditorState` ou `ScoreEditorState` |
 
 L’ancrage interne conserve la précision temporelle nécessaire, y compris une fraction de tick. La position publique en `Tick` est le tick entier atteint (partie entière, bornée par la portée) ; elle n’est pas aimantée à `GridResolution`. Un changement de tempo prend effet à la borne acceptée de replanification : jusqu’à cette borne, l’ancien ancrage reste utilisé ; à partir d’elle, le nouvel ancrage conserve exactement la continuité de position. Ces données d’exécution ne constituent pas une chronologie persistante de tempo.
 
@@ -891,7 +906,7 @@ La copie d’un score et la création ou la réaffectation de son clip constitue
 `EditService` expose les cas d’usage d’édition et leur cycle commun. Il :
 
 - reçoit des intentions sémantiques, jamais des événements bruts de pointeur ou de clavier ;
-- choisit la sélection adaptée à la portée de l'action ;
+- choisit `ArrangementEditorState.selection` ou `ScoreEditorState.selection` selon la portée de l'action ;
 - résout les références vers les entités du projet ;
 - applique si nécessaire la quantification ;
 - construit et compose les Value Objects par leurs `Result` sans forcer une valeur invalide ;
@@ -983,7 +998,9 @@ L’ajout initial à la grille crée un clip référençant le score. Cette cré
 
 `ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne la publication avec `EditService` et `PlaybackService`. Cette vérification confirme seulement qu’un `InstrumentId` est disponible dans le catalogue : `ProjectFileService` ne prépare ni ne charge aucune banque.
 
-Une ouverture valide remplace le document complet, vide l’historique et les sélections et initialise la tête globale à `0`, sans score ouvert. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
+Une ouverture valide remplace le document complet, crée un nouvel `ArrangementEditorState` avec sa tête à `0`, sa résolution initiale et une sélection vide, puis ferme l’éventuel `ScoreEditorState`. `GlobalEditorState` reste présent et n’est pas recréé. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
+
+Fermer le projet retire `ArrangementEditorState` et `ScoreEditorState`, après avoir arrêté les auditions et traité le document modifié selon l’interaction retenue. `GlobalEditorState` demeure disponible avant l’ouverture, pendant l’utilisation et après la fermeture d’un projet.
 
 Le fichier est intégralement lu et validé avant de fermer l’ancien document. Une erreur ou l’annulation du choix de fichier conserve le projet, son historique et l’audio existants. Un `InstrumentId` inconnu produit `INSTRUMENT_UNAVAILABLE`, erreur applicative structurée contenant les identifiants concernés ; aucun remplacement sonore implicite n’est appliqué. Les versions de fichier non prises en charge sont refusées explicitement.
 
@@ -1210,13 +1227,13 @@ Sans transport actif, un seek valide déplace immédiatement la tête immobile. 
 
 #### Lecture du projet
 
-`playProject()` capture le tick global dérivé si le transport `PROJECT` est actif, sinon `EditorState.projectPlayhead`. Si cette tête se trouve à la fin structurelle du projet, l’appel la replace au tick `0` avant de préparer la lecture. Pour un projet vide, il laisse la tête à `0`, n’ouvre aucune session et sa promesse se résout normalement.
+`playProject()` exige un `ArrangementEditorState`. Il capture le tick global dérivé si le transport `PROJECT` est actif, sinon `ArrangementEditorState.playhead`. Si cette tête se trouve à la fin structurelle du projet, l’appel la replace au tick `0` avant de préparer la lecture. Pour un projet vide, il laisse la tête à `0`, n’ouvre aucune session et sa promesse se résout normalement.
 
 `playProject(tick)` valide explicitement le tick dans `[0, project.duration]`. Il positionne une tête inactive ; sur un transport `PROJECT` actif, la destination reste provisoire jusqu’au remplacement réussi. Si `tick === project.duration`, aucune session n’est ouverte et un transport `PROJECT` actif est terminé à cette destination ; si `tick > project.duration`, l’appel retourne une erreur de validation.
 
 #### Lecture du score édité
 
-`playScore()` exige un `scoreEditor` avec une piste d’écoute existante et capture son `scoreId` et son `auditionTrackId` comme `trackId` de session. Il utilise le tick local dérivé si ce même score est en cours de lecture, sinon la position mémorisée `scoreEditor.playhead`. Si cette tête se trouve à `score.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un score possède toujours une durée strictement positive.
+`playScore()` exige un `ScoreEditorState` avec une piste d’écoute existante et capture son `scoreId` et son `auditionTrackId` comme `trackId` de session. Il utilise le tick local dérivé si ce même score est en cours de lecture, sinon la position mémorisée `ScoreEditorState.playhead`. Si cette tête se trouve à `score.duration`, l’appel la replace au tick `0` avant de préparer la lecture. Un score possède toujours une durée strictement positive.
 
 `playScore(tick)` valide explicitement le tick dans `[0, score.duration]`. Il positionne une tête inactive ; sur le transport du même score actif, la destination reste provisoire jusqu’au remplacement réussi. Si `tick === score.duration`, aucune session n’est ouverte et un transport du même score actif est terminé à cette destination ; si `tick > score.duration`, l’appel retourne une erreur de validation.
 
@@ -1280,7 +1297,7 @@ Ces effets sont coordonnés avec la publication du nouveau projet et ne se produ
 
 #### Préécoutes du piano roll
 
-Les deux préécoutes utilisent l’instrument de `scoreEditor.auditionTrackId`, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
+Les deux préécoutes utilisent l’instrument de `ScoreEditorState.auditionTrackId`, ne déplacent aucune tête de lecture et peuvent coexister avec le transport actif. Elles n’exposent aucun identifiant de session ou de contexte audio à la présentation.
 
 ##### Préécoute d’une hauteur
 
@@ -1554,11 +1571,15 @@ Le port ne reçoit ni état d’éditeur ni projet transitoire. Les chemins, dia
 
 ## Présentation
 
-La présentation offre une grille temporelle bidimensionnelle qui affiche directement les `Clip` persistants.
+La présentation distingue une vue globale toujours présente, un éditeur d’arrangement pour le projet ouvert et un éditeur de score pour le contenu local. Leurs états applicatifs suivent la même séparation et ne sont pas imbriqués.
 
-### Grille globale
+### Éditeur global
 
-L'axe horizontal représente des `Tick` depuis le début du projet. Il est commun à tous les scores et continu sur toute la composition. L’axe vertical présente les pistes dans l’ordre de `Project.tracks`, avec leur nom et leur instrument.
+L’éditeur global existe pendant tout le cycle de l’application et observe `GlobalEditorState`. Il fournit le cadre commun dans lequel l’utilisateur peut ouvrir ou fermer un projet, puis accéder aux éditeurs spécialisés. Il ne possède ni la sélection des clips, ni la tête de l’arrangement, ni le score ouvert. Les états d’affichage sans portée applicative restent dans les stores de présentation.
+
+### Éditeur d’arrangement
+
+L’éditeur d’arrangement observe `ArrangementEditorState` et affiche une grille temporelle bidimensionnelle contenant directement les `Clip` persistants. L'axe horizontal représente des `Tick` depuis le début du projet. Il est commun à tous les scores et continu sur toute la composition. L’axe vertical présente les pistes dans l’ordre de `Project.tracks`, avec leur nom et leur instrument.
 
 ```mermaid
 block-beta
@@ -1579,7 +1600,7 @@ Dans cette représentation :
 | Longueur d'un bloc | `score.duration * clip.repeatCount`, convertie par le tempo du projet |
 | Position verticale | Rang de la piste référencée par `Clip.trackId` dans `Project.tracks` |
 | Blocs chevauchants, sur une même piste ou non | Clips lus simultanément |
-| Tête globale verticale | Position dérivée du transport actif, sinon `EditorState.projectPlayhead` |
+| Tête globale verticale | Position dérivée du transport actif, sinon `ArrangementEditorState.playhead` |
 
 Tous les clips d’une piste utilisent son instrument. Déplacer un clip verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
@@ -1587,9 +1608,9 @@ La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le
 
 Les actions de duplication distinguent clairement le partage du score et la création d’une copie indépendante. Le nombre de clips utilisant un score peut être dérivé de leurs `scoreId` pour informer l’utilisateur de la portée d’une édition. Cette information n’est ni un champ du document ni un mode d’édition : modifier le score ouvert modifie toujours ce score et tous les clips qui le référencent.
 
-### Piano roll et collisions
+### Éditeur de score
 
-Le piano roll peut afficher simultanément des notes de hauteurs différentes. Après quantification d'une création ou d'une transformation, une collision n'existe que si deux notes de même hauteur se chevauchent avec une durée strictement positive.
+L’éditeur de score observe `ScoreEditorState` et présente le contenu local du score ouvert dans un piano roll. Il peut afficher simultanément des notes de hauteurs différentes. Après quantification d'une création ou d'une transformation, une collision n'existe que si deux notes de même hauteur se chevauchent avec une durée strictement positive.
 
 Lorsque `commitEdit` retourne `ok("DECISION_REQUIRED")`, la présentation lit `EditSession.phase.pendingDecision` après discrimination sur `phase.status`. Pour la variante `NOTE_OVERLAP`, elle utilise `details.overlaps` et affiche les choix `SLICE` et `MERGE`. Aucun mode n'est choisi par défaut ni mémorisé implicitement. La réponse appelle `submitEditDecision` avec l’identité de la décision et le choix explicite ; l’éditeur observe ensuite le projet publié si la validation réussit.
 
@@ -1747,7 +1768,7 @@ interface ProjectFileData {
 
 Un score est sérialisé une seule fois dans `scores`, qu’il soit référencé par zéro, un ou plusieurs clips. Une copie indépendante occupe une seconde entrée avec un autre `id`, même si son contenu est identique. Il n’existe aucun contenu musical inline, champ de liaison optionnel, indicateur de partage ni déduplication par valeur à la lecture. L’ouverture conserve donc à la fois le partage volontaire et l’indépendance des copies ; elle ne génère pas de nouveaux identifiants.
 
-Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmoniques calculés, ni sélection, ni grille d’édition, ni piste d’écoute du piano roll, ni tête, ni historique, ni ressources audio. Le schéma initial `1` décrit directement ce modèle de scores référencés et de pistes instrumentales ; toute autre version est refusée. Une enveloppe de version `1` dont les champs ne respectent pas cette structure est également refusée, sans alias de champs ni conversion implicite.
+Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmoniques calculés, ni `GlobalEditorState`, ni `ArrangementEditorState`, ni `ScoreEditorState`, ni sélection, ni grille d’édition, ni piste d’écoute du piano roll, ni tête, ni historique, ni ressources audio. Le schéma initial `1` décrit directement ce modèle de scores référencés et de pistes instrumentales ; toute autre version est refusée. Une enveloppe de version `1` dont les champs ne respectent pas cette structure est également refusée, sans alias de champs ni conversion implicite.
 
 Le décodage vérifie l’enveloppe et la forme des données, puis reconstitue l’agrégat avec les mêmes factories et validations que la création interactive. Une incohérence métier produit une erreur de validation sans objet partiellement valide. Un problème de syntaxe, de version ou d’accès reste distinct. `ProjectFileService` contrôle ensuite le catalogue avant de publier le document.
 
@@ -1816,7 +1837,9 @@ src/
 │           ├── HarmonyTimeline.ts
 │           └── NoteRoleAnalysis.ts
 ├── application/
-│   ├── EditorState.ts
+│   ├── GlobalEditorState.ts
+│   ├── ArrangementEditorState.ts
+│   ├── ScoreEditorState.ts
 │   ├── ProjectState.ts
 │   ├── EditSession.ts
 │   ├── ProjectHistory.ts
@@ -1880,7 +1903,9 @@ src/
 | `application/ProjectState.ts` | `ProjectState`, `TransientProject`, métadonnées observables de préparation et résolution dérivée d’`effectiveProject` ; aucune promesse ni tâche asynchrone |
 | `application/EditSession.ts` | `EditSession`, `EditSessionPhase`, conteneurs génériques `PendingEditDecision` et `EditDecision`, unions `EditDecisionRequest` et `SubmittedEditDecision`, identifiants et `PendingEditPreparation` descriptif |
 | `application/ProjectHistory.ts` | Versions validées, bornage et parcours de l’historique, sans orchestration audio ni persistance |
-| `application/EditorState.ts` | `EditorState`, `ScoreEditorState`, positions mémorisées, piste d’écoute optionnelle et contexte d’édition |
+| `application/GlobalEditorState.ts` | `GlobalEditorState` et état applicatif propre à la vue globale toujours présente ; ne possède aucun état d’un éditeur spécialisé |
+| `application/ArrangementEditorState.ts` | `ArrangementEditorState`, tête globale du projet, résolution de l’arrangement et `ClipSelection` |
+| `application/ScoreEditorState.ts` | `ScoreEditorState`, score ouvert, tête locale, résolution du piano roll, piste d’écoute optionnelle et `ScoreContentSelection` |
 | `application/Selection.ts` | `ScoreContentSelection`, `ClipSelection` ; réutilise les références du domaine |
 | `application/Grid.ts` | `GridResolution` et quantification des intentions dans leur référentiel |
 | `application/use-cases/EditService.ts` | `EditIntent`, union et composition `ProjectEditCommand`, tâches privées de préparation, cycle d’édition, publication, undo/redo, `EditOutcome`, validations et erreurs applicatives |
@@ -1903,4 +1928,4 @@ Les modules de `models/` décrivent des données immuables et empêchent leur co
 
 Les commandes et erreurs propres à une transformation restent dans son module. Les erreurs de création restent auprès du modèle qui protège l'invariant correspondant. `MeterSection`, `HarmonySection` et les segments de rôle sont dérivés par les opérations et ne sont pas persistés. `Clip` demeure possédé directement par `Project` malgré son fichier distinct. Enfin, `ScoreContentRef` reste une adresse typée d'entité locale et non une sélection ; `Selection.ts` l'emploie sans déplacer sa propriété hors du domaine.
 
-Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` demande à `PlaybackService` la coordination sonore des publications ; `ProjectFileService` coordonne ses publications avec ces services. `PlaybackService` ne dépend pas en retour d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent l’état applicatif et conservent les détails d’interface ; ils ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
+Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` demande à `PlaybackService` la coordination sonore des publications ; `ProjectFileService` coordonne ses publications avec ces services. `PlaybackService` ne dépend pas en retour d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent séparément `GlobalEditorState`, `ArrangementEditorState` et `ScoreEditorState` et conservent les détails d’interface ; ils ne les regroupent pas dans un autre modèle d’éditeur et ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
