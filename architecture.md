@@ -719,11 +719,19 @@ La résolution de l’arrangement sert au déplacement et au redimensionnement d
 
 La résolution locale sert à créer, déplacer et redimensionner les notes, à déplacer les changements de métrique ou d’harmonie et à positionner la tête locale. Elle travaille dans le référentiel du score.
 
-Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre. La création d’un score ajoute son réglage avec `240` ticks ; une duplication indépendante crée également un réglage distinct, initialisé avec la résolution du score source. Supprimer un score retire son réglage lors de la publication de la même édition applicative.
+Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre.
 
-Les deux espaces utilisent le même Value Object et la même unité `Tick`, sans pour autant partager leur valeur. `EditService` résout la grille depuis `ProjectState.settings` selon l’éditeur concerné ; les états d’éditeur ne dupliquent pas cette configuration. Une modification de résolution met à jour `Settings` directement, sans `ProjectEditCommand`, projet transitoire, replanification audio ou entrée dans `ProjectHistory`. Elle marque néanmoins le fichier comme modifié afin d’être sauvegardée.
+`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `effectiveProject`. Pendant un geste, un score présent seulement dans `transientProject` n’ajoute aucune entrée provisoire dans `Settings` :
 
-`Settings` est validé par l’application : la résolution de l’arrangement est obligatoire, chaque `ScoreId` courant possède exactement un réglage et aucun réglage ne cible un score absent. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
+- une création ordinaire utilise la résolution locale par défaut de `240` ticks ;
+- une duplication indépendante utilise la résolution du score source capturée dans la commande ;
+- ces valeurs sont résolues comme des données du geste et ne modifient pas les réglages persistants.
+
+Au commit, la publication ajoute atomiquement au nouveau `project` l’entrée de réglage correspondante : `240` ticks pour une création ordinaire ou la résolution capturée du score source pour une duplication indépendante. L’annulation ne laisse donc aucun réglage orphelin. Supprimer un score retire son réglage lors de la même publication. Une sauvegarde effectuée pendant le geste capture le `project` validé et les seuls réglages qui lui correspondent ; elle ignore le score transitoire et sa résolution de geste.
+
+Les deux espaces utilisent le même Value Object et la même unité `Tick`, sans pour autant partager leur valeur. `EditService` résout la grille depuis `ProjectState.settings` selon l’éditeur concerné, puis applique la règle ci-dessus lorsqu’un score n’existe que dans le brouillon ; les états d’éditeur ne dupliquent pas cette configuration. Une modification persistante de résolution cible uniquement un score du `project` validé. Elle met à jour `Settings` directement, sans `ProjectEditCommand`, projet transitoire, replanification audio ou entrée dans `ProjectHistory`, et marque le fichier comme modifié afin d’être sauvegardée.
+
+`Settings` est validé par l’application relativement au `project` : la résolution de l’arrangement est obligatoire, chaque `ScoreId` du projet validé possède exactement un réglage et aucun réglage ne cible un score absent de ce projet. Le `transientProject` n’entre pas dans cet invariant. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
 
 #### Têtes de lecture
 
@@ -1845,18 +1853,7 @@ Les grandes responsabilités et les règles déjà actées ci-dessus constituent
 
 ### Points bloquants
 
-#### Q1 — Réglages et projet transitoire
-
-Voir [GridResolution](#gridresolution), [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [ProjectFileService](#projectfileservice).
-
-- À quelle collection de scores correspond exactement `ProjectState.settings` pendant un geste : celle de `project` ou celle d’`effectiveProject` ?
-- Comment un score créé ou dupliqué dans le brouillon obtient-il une résolution de grille avant son commit ? Où cette configuration provisoire est-elle portée ?
-- Comment sauvegarder le dernier projet validé avec des réglages cohérents pendant qu’un brouillon ajoute ou supprime des scores, sans violer la correspondance exacte des `ScoreId` ?
-- Quel est le devenir des réglages provisoires au commit et à l’annulation ? Que devient une modification de résolution effectuée pendant le geste, notamment sur un score provisoire ou provisoirement supprimé ?
-
-Cas à résoudre : A appartient au projet validé, B est créé dans le brouillon et une sauvegarde intervient avant le commit. Le fichier doit conserver exactement les réglages correspondant aux scores qu’il contient.
-
-#### Q2 — Données candidates et composition transactionnelle
+#### Q1 — Données candidates et composition transactionnelle
 
 Voir [Frontière de l’agrégat](#frontière-de-lagrégat), [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [EditService](#editservice).
 
@@ -1868,7 +1865,7 @@ Voir [Frontière de l’agrégat](#frontière-de-lagrégat), [Intention d’édi
 
 Cas à résoudre : deux notes de même hauteur échangent leurs positions sans collision finale ; une exécution validante note par note ne doit pas décider implicitement de la validité de la transaction.
 
-#### Q3 — Publication du document et plan audio accepté
+#### Q2 — Publication du document et plan audio accepté
 
 Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel), [Préparation sonore des éditions](#préparation-sonore-des-éditions), [Sessions et concurrence](#sessions-et-concurrence) et [Éditeur d’arrangement](#éditeur-darrangement).
 
@@ -1880,7 +1877,7 @@ Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modifi
 
 Cas à résoudre : un changement de tempo est accepté pour 5,04 s ; un second changement arrive avant cette borne. La conversion temps/tick doit rester définie avant, entre et après les bornes conservées.
 
-#### Q4 — État de réconciliation exactement à la borne
+#### Q3 — État de réconciliation exactement à la borne
 
 Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel) et [AudioEngine](#audioengine).
 
@@ -1893,7 +1890,7 @@ Les études de cas doivent distinguer explicitement un événement strictement a
 
 ### Contrats importants à compléter
 
-#### Q5 — Transitions complètes du cycle d’édition
+#### Q4 — Transitions complètes du cycle d’édition
 
 Voir [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [Historique du projet](#historique-du-projet).
 
@@ -1903,7 +1900,7 @@ Voir [Intention d’édition et projet transitoire](#intention-dédition-et-proj
 - Que reste-t-il observable pendant cette annulation et à partir de quand une nouvelle édition est-elle autorisée ?
 - Quelle table exhaustive « état + événement → résultat + nouvel état + effets » couvre les éditions, décisions, préparations, commits, annulations et restaurations ?
 
-#### Q6 — Effets applicatifs de l’annulation d’un brouillon
+#### Q5 — Effets applicatifs de l’annulation d’un brouillon
 
 Voir [Têtes de lecture](#têtes-de-lecture), [Fin de portée après modification](#fin-de-portée-après-modification), [Suppression du score attaché à une session](#suppression-du-score-attaché-à-une-session) et [Suppression d’une piste utilisée pour l’écoute](#suppression-dune-piste-utilisée-pour-lécoute).
 
@@ -1913,7 +1910,7 @@ Voir [Têtes de lecture](#têtes-de-lecture), [Fin de portée après modificatio
 - Quels effets sur les transports, préécoutes et états d’éditeur sont réversibles avec le brouillon, et lesquels restent acquis ?
 - Comment distinguer explicitement cette politique de celle, déjà décrite, d’undo/redo ?
 
-#### Q7 — Quantification et frontières de responsabilité
+#### Q6 — Quantification et frontières de responsabilité
 
 Voir [GridResolution](#gridresolution), [Clip](#clip) et [EditService](#editservice).
 
@@ -1925,7 +1922,7 @@ Voir [GridResolution](#gridresolution), [Clip](#clip) et [EditService](#editserv
 - Que produit un redimensionnement dont le bord traverse le bord opposé ?
 - Les formules `round()` et `max(1, …)` de la section `Clip` décrivent-elles une conversion applicative du geste ou une opération du domaine ? Comment les articuler avec l’interdiction des arrondis et clamps silencieux dans le domaine ?
 
-#### Q8 — Ordres canoniques et identités des fragments
+#### Q7 — Ordres canoniques et identités des fragments
 
 Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Résolution des chevauchements de notes](#résolution-des-chevauchements-de-notes) et [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire).
 
@@ -1935,7 +1932,7 @@ Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Réso
 - Quelle entrée explicite fournit ces identifiants aux fonctions pures, et comment conserver leur correspondance pendant les reprises et décisions portant sur plusieurs scores ?
 - Quels ordres de collections doivent être conservés ou normalisés pour que les résultats et erreurs restent reproductibles ?
 
-#### Q9 — Préécoute de sélection et références disparues
+#### Q8 — Préécoute de sélection et références disparues
 
 Voir [Préécoute d’une sélection](#préécoute-dune-sélection) et [Préparation de l’instrument](#préparation-de-linstrument).
 
@@ -1946,7 +1943,7 @@ Voir [Préécoute d’une sélection](#préécoute-dune-sélection) et [Prépara
 - Quelle issue reçoit `ready` si toutes les notes suivies disparaissent avant la fin du chargement ?
 - Quelle définition temporelle précise du « même cycle sûr de planification » rend la coalescence des mises à jour reproductible ?
 
-#### Q10 — Disponibilité audio, retards et contrat de l’adaptateur
+#### Q9 — Disponibilité audio, retards et contrat de l’adaptateur
 
 Voir [Planification selon la portée](#planification-selon-la-portée), [AudioEngine](#audioengine), [PlaybackContext](#playbackcontext) et [InstrumentInstance](#instrumentinstance).
 
@@ -1960,7 +1957,7 @@ Voir [Planification selon la portée](#planification-selon-la-portée), [AudioEn
 
 ### Précisions complémentaires
 
-#### Q11 — Égalité, métadonnées, persistance et valeurs initiales
+#### Q10 — Égalité, métadonnées, persistance et valeurs initiales
 
 Voir [Project](#project), [Historique du projet](#historique-du-projet), [ProjectFileService](#projectfileservice), [Chronologies locales du score](#chronologies-locales-du-score) et [Persistance](#persistance).
 
@@ -1973,7 +1970,7 @@ Voir [Project](#project), [Historique du projet](#historique-du-projet), [Projec
 - Quelles tables exactes d’intervalles correspondent à chaque `ChordTypeId` et `ScaleTypeId` ?
 - Quel résultat ou quelle précondition explicite couvre les appels publics exigeant un projet lorsqu’aucun document n’est ouvert ?
 
-#### Q12 — Nommage et représentation des états
+#### Q11 — Nommage et représentation des états
 
 - `PendingTransportRequest` est-il suffisamment précis alors qu’il couvre aussi `SET_AUDITION_TRACK`, y compris sans transport actif ?
 - Comment le typage distingue-t-il sans ambiguïté `TransientProject` d’un `Project` valide, afin qu’un brouillon ne puisse pas être fourni à une opération exigeant l’agrégat validé ?
@@ -1981,7 +1978,7 @@ Voir [Project](#project), [Historique du projet](#historique-du-projet), [Projec
 
 Ces questions ne remettent pas en cause à elles seules les noms `Score`, `Clip`, `Track`, `ArrangementEditorState`, `ScoreEditorState`, ni la colocalisation de `Settings` avec `ProjectState`.
 
-#### Q13 — Présentation et paramètres techniques déjà ouverts
+#### Q12 — Présentation et paramètres techniques déjà ouverts
 
 - Comment distinguer et sélectionner les clips superposés sur une même piste dans la présentation ?
 - Quelles valeurs techniques retenir pour la marge de planification, la durée maximale des préécoutes et tails et la capacité de l’historique ? Ces paramètres ne doivent pas modifier les règles de propriété ou de concurrence.
@@ -1991,7 +1988,7 @@ Ces questions ne remettent pas en cause à elles seules les noms `Score`, `Clip`
 
 La résolution de ces questions devra compléter les contrats existants avec :
 
-- un contrat transactionnel couvrant données candidates, validation finale, réglages et annulation ;
+- un contrat transactionnel couvrant données candidates, validation finale et annulation ;
 - des tables de transitions des éditions et des requêtes de lecture, incluant les événements asynchrones ;
 - un contrat temporel couvrant le plan accepté, les bornes exactes et les changements successifs ;
 - des études de cas avec résultats attendus pour les scénarios ci-dessus.
