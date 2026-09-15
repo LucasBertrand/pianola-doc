@@ -13,6 +13,7 @@ Il fixe le vocabulaire courant, les responsabilités des couches et leurs dépen
   - [Temps, hauteur et harmonie](#temps-musical)
   - [Transformations et données candidates](#transformations-du-projet-et-données-candidates)
 - [Application](#application)
+  - [Sélections](#sélections)
   - [États des éditeurs](#états-des-éditeurs)
   - [Édition du projet](#édition-du-projet)
   - [Lecture et préécoute](#playbackservice)
@@ -183,6 +184,87 @@ Une branche `ok: false` ne modifie jamais l'objet d'origine et ne publie aucun �
 
 Les violations prévisibles d'une règle métier ne lèvent pas d'exception. Les exceptions restent réservées aux défauts de programmation et aux défaillances techniques inattendues ; elles ne sont pas converties artificiellement en `ValidationError`.
 
+### Transformations du projet et données candidates
+
+`ProjectEditCommand` appartient au domaine. Il compose les commandes métier élémentaires déclarées près des opérations qui les exécutent et représente une proposition transactionnelle de transformation du `Project`. Son union décrit les transformations acceptées par `buildProjectCandidate` ; elle ne décrit ni les gestes de présentation, ni l’exhaustivité des cas d’usage d’`EditService`.
+
+`EditIntent` reste le contrat applicatif : `EditService` le résout à partir de l’état des éditeurs, puis construit le `ProjectEditCommand` du domaine. Les paramètres de cette commande expriment une transformation cumulée depuis `baseProject`, jamais depuis le candidat précédent. Les identifiants des créations ordinaires sont alloués une fois par l’application et fournis à la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
+
+```ts
+type DeferredViolation =
+  | {
+      kind: "NOTE_OVERLAP";
+      scoreId: ScoreId;
+      overlaps: readonly NoteOverlap[];
+    };
+
+type DeferredResolution =
+  | {
+      kind: "NOTE_OVERLAP";
+      scoreId: ScoreId;
+      choice: NoteOverlapResolution;
+    };
+
+interface ProjectCandidate {
+  // Surface de lecture complète du projet projeté, distincte de Project.
+  readonly deferredViolations: readonly DeferredViolation[];
+}
+```
+
+Prévisualisation et validation utilisent une seule chaîne de calcul dans les opérations du domaine. Le domaine connaît `ProjectEditCommand`, `ProjectCandidate`, ses violations différées et leurs résolutions ; il ignore l’intention utilisateur, la sélection, la session d’édition et l’audio. Deux fonctions pures forment la frontière principale :
+
+```ts
+buildProjectCandidate(
+  baseProject: Project,
+  command: ProjectEditCommand
+): Result<ProjectCandidate, BlockingProjectError>;
+
+finalizeProjectCandidate(
+  candidate: ProjectCandidate,
+  resolutions: readonly DeferredResolution[]
+): Result<Project, ProjectEditError>;
+```
+
+`buildProjectCandidate` applique collectivement la commande à `baseProject`. Les valeurs d’une commande expriment l’état final proposé des entités ciblées, et non une suite de mutations à valider une par une. Plusieurs changements portant sur une même entité sont normalisés en une seule proposition finale ; deux propositions contradictoires pour le même champ constituent une commande invalide. Les créations et leurs références sont également évaluées dans le résultat collectif : créer un score et un clip qui le référence ne produit aucun état intermédiaire orphelin.
+
+Toutes les validations reposent sur les mêmes fonctions pures d’inspection. Elles produisent soit une erreur bloquante, soit une `DeferredViolation` explicitement admise par l’union fermée. Une erreur bloquante empêche le candidat et conserve la dernière projection admissible. Une violation différée est enregistrée dans `ProjectCandidate.deferredViolations` et doit recevoir une `DeferredResolution` avant publication. Le premier périmètre ne diffère que `NOTE_OVERLAP` ; ajouter une autre exception exige une nouvelle variante typée et sa fonction de résolution, sans modifier le mécanisme générique.
+
+`finalizeProjectCandidate` applique les résolutions au candidat, relance les mêmes inspections et construit un `Project` uniquement lorsqu’aucune violation ne subsiste. Une violation différée n’est donc jamais ignorée ou transformée en autorisation générale de désactiver un invariant. Il n’existe qu’une implémentation de la détection des chevauchements, des références, des bornes et des autres règles ; seules leurs conséquences diffèrent selon qu’elles sont bloquantes ou explicitement différables.
+
+Les fichiers `*Transformations.ts` sont classés selon le type qu’ils produisent, et non selon l’élément principalement ciblé par la commande. Une fonction qui retourne un `Score` appartient ainsi à `ScoreTransformations.ts`. Toute fonction qui retourne un `Project` appartient à `ProjectTransformations.ts`, y compris lorsqu’elle ajoute, déplace, redimensionne, duplique ou supprime un clip, ou lorsqu’elle transforme une piste. Il n’existe donc pas de `ClipTransformations.ts` tant qu’aucune opération du domaine ne retourne un `Clip` isolé.
+
+Cette convention s’applique aussi aux copies :
+
+```ts
+// domain/operations/composition/ScoreTransformations.ts
+duplicateScore(
+  score: Score,
+  command: DuplicateScoreCommand
+): Result<Score, ScoreValidationError>;
+
+// domain/operations/composition/ProjectTransformations.ts
+addScore(
+  project: Project,
+  command: AddScoreCommand
+): Result<Project, ProjectEditError>;
+
+duplicateClips(
+  project: Project,
+  command: DuplicateClipsCommand
+): Result<Project, ProjectEditError>;
+
+makeClipIndependent(
+  project: Project,
+  command: MakeClipIndependentCommand
+): Result<Project, ProjectEditError>;
+```
+
+`DuplicateScoreCommand` fournit la nouvelle identité du score, son nom et la correspondance complète des nouvelles identités de notes et de changements. Ces identités sont allouées une seule fois par l’application et conservées dans la commande ; les fonctions pures ne génèrent aucun identifiant aléatoire. `AddScoreCommand` insère un score valide dans l’agrégat. Dupliquer un score seul compose donc `duplicateScore` et `addScore` dans la même transaction applicative.
+
+`DuplicateClipsCommand` précise les clips sources, les nouveaux `ClipId`, les placements et le choix explicite `REFERENCE` ou `INDEPENDENT`. La branche `INDEPENDENT` fournit un `DuplicateScoreCommand` par clip copié ; la branche `REFERENCE` n’en fournit aucun. `MakeClipIndependentCommand` cible un clip existant et fournit la commande de copie de son score. Les opérations retournant un projet délèguent la copie locale à `ScoreTransformations`, puis valident ensemble les nouveaux scores et les références des clips. Le choix de duplication appartient uniquement à la commande : il ne devient pas une propriété persistante du clip ou du score.
+
+`ProjectCandidate` est un type du domaine distinct de `Project`. Il expose une surface de lecture complète pour la présentation et la planification audio, ainsi que la collection de ses `deferredViolations`, mais il ne peut pas être fourni à une opération exigeant un agrégat validé. Dans le premier périmètre, seul `NOTE_OVERLAP` peut apparaître dans cette collection. Les bornes numériques, durées positives, références finales, identités, limites locales des notes et chronologies restent valides. Aucun `Project` invalide n’est construit.
+
 ### Bornes numériques et valeurs élémentaires
 
 Le premier périmètre fixe les limites suivantes :
@@ -307,6 +389,32 @@ Responsabilités et invariants :
 Un `Score` ne possède ni début global, ni piste, ni instrument, ni nombre de répétitions. Modifier son contenu ou sa durée modifie la source commune observée et jouée par tous les clips qui le référencent.
 
 Ses identités locales (`NoteId`, `MeterChangeId`, `HarmonyChangeId`) sont uniques dans leurs collections respectives. Une référence de contenu se résout toujours dans un `ScoreId` explicite. Une duplication indépendante crée un nouveau `ScoreId` et de nouvelles identités pour toutes ses notes et tous ses changements, y compris les changements initiaux ; elle conserve leurs valeurs musicales et leur ordre. Elle ne conserve aucun lien de synchronisation avec l’original. Les Value Objects immuables peuvent être réutilisés en mémoire sans partager l’identité des entités.
+
+#### Chronologies locales du score
+
+Un score possède deux collections ordonnées de changements :
+
+| Changement | Valeur | Changement initial au tick `0` | Positions suivantes |
+| --- | --- | --- | --- |
+| `MeterChange` | `Meter` | Obligatoire | Début d’une nouvelle mesure locale ; peut tronquer la précédente |
+| `HarmonyChange` | `Harmony` | Obligatoire, `SCALE · C CHROMATIC` par défaut | N'importe quel tick local du score |
+
+Chaque changement possède une identité, une position locale et sa nouvelle valeur. Les règles communes sont :
+
+- un seul changement d'un même type peut exister à une position ;
+- la nouvelle valeur s'applique à partir de la position du changement, incluse ;
+- un changement peut être déplacé ou modifié sans perdre son identité ;
+- un changement ferme la section précédente du même type et commence la suivante ;
+- un changement peut être placé de `0` à `score.duration` inclus ;
+- aucun changement n'accepte `null` ni une variante `CLEAR`.
+
+Le `HarmonyChange` initial au tick `0` ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée par un accord ou une autre gamme. `SCALE · C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
+
+Chaque nouveau `HarmonyChange` remplace indifféremment l’accord ou la gamme précédente. Il est donc impossible qu’un `Chord` et une `Scale` soient actifs simultanément ou que deux marqueurs harmoniques occupent le même tick.
+
+Un changement placé exactement à `score.duration` est valide et persistant. Il n’affecte aucune note et ne produit aucun événement audio tant que la durée ne change pas. Si le score est allongé, il devient automatiquement le début de la nouvelle section terminale. Si un raccourcissement placerait un changement au-delà de la nouvelle durée, l’opération doit également déplacer ou supprimer ce changement, faute de quoi la validation échoue.
+
+Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
 
 ### Clip
 
@@ -540,32 +648,6 @@ type ScaleTypeId =
 
 Les types d’accords et de gammes définissent leurs classes de hauteur à partir de la fondamentale ou de la tonique. Le choix d’une nouvelle valeur est explicite dans l’éditeur et n’est pas limité par l’harmonie précédente. Les suggestions de remplacements compatibles sont hors du premier périmètre.
 
-### Chronologies locales du score
-
-Un score possède deux collections ordonnées de changements :
-
-| Changement | Valeur | Changement initial au tick `0` | Positions suivantes |
-| --- | --- | --- | --- |
-| `MeterChange` | `Meter` | Obligatoire | Début d’une nouvelle mesure locale ; peut tronquer la précédente |
-| `HarmonyChange` | `Harmony` | Obligatoire, `SCALE · C CHROMATIC` par défaut | N'importe quel tick local du score |
-
-Chaque changement possède une identité, une position locale et sa nouvelle valeur. Les règles communes sont :
-
-- un seul changement d'un même type peut exister à une position ;
-- la nouvelle valeur s'applique à partir de la position du changement, incluse ;
-- un changement peut être déplacé ou modifié sans perdre son identité ;
-- un changement ferme la section précédente du même type et commence la suivante ;
-- un changement peut être placé de `0` à `score.duration` inclus ;
-- aucun changement n'accepte `null` ni une variante `CLEAR`.
-
-Le `HarmonyChange` initial au tick `0` ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée par un accord ou une autre gamme. `SCALE · C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
-
-Chaque nouveau `HarmonyChange` remplace indifféremment l’accord ou la gamme précédente. Il est donc impossible qu’un `Chord` et une `Scale` soient actifs simultanément ou que deux marqueurs harmoniques occupent le même tick.
-
-Un changement placé exactement à `score.duration` est valide et persistant. Il n’affecte aucune note et ne produit aucun événement audio tant que la durée ne change pas. Si le score est allongé, il devient automatiquement le début de la nouvelle section terminale. Si un raccourcissement placerait un changement au-delà de la nouvelle durée, l’opération doit également déplacer ou supprimer ce changement, faute de quoi la validation échoue.
-
-Les marqueurs visibles dans l'éditeur sont la représentation des changements existants. Ils ne forment pas un type métier générique supplémentaire.
-
 ### Sections dérivées
 
 `MeterSection` et `HarmonySection` sont des vues locales dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du score.
@@ -597,87 +679,6 @@ type NoteHarmonyRole =
   | "OUTSIDE_TONE";
 ```
 
-### Transformations du projet et données candidates
-
-`ProjectEditCommand` appartient au domaine. Il compose les commandes métier élémentaires déclarées près des opérations qui les exécutent et représente une proposition transactionnelle de transformation du `Project`. Son union décrit les transformations acceptées par `buildProjectCandidate` ; elle ne décrit ni les gestes de présentation, ni l’exhaustivité des cas d’usage d’`EditService`.
-
-`EditIntent` reste le contrat applicatif : `EditService` le résout à partir de l’état des éditeurs, puis construit le `ProjectEditCommand` du domaine. Les paramètres de cette commande expriment une transformation cumulée depuis `baseProject`, jamais depuis le candidat précédent. Les identifiants des créations ordinaires sont alloués une fois par l’application et fournis à la commande pendant le geste. Ceux des fragments de collision sont alloués seulement à la résolution définitive.
-
-```ts
-type DeferredViolation =
-  | {
-      kind: "NOTE_OVERLAP";
-      scoreId: ScoreId;
-      overlaps: readonly NoteOverlap[];
-    };
-
-type DeferredResolution =
-  | {
-      kind: "NOTE_OVERLAP";
-      scoreId: ScoreId;
-      choice: NoteOverlapResolution;
-    };
-
-interface ProjectCandidate {
-  // Surface de lecture complète du projet projeté, distincte de Project.
-  readonly deferredViolations: readonly DeferredViolation[];
-}
-```
-
-Prévisualisation et validation utilisent une seule chaîne de calcul dans les opérations du domaine. Le domaine connaît `ProjectEditCommand`, `ProjectCandidate`, ses violations différées et leurs résolutions ; il ignore l’intention utilisateur, la sélection, la session d’édition et l’audio. Deux fonctions pures forment la frontière principale :
-
-```ts
-buildProjectCandidate(
-  baseProject: Project,
-  command: ProjectEditCommand
-): Result<ProjectCandidate, BlockingProjectError>;
-
-finalizeProjectCandidate(
-  candidate: ProjectCandidate,
-  resolutions: readonly DeferredResolution[]
-): Result<Project, ProjectEditError>;
-```
-
-`buildProjectCandidate` applique collectivement la commande à `baseProject`. Les valeurs d’une commande expriment l’état final proposé des entités ciblées, et non une suite de mutations à valider une par une. Plusieurs changements portant sur une même entité sont normalisés en une seule proposition finale ; deux propositions contradictoires pour le même champ constituent une commande invalide. Les créations et leurs références sont également évaluées dans le résultat collectif : créer un score et un clip qui le référence ne produit aucun état intermédiaire orphelin.
-
-Toutes les validations reposent sur les mêmes fonctions pures d’inspection. Elles produisent soit une erreur bloquante, soit une `DeferredViolation` explicitement admise par l’union fermée. Une erreur bloquante empêche le candidat et conserve la dernière projection admissible. Une violation différée est enregistrée dans `ProjectCandidate.deferredViolations` et doit recevoir une `DeferredResolution` avant publication. Le premier périmètre ne diffère que `NOTE_OVERLAP` ; ajouter une autre exception exige une nouvelle variante typée et sa fonction de résolution, sans modifier le mécanisme générique.
-
-`finalizeProjectCandidate` applique les résolutions au candidat, relance les mêmes inspections et construit un `Project` uniquement lorsqu’aucune violation ne subsiste. Une violation différée n’est donc jamais ignorée ou transformée en autorisation générale de désactiver un invariant. Il n’existe qu’une implémentation de la détection des chevauchements, des références, des bornes et des autres règles ; seules leurs conséquences diffèrent selon qu’elles sont bloquantes ou explicitement différables.
-
-Les fichiers `*Transformations.ts` sont classés selon le type qu’ils produisent, et non selon l’élément principalement ciblé par la commande. Une fonction qui retourne un `Score` appartient ainsi à `ScoreTransformations.ts`. Toute fonction qui retourne un `Project` appartient à `ProjectTransformations.ts`, y compris lorsqu’elle ajoute, déplace, redimensionne, duplique ou supprime un clip, ou lorsqu’elle transforme une piste. Il n’existe donc pas de `ClipTransformations.ts` tant qu’aucune opération du domaine ne retourne un `Clip` isolé.
-
-Cette convention s’applique aussi aux copies :
-
-```ts
-// domain/operations/composition/ScoreTransformations.ts
-duplicateScore(
-  score: Score,
-  command: DuplicateScoreCommand
-): Result<Score, ScoreValidationError>;
-
-// domain/operations/composition/ProjectTransformations.ts
-addScore(
-  project: Project,
-  command: AddScoreCommand
-): Result<Project, ProjectEditError>;
-
-duplicateClips(
-  project: Project,
-  command: DuplicateClipsCommand
-): Result<Project, ProjectEditError>;
-
-makeClipIndependent(
-  project: Project,
-  command: MakeClipIndependentCommand
-): Result<Project, ProjectEditError>;
-```
-
-`DuplicateScoreCommand` fournit la nouvelle identité du score, son nom et la correspondance complète des nouvelles identités de notes et de changements. Ces identités sont allouées une seule fois par l’application et conservées dans la commande ; les fonctions pures ne génèrent aucun identifiant aléatoire. `AddScoreCommand` insère un score valide dans l’agrégat. Dupliquer un score seul compose donc `duplicateScore` et `addScore` dans la même transaction applicative.
-
-`DuplicateClipsCommand` précise les clips sources, les nouveaux `ClipId`, les placements et le choix explicite `REFERENCE` ou `INDEPENDENT`. La branche `INDEPENDENT` fournit un `DuplicateScoreCommand` par clip copié ; la branche `REFERENCE` n’en fournit aucun. `MakeClipIndependentCommand` cible un clip existant et fournit la commande de copie de son score. Les opérations retournant un projet délèguent la copie locale à `ScoreTransformations`, puis valident ensemble les nouveaux scores et les références des clips. Le choix de duplication appartient uniquement à la commande : il ne devient pas une propriété persistante du clip ou du score.
-
-`ProjectCandidate` est un type du domaine distinct de `Project`. Il expose une surface de lecture complète pour la présentation et la planification audio, ainsi que la collection de ses `deferredViolations`, mais il ne peut pas être fourni à une opération exigeant un agrégat validé. Dans le premier périmètre, seul `NOTE_OVERLAP` peut apparaître dans cette collection. Les bornes numériques, durées positives, références finales, identités, limites locales des notes et chronologies restent valides. Aucun `Project` invalide n’est construit.
-
 ### Frontière de l'agrégat
 
 `Project` est la racine de l'unique agrégat constituant le document de composition sauvegardé.
@@ -698,9 +699,7 @@ La couche applicative traduit les intentions de l'utilisateur en `ProjectEditCom
 
 Elle possède les états transitoires des trois éditeurs et les états d'orchestration nécessaires à la lecture. Elle ne contient ni configuration `smplr`, ni banque d'échantillons, ni `AudioNode`, ni détail de stockage.
 
-### États des éditeurs
-
-#### Sélections
+### Sélections
 
 Deux sélections indépendantes correspondent aux deux éditeurs spécialisés.
 
@@ -722,6 +721,10 @@ interface ClipSelection {
 `ScoreContentSelection` contient les notes et changements du score source actuellement édité. Elle est portée par le même `ScoreEditorState` que l'identité et la tête de lecture locale du score. Elle est vidée lorsque ce score change ou est fermé.
 
 `ClipSelection` contient les clips sélectionnés dans l’éditeur d’arrangement. Elle est portée par `ArrangementEditorState` et sert notamment au déplacement temporel ou vertical des clips, à leur duplication et à leur suppression. Dupliquer cette sélection crée par défaut de nouveaux clips référençant les mêmes scores ; l’intention explicite de duplication indépendante crée les nouveaux scores décrits dans le domaine.
+
+La couche applicative choisit explicitement la sélection correspondant à l'action, résout ses références et transmet au domaine les identifiants concernés. Le domaine ne connaît jamais la notion de sélection.
+
+### États des éditeurs
 
 ```ts
 interface ArrangementEditorState {
@@ -756,8 +759,6 @@ Le score source édité et la sélection de clips expriment des faits différent
 | Score ouvert dans le piano roll | Présent | Présent | Présent |
 
 Le changement de `scoreId` d’un clip n’affecte pas automatiquement le `ScoreEditorState` existant : celui-ci reste attaché au score ouvert. Ouvrir explicitement la copie remplace l’état local par celui du nouveau score et vide la sélection locale ; aucune référence de note ou de changement de l’original n’est réutilisée dans la copie. `ArrangementEditorState.selection` conserve en revanche l’identité d’un clip rendu indépendant puisqu’il garde son `ClipId`.
-
-La couche applicative choisit explicitement la sélection correspondant à l'action, résout ses références et transmet au domaine les identifiants concernés. Le domaine ne connaît jamais la notion de sélection.
 
 #### Piste d’écoute du piano roll
 
