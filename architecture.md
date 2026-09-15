@@ -1834,11 +1834,169 @@ La sauvegarde porte exclusivement sur la version validée du projet et les régl
 
 ## Questions ouvertes
 
-Les invariants de composition et les contrats de publication ci-dessus sont définis. Les choix suivants restent à préciser sans ajouter de nouveaux concepts au domaine :
+Les grandes responsabilités et les règles déjà actées ci-dessus constituent la base du modèle. Leur articulation laisse toutefois les questions suivantes à trancher pour obtenir un comportement entièrement déterministe avant de préparer un plan d’implémentation. Les formulations alternatives et les pistes évoquées dans cette section ne sont pas des décisions : lorsqu’un contrat existant est ambigu ou contradictoire, son arbitrage devra être reporté dans la section concernée puis illustré dans les études de cas.
+
+### Exigence transversale — Périmètre du déterminisme
+
+- Quel contrat exact veut-on garantir : à état initial, commandes, identifiants alloués, configuration et événements externes horodatés identiques, les états applicatifs et commandes audio doivent-ils être identiques ?
+- Quelles entrées externes faut-il rendre explicites pour rejouer un scénario : horloge, résultats de chargement, interruptions audio, allocation d’identifiants et dates de métadonnées ?
+- Le déterminisme vise-t-il le document, les transitions applicatives et le plan sonore, ou également une identité du signal rendu entre navigateurs et versions de banques ? Comment distinguer ces garanties ?
+- Quels ordres et paramètres doivent être fixés par le contrat, et lesquels peuvent être configurables tout en restant des entrées explicites du calcul ?
+
+### Points bloquants
+
+#### Q1 — Réglages et projet transitoire
+
+Voir [GridResolution](#gridresolution), [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [ProjectFileService](#projectfileservice).
+
+- À quelle collection de scores correspond exactement `ProjectState.settings` pendant un geste : celle de `project` ou celle d’`effectiveProject` ?
+- Comment un score créé ou dupliqué dans le brouillon obtient-il une résolution de grille avant son commit ? Où cette configuration provisoire est-elle portée ?
+- Comment sauvegarder le dernier projet validé avec des réglages cohérents pendant qu’un brouillon ajoute ou supprime des scores, sans violer la correspondance exacte des `ScoreId` ?
+- Quel est le devenir des réglages provisoires au commit et à l’annulation ? Que devient une modification de résolution effectuée pendant le geste, notamment sur un score provisoire ou provisoirement supprimé ?
+
+Cas à résoudre : A appartient au projet validé, B est créé dans le brouillon et une sauvegarde intervient avant le commit. Le fichier doit conserver exactement les réglages correspondant aux scores qu’il contient.
+
+#### Q2 — Données candidates et composition transactionnelle
+
+Voir [Frontière de l’agrégat](#frontière-de-lagrégat), [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [EditService](#editservice).
+
+- Quelle représentation et quelles fonctions produisent les données candidates utilisées par `TransientProject`, sans construire un `Score` ou un `Project` invalide ?
+- Comment partager ces calculs avec la validation finale sans réimplémenter les règles musicales dans l’application ?
+- Dans une commande composite, les opérations lisent-elles toutes la base du geste ou certaines lisent-elles le résultat des opérations précédentes ? Comment combiner plusieurs opérations visant une même entité ?
+- Quelles validations s’appliquent à chaque opération et lesquelles portent uniquement sur le résultat complet ? Comment accepter une transaction finale valide dont un calcul intermédiaire produit une collision ou une référence temporairement absente ?
+- Comment articuler la règle selon laquelle les opérations reçoivent des modèles valides avec le calcul candidat autorisant provisoirement les chevauchements ?
+
+Cas à résoudre : deux notes de même hauteur échangent leurs positions sans collision finale ; une exécution validante note par note ne doit pas décider implicitement de la validité de la transaction.
+
+#### Q3 — Publication du document et plan audio accepté
+
+Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel), [Préparation sonore des éditions](#préparation-sonore-des-éditions), [Sessions et concurrence](#sessions-et-concurrence) et [Éditeur d’arrangement](#éditeur-darrangement).
+
+- Le document devient-il visible dès l’acceptation du plan ou seulement à sa borne future `safeAt` ? La préparation sonore et le cas 14 décrivent une publication après acceptation suivie d’une prise d’effet sonore, tandis que la présentation évoque une visibilité et une audibilité à la borne sûre : quelle formulation fait autorité ?
+- Qui possède la représentation du plan accepté, distincte de l’état actuellement audible et de la dernière projection candidate ?
+- Comment représenter les ancrages temporels encore nécessaires lorsque plusieurs changements de tempo sont acceptés avant leur prise d’effet ? L’unique `ActiveTransport.anchor` présenté suffit-il au contrat ?
+- Lors d’un nouveau `replaceSchedule`, quels changements futurs d’ancrage, de contexte ou d’instrument sont conservés, remplacés ou annulés ?
+- Sur quelle version du plan et de ses ancrages se fondent la tête affichée et la réconciliation suivante ?
+
+Cas à résoudre : un changement de tempo est accepté pour 5,04 s ; un second changement arrive avant cette borne. La conversion temps/tick doit rester définie avant, entre et après les bornes conservées.
+
+#### Q4 — État de réconciliation exactement à la borne
+
+Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel) et [AudioEngine](#audioengine).
+
+- L’état utilisé à `from` est-il celui obtenu après les seuls événements strictement antérieurs à cette borne, ou après les anciens événements situés exactement à cette borne ?
+- Comment rendre cette définition compatible avec le retrait des événements `at >= from` par `replaceSchedule` et l’ordre `NOTE_OFF`, `ContextCompletion`, `NOTE_ON` du nouveau plan ?
+- Un ancien `NOTE_OFF` exactement à `from`, remplacé par un arrêt plus tardif, permet-il de conserver la voix sans réattaque ?
+- Comment traiter une ancienne attaque ou une ancienne fin de contexte exactement à `from`, lorsqu’elle est retirée ou remplacée ?
+
+Les études de cas doivent distinguer explicitement un événement strictement antérieur, exactement égal et strictement postérieur à la borne.
+
+### Contrats importants à compléter
+
+#### Q5 — Transitions complètes du cycle d’édition
+
+Voir [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire) et [Historique du projet](#historique-du-projet).
+
+- Quel résultat et quels effets produisent deux `commitEdit()` pendant la même préparation, ou deux soumissions de la même décision avant la fin de la première ?
+- Comment un échec de préparation déclenchée par `updateEdit()` devient-il observable si aucun commit n’attend son résultat ? Quel état conserve la session et comment réessayer ?
+- À quel instant `cancelEdit(): void` est-elle considérée comme acquise si le retour au projet validé requiert une réconciliation audio, notamment après un refus `SCHEDULE_TOO_LATE` ?
+- Que reste-t-il observable pendant cette annulation et à partir de quand une nouvelle édition est-elle autorisée ?
+- Quelle table exhaustive « état + événement → résultat + nouvel état + effets » couvre les éditions, décisions, préparations, commits, annulations et restaurations ?
+
+#### Q6 — Effets applicatifs de l’annulation d’un brouillon
+
+Voir [Têtes de lecture](#têtes-de-lecture), [Fin de portée après modification](#fin-de-portée-après-modification), [Suppression du score attaché à une session](#suppression-du-score-attaché-à-une-session) et [Suppression d’une piste utilisée pour l’écoute](#suppression-dune-piste-utilisée-pour-lécoute).
+
+- Lorsqu’un score disparaît provisoirement puis revient par annulation du geste, faut-il restaurer son éditeur, sa sélection et sa position mémorisée ?
+- Une piste d’écoute effacée par une suppression transitoire doit-elle être restaurée si le geste est annulé ?
+- Un transport arrêté parce qu’un raccourcissement transitoire a placé sa fin derrière la tête reste-t-il arrêté après annulation ?
+- Quels effets sur les transports, préécoutes et états d’éditeur sont réversibles avec le brouillon, et lesquels restent acquis ?
+- Comment distinguer explicitement cette politique de celle, déjà décrite, d’undo/redo ?
+
+#### Q7 — Quantification et frontières de responsabilité
+
+Voir [GridResolution](#gridresolution), [Clip](#clip) et [EditService](#editservice).
+
+- Quelles valeurs sont valides pour `snapStepTicks` et quelles erreurs sa factory retourne-t-elle ?
+- La grille locale est-elle toujours ancrée au tick 0 ou recommence-t-elle à chaque section métrique ?
+- Quelle règle d’arrondi s’applique à mi-distance et aux deltas négatifs ?
+- Un déplacement collectif quantifie-t-il le delta commun ou les positions de chaque élément ? Comment préserver ou transformer les écarts d’éléments initialement hors grille ?
+- La résolution est-elle capturée au début du geste ou relue pendant ses actualisations ?
+- Que produit un redimensionnement dont le bord traverse le bord opposé ?
+- Les formules `round()` et `max(1, …)` de la section `Clip` décrivent-elles une conversion applicative du geste ou une opération du domaine ? Comment les articuler avec l’interdiction des arrondis et clamps silencieux dans le domaine ?
+
+#### Q8 — Ordres canoniques et identités des fragments
+
+Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Résolution des chevauchements de notes](#résolution-des-chevauchements-de-notes) et [Intention d’édition et projet transitoire](#intention-dédition-et-projet-transitoire).
+
+- Comment l’application construit-elle l’ordre des `manipulatedNoteIds` depuis une sélection : ordre de sélection, ordre musical ou ordre canonique d’identifiants ? Cet ordre fait-il partie de l’intention conservée ?
+- Quel ordre exact détermine le premier score invalide, la première erreur de validation et l’ordre des `overlappingNoteIds` ?
+- Comment associer les fragments successifs d’un `SLICE` à leurs nouveaux identifiants lorsqu’une note subit plusieurs découpes ?
+- Quelle entrée explicite fournit ces identifiants aux fonctions pures, et comment conserver leur correspondance pendant les reprises et décisions portant sur plusieurs scores ?
+- Quels ordres de collections doivent être conservés ou normalisés pour que les résultats et erreurs restent reproductibles ?
+
+#### Q9 — Préécoute de sélection et références disparues
+
+Voir [Préécoute d’une sélection](#préécoute-dune-sélection) et [Préparation de l’instrument](#préparation-de-linstrument).
+
+- Que devient un handle lorsque `MERGE`, `SLICE`, une suppression ou une restauration fait disparaître un `NoteId` suivi ?
+- Les références disparues sont-elles retirées individuellement ou terminent-elles le handle ? Que se passe-t-il lorsqu’il n’en reste aucune ?
+- Un fragment créé par une résolution est-il suivi automatiquement ou reste-t-il extérieur à la sélection capturée ?
+- Une suppression seule déclenche-t-elle une nouvelle audition des hauteurs restantes ?
+- Quelle issue reçoit `ready` si toutes les notes suivies disparaissent avant la fin du chargement ?
+- Quelle définition temporelle précise du « même cycle sûr de planification » rend la coalescence des mises à jour reproductible ?
+
+#### Q10 — Disponibilité audio, retards et contrat de l’adaptateur
+
+Voir [Planification selon la portée](#planification-selon-la-portée), [AudioEngine](#audioengine), [PlaybackContext](#playbackcontext) et [InstrumentInstance](#instrumentinstance).
+
+- Quels états et événements applicatifs représentent un moteur audio suspendu, interrompu, fermé ou impossible à démarrer ? Quel est leur effet sur l’horloge, les transports, les requêtes et les handles ?
+- Quel résultat public distingue cette indisponibilité d’un échec de chargement de banque ?
+- Quelle politique s’applique lorsque les refus `SCHEDULE_TOO_LATE` se répètent ? Quel traitement réserver aux attaques ratées et à la reprise après un retard du planificateur ?
+- Comment fixer l’origine et faire progresser une session dont le début ou une partie du parcours est silencieux avec une planification glissante ? Quel volume de commandes et quelle fenêtre sont préparés ?
+- La réconciliation doit-elle se fonder sur une occurrence logiquement active plutôt que sur une note dite « audible », un échantillon pouvant terminer son signal avant son `NOTE_OFF` musical ?
+- Quelle version de `smplr`, quels presets et quelles versions de banques fixent le comportement attendu de l’adaptateur ?
+- Comment vérifier les garanties nécessaires : arrêt individuel programmé, frontière des événements engagés, prolongation avant engagement du relâchement, partage du chargement et du décodage, fin des voix et libération des tails ?
+
+### Précisions complémentaires
+
+#### Q11 — Égalité, métadonnées, persistance et valeurs initiales
+
+Voir [Project](#project), [Historique du projet](#historique-du-projet), [ProjectFileService](#projectfileservice), [Chronologies locales du score](#chronologies-locales-du-score) et [Persistance](#persistance).
+
+- Quelle égalité définit `NO_CHANGE` : valeurs musicales, identités, ordre des collections et métadonnées ? Comment la relier à l’état « modifié non sauvegardé » ?
+- Les champs possibles `createdAt` et `updatedAt` sont-ils retenus ? Qui fournit leurs valeurs, quand changent-ils et que deviennent-ils lors d’undo/redo ?
+- Quel ordre régit les sauvegardes concurrentes, notamment si une écriture ancienne se termine après une plus récente ?
+- Comment l’identité du document et celle de la capture empêchent-elles la fin d’une sauvegarde de l’ancien document de modifier l’état sauvegardé du nouveau ?
+- Quelle forme exacte est valide pour les identifiants et les noms : chaînes vides, longueur, normalisation éventuelle et erreurs associées ?
+- Quelles opérations sont autorisées sur le `MeterChange` initial : modification de valeur, déplacement, suppression ou remplacement dans une transaction ? Comment expliciter son invariant symétriquement à celui du changement harmonique initial ?
+- Quelles tables exactes d’intervalles correspondent à chaque `ChordTypeId` et `ScaleTypeId` ?
+- Quel résultat ou quelle précondition explicite couvre les appels publics exigeant un projet lorsqu’aucun document n’est ouvert ?
+
+#### Q12 — Nommage et représentation des états
+
+- `PendingTransportRequest` est-il suffisamment précis alors qu’il couvre aussi `SET_AUDITION_TRACK`, y compris sans transport actif ?
+- Comment le typage distingue-t-il sans ambiguïté `TransientProject` d’un `Project` valide, afin qu’un brouillon ne puisse pas être fourni à une opération exigeant l’agrégat validé ?
+- `GlobalEditorState`, encore vide, doit-il déjà exister comme objet d’exécution ou seulement comme responsabilité documentée en attendant ses premières données applicatives ?
+
+Ces questions ne remettent pas en cause à elles seules les noms `Score`, `Clip`, `Track`, `ArrangementEditorState`, `ScoreEditorState`, ni la colocalisation de `Settings` avec `ProjectState`.
+
+#### Q13 — Présentation et paramètres techniques déjà ouverts
 
 - Comment distinguer et sélectionner les clips superposés sur une même piste dans la présentation ?
 - Quelles valeurs techniques retenir pour la marge de planification, la durée maximale des préécoutes et tails et la capacité de l’historique ? Ces paramètres ne doivent pas modifier les règles de propriété ou de concurrence.
 - Quelle interaction proposer pour quitter ou remplacer un document modifié non sauvegardé ? L’ouverture réussie reste atomique et la sauvegarde porte toujours sur une version validée.
+
+### Formalisation attendue avant le plan d’implémentation
+
+La résolution de ces questions devra compléter les contrats existants avec :
+
+- un contrat transactionnel couvrant données candidates, validation finale, réglages et annulation ;
+- des tables de transitions des éditions et des requêtes de lecture, incluant les événements asynchrones ;
+- un contrat temporel couvrant le plan accepté, les bornes exactes et les changements successifs ;
+- des études de cas avec résultats attendus pour les scénarios ci-dessus.
+
+Ces éléments constituent un travail de spécification préalable, pas un plan d’implémentation. Les nouveaux cas devront être ajoutés à `etudes-de-cas.md` après arbitrage, afin de ne pas présenter une option encore ouverte comme un comportement acquis.
 
 ## Arborescence cible
 
