@@ -810,7 +810,7 @@ La résolution locale sert à créer, déplacer et redimensionner les notes, à 
 
 Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre.
 
-`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `effectiveProject`. Pendant un geste, un score présent seulement dans `projectCandidate` n’ajoute aucune entrée provisoire dans `Settings` :
+`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `projectProjection`. Pendant un geste, un score présent seulement dans `editSession.draft.candidate` n’ajoute aucune entrée provisoire dans `Settings` :
 
 - une création ordinaire utilise la résolution locale par défaut de `240` ticks ;
 - une duplication indépendante utilise la résolution du score source capturée dans la commande ;
@@ -820,7 +820,7 @@ Au commit, la publication ajoute atomiquement au nouveau `project` l’entrée d
 
 Les deux espaces utilisent le même Value Object et la même unité `Tick`, sans pour autant partager leur valeur. `EditService` résout la grille depuis `ProjectState.settings` selon l’éditeur concerné, puis applique la règle ci-dessus lorsqu’un score n’existe que dans le brouillon ; les états d’éditeur ne dupliquent pas cette configuration. Une modification persistante de résolution cible uniquement un score du `project` validé. Elle met à jour `Settings` directement, sans `ProjectEditCommand`, projet transitoire, replanification audio ou entrée dans `ProjectHistory`, et marque le fichier comme modifié afin d’être sauvegardée.
 
-`Settings` est validé par l’application relativement au `project` : la résolution de l’arrangement est obligatoire, chaque `ScoreId` du projet validé possède exactement un réglage et aucun réglage ne cible un score absent de ce projet. Le `projectCandidate` n’entre pas dans cet invariant. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
+`Settings` est validé par l’application relativement au `project` : la résolution de l’arrangement est obligatoire, chaque `ScoreId` du projet validé possède exactement un réglage et aucun réglage ne cible un score absent de ce projet. Le candidat de `EditSession.draft` n’entre pas dans cet invariant. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
 
 #### Têtes de lecture
 
@@ -846,7 +846,7 @@ Une session `SCORE` reste attachée au couple `scoreId` / `trackId` choisi à so
 
 ### Édition du projet
 
-#### Intention, session et projet effectif
+#### Intention, session et projection du projet
 
 `EditService` possède le cycle d’édition. La présentation traduit les événements bruts — pointeur, clavier ou commandes d’interface — en une `EditIntent` sémantique. Le service résout ensuite la sélection et la résolution concernées, quantifie l’intention et construit le `ProjectEditCommand` transmis aux opérations du domaine. La présentation ne construit donc directement ni commande métier, ni agrégat, ni projet transitoire.
 
@@ -856,9 +856,14 @@ Une session `SCORE` reste attachée au couple `scoreId` / `trackId` choisi à so
 interface EditSession {
   id: EditSessionId;
   baseProject: Project;
-  command: ProjectEditCommand;
-  commandRevision: number;
+  draft: EditDraft;
   phase: EditSessionPhase;
+}
+
+interface EditDraft {
+  revision: number;
+  command: ProjectEditCommand;
+  candidate: ProjectCandidate;
 }
 
 type EditSessionPhase =
@@ -895,37 +900,27 @@ interface EditDecision<Kind extends string, Choice> {
 type SubmittedEditDecision =
   | EditDecision<"NOTE_OVERLAP", NoteOverlapResolution>;
 
-interface PendingEditPreparation {
-  id: EditPreparationId;
-  editSessionId: EditSessionId;
-  commandRevision: number;
-  instrumentIds: readonly InstrumentId[];
-  status: "PREPARING";
-}
-
 interface ProjectState {
   project: Project;
   settings: Settings;
   editSession?: EditSession;
-  projectCandidate?: ProjectCandidate;
-  pendingEditPreparation?: PendingEditPreparation;
   history: ProjectHistory;
-  effectiveProjectRevision: number;
+  projectionRevision: number;
 }
 
-const effectiveProject: Project | ProjectCandidate =
-  state.projectCandidate ?? state.project;
+const projectProjection: Project | ProjectCandidate =
+  state.editSession?.draft.candidate ?? state.project;
 ```
 
 `project` est la version musicale courante validée faisant autorité, éventuellement non encore sauvegardée. `settings` contient les configurations persistantes associées à ce fichier. `EditSession.baseProject` référence la version immuable du projet au début du geste. Le mécanisme couvre toutes les modifications musicales du document : contenu local d’un score dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de score ne possède donc ni session ni projet transitoire séparés.
 
-`EditService` traduit l’`EditIntent` en `ProjectEditCommand` du domaine et conserve cette commande dans la session. Son calcul relève du contrat décrit dans [Transformations du projet et données candidates](#transformations-du-projet-et-données-candidates).
+`EditService` traduit l’`EditIntent` en `ProjectEditCommand` du domaine. Il réunit cette commande et le `ProjectCandidate` obtenu dans `EditSession.draft` : le brouillon exprime ainsi une seule proposition courante, entièrement possédée par la session. Son calcul relève du contrat décrit dans [Transformations du projet et données candidates](#transformations-du-projet-et-données-candidates).
 
-`ProjectState.projectCandidate` conserve le `ProjectCandidate` courant comme cache de projection de la commande, jamais comme une deuxième intention à modifier indépendamment. `effectiveProject` est dérivé et constitue la source commune du document affiché et du rendu sonore ; ni le candidat ni le projet effectif transitoire ne peuvent être sauvegardés. Un repère de geste en attente de préparation peut être affiché séparément, sans prétendre être le contenu effectif.
+`projectProjection` est dérivé depuis `editSession.draft.candidate` lorsqu’une session existe, sinon depuis le `project` validé. Il constitue la source du document affiché et la cible souhaitée par l’audio, sans prétendre décrire le plan déjà accepté par le moteur. Le candidat ne peut donc pas exister comme état frère de sa session et ne peut pas être sauvegardé.
 
 Cette projection contient une seule entrée par `ScoreId`, résolue par tous ses clips : une édition locale partagée n’est pas recopiée dans chaque bloc. Une copie indépendante introduit une nouvelle entrée avec ses propres identités, stables pendant toutes les actualisations du geste. Annuler ce geste retire simultanément ses créations et rétablit les références initiales ; aucun clip orphelin ni score créé par un geste annulé ne subsiste.
 
-Une seule édition du document est ouverte à la fois, y compris pendant une décision attendue ou un chargement requis par cette édition. Toute autre édition, annulation d’historique, rétablissement ou ouverture de fichier retourne `EDIT_IN_PROGRESS` ; l’utilisateur termine ou annule d’abord le geste. Les commandes de transport et la sauvegarde du dernier `project` validé restent disponibles. Aucun retour asynchrone ne remplace la base d’un geste en cours.
+Une seule édition du document est ouverte à la fois, y compris pendant une décision attendue. Toute autre édition, annulation d’historique, rétablissement ou ouverture de fichier retourne `EDIT_IN_PROGRESS` ; l’utilisateur termine ou annule d’abord le geste. Les commandes de transport et la sauvegarde du dernier `project` validé restent disponibles.
 
 `EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
@@ -935,37 +930,33 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 Une demande contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; le couple `kind` et `choice` interdit d’envoyer le choix d’un autre type d’arbitrage.
 
-`pendingEditPreparation` décrit uniquement l’attente observable requise par la commande courante. `EditService` possède l’identité, la révision et la continuation de cette attente, mais ne charge aucune banque lui-même : sa tâche privée attend une préparation demandée à `PlaybackService`. La promesse et le contrôle d’obsolescence ne sont pas stockés dans `ProjectState`. Une actualisation de la commande ou l’annulation du geste invalide cette continuation par l’identité de session et sa `commandRevision`. Une réponse tardive peut alimenter le cache audio, mais ne peut publier aucune projection ou validation obsolète. Cette attente ne constitue ni une édition concurrente ni une entrée d’historique.
-
-`effectiveProjectRevision` est un compteur monotone incrémenté à chaque remplacement de `project`, de `projectCandidate` ou de leur résolution effective. Il reste monotone lors d’un undo/redo. `commandRevision` suit séparément les intentions, y compris celles qui ne sont pas encore devenues effectives.
+`EditDraft.revision` est incrémentée à chaque remplacement admissible du brouillon. `projectionRevision` est un compteur monotone incrémenté lorsque le contenu de `projectProjection` change : nouveau candidat, résolution, annulation, undo, redo ou remplacement du document. Un commit qui remplace le candidat par un `Project` musicalement identique ne l’incrémente pas. Le `PlaybackService` utilise cette révision pour converger vers la projection la plus récente sans retarder sa publication visuelle.
 
 Le cycle public de `EditService` est :
 
 ```ts
-beginEdit(intent: EditIntent): Result<void, ProjectEditError | EditValidationError>;
-updateEdit(intent: EditIntent): Result<void, ProjectEditError | EditValidationError>;
-commitEdit(): Promise<Result<EditOutcome, EditError>>;
+beginEdit(intent: EditIntent): Result<void, EditError>;
+updateEdit(intent: EditIntent): Result<void, EditError>;
+commitEdit(): Result<EditOutcome, EditError>;
 submitEditDecision(
   decision: SubmittedEditDecision
-): Promise<Result<EditOutcome, EditError>>;
+): Result<EditOutcome, EditError>;
 cancelEdit(): void;
 
 type EditOutcome =
   | "APPLIED"
   | "NO_CHANGE"
-  | "DECISION_REQUIRED"
-  | "CANCELLED"
-  | "SUPERSEDED";
-type EditError = ProjectEditError | EditValidationError | InstrumentPreparationError;
+  | "DECISION_REQUIRED";
+type EditError = ProjectEditError | EditValidationError;
 ```
 
-`beginEdit` capture la base, résout l’intention et construit la commande initiale ; `updateEdit` remplace cette intention, reconstruit la commande et recalcule sa projection. Une préparation éventuellement nécessaire est signalée par `pendingEditPreparation`, tandis que sa tâche reste privée au service. Son résultat technique est retourné par l’opération asynchrone qui l’attend, notamment `commitEdit`. Une nouvelle intention rend l’attente précédente `SUPERSEDED` ; une annulation la termine avec `CANCELLED`. Une entrée invalide ne remplace ni l’intention ni la commande précédentes ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` attend cette préparation si nécessaire, finalise le `ProjectCandidate` courant et publie atomiquement le nouveau `project`, la fin du brouillon et une seule entrée d’historique. Une actualisation après une demande de commit rend cette demande obsolète (`SUPERSEDED`) et exige un nouveau commit explicite.
+`beginEdit` capture la base, résout l’intention, construit la commande initiale et publie immédiatement le premier `EditDraft`. `updateEdit` reconstruit depuis cette même base un brouillon complet contenant la commande, sa révision et son candidat, puis remplace atomiquement le brouillon précédent. Une entrée invalide ne remplace pas le dernier brouillon admissible ; un `beginEdit` invalide ne laisse pas de session ouverte. `commitEdit` finalise synchroniquement `editSession.draft.candidate` et publie atomiquement le nouveau `project`, la fin de la session et une seule entrée d’historique. Aucune de ces opérations n’attend le chargement d’une banque ni l’acceptation d’un plan audio.
 
 Lorsqu’une validation du domaine révèle une situation arbitrable, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, place `EditSession.phase` en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. Une décision attendue n’est donc pas une erreur applicative. Dans le premier périmètre, `NOTE_OVERLAP` devient une décision `NOTE_OVERLAP` dont `details.scoreId` identifie le contenu à résoudre, `details.overlaps` contient les conflits et `choices` contient `SLICE` et `MERGE`. Le choix est appliqué à ce score ; les éventuelles collisions d’un autre score demandent une décision distincte avant la publication atomique de l’ensemble.
 
-La commande et le `ProjectCandidate` sont figés jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, ajoute la `DeferredResolution` correspondante puis appelle `finalizeProjectCandidate` sur ce même candidat. Si cette résolution laisse une autre violation différée, notamment dans un autre score, le service conserve les résolutions déjà acceptées avec leur portée, remplace `pendingDecision` et retourne de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Les identifiants des fragments déjà alloués restent stables pendant ces reprises ; aucune résolution partielle n’est publiée comme projet validé. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
+Le `EditDraft` — commande, révision et candidat — est figé jusqu’à `submitEditDecision` ou `cancelEdit()`. Le service vérifie l’identité, le `kind` et le choix, ajoute la `DeferredResolution` correspondante puis appelle `finalizeProjectCandidate` sur ce même candidat. Si cette résolution laisse une autre violation différée, notamment dans un autre score, le service conserve les résolutions déjà acceptées avec leur portée, remplace `pendingDecision` et retourne de nouveau `DECISION_REQUIRED` sans modifier le cycle générique. Les identifiants des fragments déjà alloués restent stables pendant ces reprises ; aucune résolution partielle n’est publiée comme projet validé. Une décision périmée ou incompatible produit une `EditValidationError` structurée. Cette erreur couvre aussi l’absence de session, une édition déjà ouverte et une actualisation interdite pendant l’attente.
 
-`cancelEdit` est idempotente : elle invalide les préparations, résout un commit en attente avec `CANCELLED` et rétablit le `project` de base comme projet effectif. Les échecs ne créent aucune entrée d’historique et ne sauvegardent rien. Les défauts de programmation restent des exceptions.
+`cancelEdit` est idempotente : elle supprime la session et rend immédiatement le `project` validé à nouveau visible dans `projectProjection`. Cette nouvelle projection reçoit sa propre révision ; si l’audio avait déjà rejoint le brouillon, `PlaybackService` converge ensuite vers le projet rétabli. L’annulation ne crée aucune entrée d’historique et ne sauvegarde rien. Les défauts de programmation restent des exceptions.
 
 #### Responsabilités d’EditService
 
@@ -978,7 +969,6 @@ La commande et le `ProjectCandidate` sont figés jusqu’à `submitEditDecision`
 - construit et compose les Value Objects par leurs `Result` sans forcer une valeur invalide ;
 - traduit l’intention en commandes métier élémentaires et compose leur `ProjectEditCommand` transactionnel du domaine ;
 - délègue au domaine les transformations et validations ;
-- coordonne leur préparation sonore avec `PlaybackService` ;
 - publie les versions validées et gère `ProjectHistory`.
 
 `ProjectFileService` possède séparément les cas d’usage d’ouverture et de sauvegarde. Ces services partagent l’état applicatif par des dépendances explicites ; aucun bus d’événements ni service générique de mutation n’est nécessaire.
@@ -1022,16 +1012,16 @@ Les identifiants des entités déplacées sont conservés. Lorsqu'une transforma
 
 Pendant une manipulation continue, la présentation appelle `EditService.updateEdit` à chaque actualisation utile de l’intention. Le service normalise la commande puis appelle `buildProjectCandidate(baseProject, command)`. Toutes les entités ciblées sont projetées collectivement depuis la même base ; aucun ordre d’exécution intermédiaire ne porte de signification métier.
 
-Une erreur bloquante ne remplace pas la dernière projection admissible. Une violation différée reste au contraire visible dans `ProjectCandidate.deferredViolations` : la projection suit le pointeur et demeure la source commune du rendu visuel et audio. Avec `NOTE_OVERLAP`, plusieurs notes de même hauteur peuvent donc être entendues simultanément pendant le geste. Aucune résolution `SLICE` ou `MERGE` et aucun fragment ne sont produits à ce stade.
+Une erreur bloquante ne remplace pas le dernier `EditDraft` admissible. Une violation différée reste au contraire visible dans `ProjectCandidate.deferredViolations` : la projection suit immédiatement le pointeur. L’audio reçoit cette projection comme nouvelle cible et peut la rejoindre plus tard ; avec `NOTE_OVERLAP`, il peut alors faire entendre simultanément les notes provisoirement superposées. Aucune résolution `SLICE` ou `MERGE` et aucun fragment ne sont produits à ce stade.
 
-Au relâchement, `commitEdit` appelle `finalizeProjectCandidate` avec les résolutions déjà acquises. Sans violation et après toute préparation nécessaire, le `Project` retourné remplace `project`, puis la session d’édition et `projectCandidate` disparaissent. Si une violation différée reste sans résolution, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest`, conserve le candidat final et suspend la publication.
+Au relâchement, `commitEdit` appelle `finalizeProjectCandidate` avec les résolutions déjà acquises. Sans violation, le `Project` retourné remplace `project`, puis la session d’édition disparaît. Comme le contenu projeté ne change pas lors de ce simple passage du candidat au projet validé, aucune réconciliation audio supplémentaire n’est nécessaire. Si une violation différée reste sans résolution, `EditService` la traduit vers la variante correspondante d’`EditDecisionRequest` et conserve le brouillon final dans la session.
 
 Pour `NOTE_OVERLAP`, la présentation demande `SLICE`, `MERGE` ou l’annulation :
 
 - `submitEditDecision` ajoute une `DeferredResolution` typée puis finalise de nouveau le même candidat ;
 - les fragments et leurs identifiants sont créés une seule fois pendant cette résolution définitive ;
 - si une autre violation différée subsiste, elle produit la décision suivante sans publication partielle ;
-- l’annulation supprime `projectCandidate` sans modifier `project`.
+- l’annulation supprime `EditSession` sans modifier `project`.
 
 Pendant cette attente, le geste ne reçoit plus d’actualisation : sa géométrie finale et sa commande quantifiée sont figées. Le domaine ne dépend d’aucune interaction utilisateur. Il reçoit le candidat et les résolutions typées, tandis que l’application possède l’ordre des décisions et leur présentation.
 
@@ -1044,11 +1034,11 @@ Les intentions d’édition sont regroupées dans `EditService`, sans imposer un
 `ProjectHistory` appartient à l’application et conserve un historique borné de versions immuables validées, avec une limite technique configurable. Il ne contient ni réglages de grille, ni brouillons, ni sélections, ni têtes, ni ressources audio et n’est pas enregistré dans le fichier du projet.
 
 ```ts
-undo(): Promise<Result<"APPLIED" | "NO_CHANGE", EditError>>;
-redo(): Promise<Result<"APPLIED" | "NO_CHANGE", EditError>>;
+undo(): Result<"APPLIED" | "NO_CHANGE", EditError>;
+redo(): Result<"APPLIED" | "NO_CHANGE", EditError>;
 ```
 
-Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent la version précédente ou suivante par la même barrière de préparation et la même réconciliation audio que toute publication de projet. La cible reste privée tant qu’elle n’est pas prête ; pendant cette attente, aucune autre modification du document n’est acceptée. Un échec conserve le projet et les piles d’historique. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` et ne crée pas d’entrée ; une pile vide retourne également `NO_CHANGE`.
+Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent synchroniquement la version précédente ou suivante et publient immédiatement la nouvelle `projectProjection`. `PlaybackService` converge ensuite vers sa nouvelle révision sans bloquer l’historique. Un échec de domaine conserve le projet et les piles ; un échec audio ultérieur ne les annule pas. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` et ne crée pas d’entrée ; une pile vide retourne également `NO_CHANGE`.
 
 Après publication, les références de sélection absentes sont retirées et les têtes immobiles sont ramenées dans les nouvelles bornes. Un éditeur dont le score a disparu est fermé ; les transports concernés suivent les règles de suppression et de fin de portée. Undo/redo n’a pas pour rôle de restaurer une sélection ou une ancienne position de transport.
 
@@ -1066,7 +1056,7 @@ L’ajout initial à la grille crée un clip référençant le score. Cette cré
 
 ### ProjectFileService
 
-`ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne la publication avec `EditService` et `PlaybackService`. Cette vérification confirme seulement qu’un `InstrumentId` est disponible dans le catalogue : `ProjectFileService` ne prépare ni ne charge aucune banque.
+`ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne avec `EditService` et `PlaybackService` l’exclusion des éditions ainsi que l’arrêt des auditions de l’ancien document. Cette vérification confirme seulement qu’un `InstrumentId` est disponible dans le catalogue : `ProjectFileService` ne prépare ni ne charge aucune banque.
 
 Une ouverture valide remplace ensemble `ProjectState.project` et `ProjectState.settings`, crée un nouvel `ArrangementEditorState` avec sa tête à `0` et une sélection vide, puis ferme l’éventuel `ScoreEditorState`. `GlobalEditorState` reste présent et n’est pas recréé. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
 
@@ -1080,13 +1070,36 @@ L’ouverture partage l’exclusion des modifications du document : elle est ref
 
 `PlaybackService` orchestre le transport global du projet, le transport local du score édité, la préécoute d’une hauteur et celle d’une sélection, puis produit les commandes audio correspondantes.
 
-#### Projet effectif et modification en temps réel
+#### Projection du projet et convergence audio
 
-Le service lit le même `effectiveProject` que la présentation. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc immédiatement le projet transitoire lorsqu'il existe, y compris ses collisions provisoires.
+Le service observe `projectProjection` et sa `projectionRevision`. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc la projection la plus récente, y compris ses collisions provisoires. La présentation l’affiche immédiatement ; un transport déjà actif peut encore exécuter un plan issu d’une révision antérieure pendant que l’audio converge.
 
-Lorsqu’un transport est actif, chaque projection candidate susceptible d’affecter sa portée requiert le remplacement de la portion future de l’ancien plan. Le service obtient `safeAt` par `AudioEngine.getClock(sessionId)`, recalcule depuis cette borne avec la candidate et transmet une unique mise à jour atomique au moteur. La projection devient effective après acceptation du plan ; en cas de refus temporel, le calcul est repris sans publication partielle. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `SCORE`, seules les modifications du score attaché, de l’instrument de sa piste d’écoute et du tempo du projet affectent la planification ; les placements et les autres scores sont sans effet.
+```ts
+type AudioProjectionState =
+  | {
+      status: "SYNCED";
+      appliedRevision: number;
+      targetRevision: number;
+    }
+  | {
+      status: "CONVERGING";
+      appliedRevision: number;
+      targetRevision: number;
+      instrumentIds: readonly InstrumentId[];
+    }
+  | {
+      status: "FAILED";
+      appliedRevision: number;
+      targetRevision: number;
+      error: InstrumentPreparationError;
+    };
+```
 
-Valider un brouillon sans en modifier la projection sonore ne doit provoquer ni nouvelle planification ni rupture. L'abandonner entraîne la même réconciliation que toute autre modification du projet effectif.
+`AudioProjectionState` appartient à `PlaybackService`, jamais à `ProjectState` ou `EditSession`. `targetRevision` désigne la dernière projection demandée ; `appliedRevision` désigne la projection du plan actuellement accepté. Sans transport actif, aucune convergence n’est nécessaire et le prochain départ relit directement la projection courante. Si une nouvelle projection n’affecte pas la portée du transport actif, `PlaybackService` fait immédiatement rejoindre `appliedRevision` à `targetRevision` sans appeler le moteur.
+
+Lorsqu’un transport est actif, chaque nouvelle projection susceptible d’affecter sa portée devient immédiatement la cible. Le service conserve en interne la projection du dernier plan accepté, obtient `safeAt` par `AudioEngine.getClock(sessionId)`, prépare les éventuelles banques manquantes, puis recalcule depuis cette borne et transmet une unique mise à jour atomique au moteur. L’ancien plan continue jusque-là. En cas de refus temporel, le calcul est repris depuis une nouvelle borne sans retarder l’affichage ni revenir à une ancienne projection. Deux notes provisoirement superposées restent deux occurrences distinctes pour le moteur. Pour `SCORE`, seules les modifications du score attaché, de l’instrument de sa piste d’écoute et du tempo du projet affectent la planification ; les placements et les autres scores sont sans effet.
+
+Une projection plus récente remplace la cible précédente. Une réponse tardive peut alimenter le cache d’instruments mais ne peut appliquer un plan obsolète. Quand le moteur accepte le plan de la dernière cible, `appliedRevision` la rejoint et l’état devient `SYNCED`. Valider un brouillon sans modifier son contenu projeté ne provoque aucune nouvelle planification ; l’annuler produit au contraire une nouvelle projection vers laquelle l’audio converge selon les mêmes règles.
 
 La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipId, ScoreId, repeatIndex, NoteId)`. Pour un transport `SCORE`, elle compare les notes par `(ScoreId, NoteId)` dans le score attaché à la session. Ces clés restent internes au service ; le moteur utilise les `NoteOccurrenceId`. Dans les deux cas, la comparaison est faite au tick correspondant à `safeAt`, calculé avec l’ancien ancrage, et sur les voix que l’ancien plan aura encore actives à cette borne. Dans les règles ci-dessous, « tête » désigne cette position de réconciliation, et non le tick affiché au moment du geste :
 
@@ -1137,17 +1150,17 @@ Le redimensionnement par le bord gauche modifie à la fois `start` et `repeatCou
 
 Pour un transport `SCORE`, aucune de ces règles de répétition ne s’applique : il ignore les clips et lit directement le score jusqu’à `score.duration`.
 
-##### Préparation sonore des éditions
+##### Convergence audio des projections
 
-`EditService` demande à `PlaybackService` d’évaluer et de préparer les banques nécessaires à la projection candidate avant de la publier. `PlaybackService` est l’unique consommateur applicatif de `AudioEngine.prepareInstruments` ; `EditService`, les composants de présentation et `ProjectFileService` ne l’appellent jamais directement.
+`PlaybackService` est l’unique consommateur applicatif de `AudioEngine.prepareInstruments`. `EditService`, les composants de présentation et `ProjectFileService` ne l’appellent jamais directement et ne conditionnent aucune publication musicale à son résultat.
 
-Cette préparation couvre toute modification introduisant un instrument non prêt dans la portée active : placement d’un score inutilisé, création d’un clip, déplacement vers une autre piste ou dans la partie restant à lire, changement d’instrument d’une piste ou restauration par undo/redo. Un changement explicite de `Track.instrumentId` prépare aussi la banque quand le transport est arrêté. Créer une piste vide ne charge pas sa banque tant qu’aucune audition ne la requiert ; les instruments sont néanmoins validés auprès du catalogue avant publication. Les autres éditions sans portée sonore active ne chargent pas inutilement les instruments.
+Avec un transport actif, la convergence prépare toute banque introduite dans la portée restant à lire : placement d’un score inutilisé, création d’un clip, déplacement vers une autre piste, changement d’instrument d’une piste ou restauration par undo/redo. Créer une piste vide ou modifier un instrument lorsque le transport est arrêté ne charge rien ; le prochain transport ou la prochaine préécoute préparera les ressources réellement nécessaires. Les identifiants restent validés auprès du catalogue indépendamment de la disponibilité technique des banques.
 
-`pendingEditPreparation` identifie l’intention concernée et protège sa publication ; il ne représente ni le chargeur, ni le cache, et remplace le mécanisme spécialisé de changement d’instrument. Tant qu’une banque manque, la projection candidate n’est pas publiée : l’ancien `effectiveProject` reste affiché comme document et continue de jouer, tandis que le geste ou le choix en attente dispose d’un repère distinct en chargement.
+À chaque changement de `projectionRevision`, le service capture la nouvelle cible et passe à `CONVERGING` lorsqu’elle affecte le transport. Il revalide la portée sonore au moment où les ressources deviennent disponibles, réutilise les banques déjà prêtes et ne charge que les banques supplémentaires. Une cible plus récente rend l’ancienne continuation obsolète sans annuler le chargement partagé.
 
-Avant publication, `EditService` vérifie que la demande, la commande et la base sont toujours celles attendues, tandis que `PlaybackService` revalide la portée sonore et les besoins. Si le transport a changé ou avancé, les besoins sont recalculés ; seules les banques supplémentaires sont préparées. L’arrêt du transport ne valide ni n’annule une édition à lui seul. Les préécoutes restent protégées par leurs propres handles. Un échec de banque produit `InstrumentPreparationError`, conserve le dernier projet effectif et ne crée aucune entrée d’historique.
+Un échec de banque produit `InstrumentPreparationError` dans `AudioProjectionState` et place la convergence en `FAILED`. Il ne modifie ni `projectProjection`, ni le projet validé, ni l’historique ; le moteur conserve son dernier plan accepté. Une nouvelle projection ou une nouvelle demande de synchronisation peut reprendre la convergence en réutilisant le cache déjà disponible.
 
-Quand toutes les ressources sont disponibles, une projection de geste peut devenir transitoirement effective ; un commit publie seulement un résultat valide. Si un transport est actif, sa nouvelle planification doit être acceptée avant la publication de l’édition. Un refus temporel conserve l’état précédent et relance le calcul à une nouvelle borne. Une fois accepté, le document est publié et l’audio le rejoint à cette borne sûre, avec le même délai de replanification que les autres gestes.
+Quand toutes les ressources sont disponibles, le service calcule le remplacement à une borne sûre. Un refus `SCHEDULE_TOO_LATE` conserve l’ancien plan et relance le calcul à une nouvelle borne. L’acceptation met à jour le plan sonore et `appliedRevision`, sans publication supplémentaire du document.
 
 Un changement d’instrument ouvre de nouveaux contextes dans la session existante. La mise à jour atomique contient les `NOTE_OFF` et `ContextCompletion` des anciens contextes à la borne choisie, ainsi que les nouvelles attaques et fins. Les anciens contextes peuvent se drainer pendant que les nouveaux jouent ; aucune voix n’est coupée avant l’acceptation du plan. Les notes couvrant cette borne sont réattaquées au nouvel instrument. Les contextes futurs encore remplaçables sont également recalculés.
 
@@ -1271,7 +1284,7 @@ interface PendingTransportRequest {
   targetTick: Tick;
   scoreId?: ScoreId;
   trackId?: TrackId;
-  effectiveProjectRevision: number;
+  projectionRevision: number;
   status: "PREPARING";
 }
 ```
@@ -1282,10 +1295,10 @@ Chaque `playProject`, `playScore`, `seekProject`, `seekScore` ou `setAuditionTra
 
 Pour les requêtes locales nécessitant une préparation, `scoreId` et `trackId` capturent le contexte d’écoute ; ils sont absents pour le projet. `SET_AUDITION_TRACK` utilise le tick local courant comme repère initial, mais recalcule la borne de bascule si le transport avance ; il ne crée pas de transport et retourne `APPLIED` après publication du choix. Fermer ou changer le score édité invalide les requêtes locales encore en attente et les résout avec `CANCELLED`, sans arrêter une session déjà démarrée.
 
-La requête capture `effectiveProjectRevision` avant de déterminer les instruments nécessaires. Après chaque préparation réussie, le service compare cette révision à la valeur courante :
+La requête capture `projectionRevision` avant de déterminer les instruments nécessaires. Après chaque préparation réussie, le service compare cette révision à la valeur courante :
 
 1. si elles sont égales et que la requête est toujours courante, il poursuit l’opération : ouverture de session pour un play/seek, ou publication du choix et éventuelle réconciliation de la session existante pour `SET_AUDITION_TRACK` ;
-2. si elles diffèrent, il relit le dernier `effectiveProject`, revalide les références et les bornes applicables, puis recalcule la portée et les instruments requis ;
+2. si elles diffèrent, il relit la dernière `projectProjection`, revalide les références et les bornes applicables, puis recalcule la portée et les instruments requis ;
 3. les banques déjà préparées sont réutilisées et seules les banques supplémentaires sont chargées ;
 4. le contrôle recommence avant le démarrage ou la publication du choix d’écoute.
 
@@ -1333,27 +1346,27 @@ newPlayhead = min(currentPlayhead, newEndTick)
 
 Si un transport actif reste strictement avant `newEndTick`, il continue avec ses commandes et `ContextCompletion` replanifiées.
 
-Si sa position à la borne acceptée se trouve à la nouvelle fin ou au-delà, le service prépare d’abord la fin du plan ; après acceptation :
+Si la position du transport se trouve à la nouvelle fin ou au-delà, l’état applicatif ramène immédiatement la tête affichée sur `newEndTick`. `PlaybackService` fait ensuite converger le plan :
 
-- l’état applicatif place immédiatement la tête sur `newEndTick` ;
-- le service annule les attaques futures remplaçables ;
+- il annule les attaques futures remplaçables ;
 - il relâche les voix actives à la première borne `safeAt` disponible ;
 - les contextes passent à `DRAINING` s’ils possèdent encore des releases ou tails ;
-- l’`ActiveTransport` est supprimé ; la session est fermée lorsque sa fin sonore acceptée est atteinte, puis libérée après drainage.
+- l’`ActiveTransport` est supprimé lorsque la fin sonore est acceptée ; la session est ensuite libérée après drainage.
+
+La projection raccourcie n’attend donc pas cette fermeture sonore.
 
 Si la portée est inactive, seul le clamp de sa tête est nécessaire. L’allongement ultérieur d’une portée ne déplace jamais automatiquement sa tête.
 
 #### Suppression du score attaché à une session
 
-Un score ne peut être supprimé du domaine que s’il n’est référencé par aucun `Clip`. Le cas d’usage valide d’abord la suppression et l’ensemble de la commande, sans publier le projet. Si ce score est actuellement joué par une session `SCORE`, il orchestre ensuite à la publication :
+Un score ne peut être supprimé du domaine que s’il n’est référencé par aucun `Clip`. Après validation, le cas d’usage publie immédiatement le nouveau `project`, ferme `ScoreEditorState` s’il ciblait ce score et termine les préécoutes qui le référencent. Si une session `SCORE` le joue encore, `PlaybackService` observe la nouvelle projection puis :
 
-1. l’arrêt `GRACEFUL` de la session et l’annulation de ses attaques futures ;
-2. le relâchement de ses voix actives et le drainage éventuel de ses contextes ;
-3. la suppression de l’`ActiveTransport` ;
-4. l’arrêt de ses `PITCH_PREVIEW` et `SELECTION_PREVIEW` ;
-5. l’invalidation des préparations devenues sans objet ; une édition concurrente reste interdite ;
-6. la fermeture de `ScoreEditorState` s’il cible encore ce score ;
-7. la suppression du score dans le nouveau `project`.
+1. invalide ses préparations devenues sans objet ;
+2. annule ses attaques futures ;
+3. relâche ses voix actives à la borne sûre et draine éventuellement ses contextes ;
+4. supprime l’`ActiveTransport` lorsque l’arrêt `GRACEFUL` est accepté.
+
+La disparition du document et de l’éditeur n’attend pas la fin sonore.
 
 La tête locale appartient au `ScoreEditorState` supprimé : elle n’est ni conservée sans score, ni transférée au prochain score ouvert. Les tails de l’ancienne session peuvent continuer à se drainer après la suppression sans maintenir le score dans l’agrégat.
 
@@ -1363,7 +1376,7 @@ Supprimer un score non placé pendant un transport `PROJECT` n’a aucun effet s
 
 Le projet refuse une piste encore référencée par des clips. Une piste vide peut toutefois être utilisée par une session `SCORE` ou des préécoutes. Lorsqu’une édition, une annulation de brouillon ou un undo/redo retire effectivement cette piste, l’application arrête gracieusement la session `SCORE` liée, mémorise la tête locale si ce score est ouvert, termine les handles concernés et invalide les préparations visant la piste. Elle retire `auditionTrackId` des états qui la référencent, tout en conservant le score ouvert, ses notes sélectionnées et sa tête.
 
-Ces effets sont coordonnés avec la publication du nouveau projet et ne se produisent pas si la suppression est refusée. Restaurer ensuite la piste via l’historique ne restaure ni une audition arrêtée ni un choix applicatif effacé. Une suppression collective qui retire aussi des clips suit en plus la réconciliation ordinaire de `PROJECT`.
+Les effets documentaires sont atomiques avec la publication du nouveau projet ; les effets sonores convergent ensuite et ne se produisent pas si la suppression est refusée. Restaurer ensuite la piste via l’historique ne restaure ni une audition arrêtée ni un choix applicatif effacé. Une suppression collective qui retire aussi des clips suit en plus la réconciliation ordinaire de `PROJECT`.
 
 #### Préécoutes du piano roll
 
@@ -1377,9 +1390,9 @@ L’audition est soutenue jusqu’à `PreviewPitchHandle.release()` ou jusqu’�
 
 ##### Préécoute d’une sélection
 
-`previewSelection(noteIds)` résout les notes dans le score édité depuis l’`effectiveProject`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
+`previewSelection(noteIds)` résout les notes dans le score édité depuis l’`projectProjection`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
 
-Le `PreviewSelectionHandle` reste toutefois actif pendant le geste afin de suivre les transformations. À chaque remplacement de l’`effectiveProject`, le service compare la hauteur de chaque `NoteId` sélectionné avec sa valeur précédente :
+Le `PreviewSelectionHandle` reste toutefois actif pendant le geste afin de suivre les transformations. À chaque remplacement de l’`projectProjection`, le service compare la hauteur de chaque `NoteId` sélectionné avec sa valeur précédente :
 
 - si aucune hauteur sélectionnée n’a changé, notamment pendant un déplacement seulement temporel, aucune attaque n’est produite ;
 - dès que la hauteur d’au moins une note sélectionnée change, toute attaque précédente encore active est relâchée, puis l’ensemble complet des hauteurs actuelles est de nouveau dédupliqué et réattaqué brièvement ;
@@ -1437,7 +1450,7 @@ Si le tempo est modifié pendant le transport, le service ancre la nouvelle conv
 ```text
 command.at = replanAt
            + ((eventTick - replanTick) / 960)
-           * (60 / effectiveProject.tempo.bpm)
+           * (60 / projectProjection.tempo.bpm)
 ```
 
 `eventTick` et `replanTick` sont interprétés dans le référentiel du transport actif. La borne conserve donc le tick global atteint pour `PROJECT`, ou le tick local atteint pour `SCORE`.
@@ -1679,7 +1692,7 @@ Dans cette représentation :
 
 Tous les clips d’une piste utilisent son instrument. Déplacer un clip verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
-La présentation affiche toujours l’`effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` obtient `projectCandidate` en appelant `buildProjectCandidate` avec la commande quantifiée et la base du geste. Après les éventuelles préparations et l’acceptation du plan, cette projection devient visible et audible à la borne sûre, même si une collision provisoire empêche encore d’en faire un `Project` valide. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours la `projectProjection`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` construit `editSession.draft.candidate` avec la commande quantifiée et la base du geste. Cette projection devient visible immédiatement, même si une collision provisoire empêche encore d’en faire un `Project` valide ; l’audio la rejoint ensuite selon son propre état de convergence. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
 Les actions de duplication distinguent clairement le partage du score et la création d’une copie indépendante. Le nombre de clips utilisant un score peut être dérivé de leurs `scoreId` pour informer l’utilisateur de la portée d’une édition. Cette information n’est ni un champ du document ni un mode d’édition : modifier le score ouvert modifie toujours ce score et tous les clips qui le référencent.
 
@@ -1785,7 +1798,7 @@ Les opérations de cycle de vie sont idempotentes. Un contexte `DRAINING` ne peu
 
 Si un clip est déplacé au-delà de la tête alors que son ancien contexte est déjà `DRAINING`, ce contexte conserve uniquement ses releases et tails jusqu'au silence. Il n'est ni réactivé ni coupé. Si le nouveau placement requiert des attaques futures, le service ouvre un autre contexte indépendant.
 
-Un contexte de lecture correspond soit à l’activation audio d’un `Clip` dans un transport `PROJECT`, soit à la lecture isolée du score attaché à un transport `SCORE`. Dans le premier cas, les identifiants `ClipId`, `ScoreId` et `TrackId` référencés ainsi que leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve l’association entre le couple `ScoreId` / `TrackId` et le contexte courant de la session. Deux clips du même score ouverts simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de l’instrument suit la préparation sonore des éditions et crée un nouveau contexte dans la même session ; l’ancien peut encore se drainer.
+Un contexte de lecture correspond soit à l’activation audio d’un `Clip` dans un transport `PROJECT`, soit à la lecture isolée du score attaché à un transport `SCORE`. Dans le premier cas, les identifiants `ClipId`, `ScoreId` et `TrackId` référencés ainsi que leur correspondance avec le contexte restent une connaissance du `PlaybackService`. Dans le second, le service conserve l’association entre le couple `ScoreId` / `TrackId` et le contexte courant de la session. Deux clips du même score ouverts simultanément reçoivent toujours des contextes et des instances d’instrument indépendants. Le remplacement de l’instrument suit la convergence audio des projections et crée un nouveau contexte dans la même session ; l’ancien peut encore se drainer.
 
 Les deux formes de préécoute utilisent le même type de contexte. Le `PlaybackService` conserve les associations internes entre leurs handles publics, leurs sessions, leurs contextes et leurs occurrences sonores ; aucun descripteur supplémentaire n'est nécessaire.
 
@@ -1816,7 +1829,7 @@ Le moteur possède un chargeur `smplr` partagé. Le chargement des ressources di
 - l’obsolescence ou l’annulation d’une demande applicative n’invalide pas une ressource déjà chargée et n’interdit pas au chargement partagé de terminer ;
 - une réussite tardive peut alimenter le cache, mais ne déclenche par elle-même ni publication, ni session, ni attaque.
 
-Le propriétaire de chaque parcours reste responsable de vérifier que sa demande est encore courante après la préparation : `PendingTransportRequest` pour un transport, `EditSessionId + commandRevision` pour une édition, et l’état du handle pour une préécoute. Ces contrôles ne dupliquent pas le chargement ; ils définissent des continuations applicatives différentes autour du même résultat technique.
+Le propriétaire de chaque parcours reste responsable de vérifier que sa demande est encore courante après la préparation : `PendingTransportRequest` pour un transport, `targetRevision` dans `AudioProjectionState` pour la convergence d’un plan actif, et l’état du handle pour une préécoute. Ces contrôles ne dupliquent pas le chargement ; ils définissent des continuations applicatives différentes autour du même résultat technique.
 
 La préparation constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont chargées et décodées avant l’ouverture de la session. Le cache mémoire partagé évite de recommencer le décodage lors des lectures suivantes. Le cache HTTP éventuel des ressources statiques relève du mécanisme ordinaire de distribution de l’application et non d’un catalogue de banques téléchargées à la demande.
 
@@ -1969,8 +1982,8 @@ src/
 | `domain/operations/composition/ScoreTransformations.ts`, `NoteOverlap.ts` | Transformations retournant un `Score`, détection et résolution des chevauchements |
 | `domain/operations/time/`, `harmony/` | Chronologies dérivées et analyse des rôles de notes |
 | `application/*State.ts`, `EditSession.ts`, `ProjectHistory.ts`, `Selection.ts`, `Grid.ts` | État applicatif, session et décisions d’édition, historique, sélections et quantification |
-| `application/use-cases/EditService.ts` | `EditIntent`, traduction vers `ProjectEditCommand`, préparation, publication et undo/redo |
-| `application/use-cases/PlaybackService.ts` | Transports, préécoutes, planification, préparation et identités d’exécution applicatives |
+| `application/use-cases/EditService.ts` | `EditIntent`, traduction vers `ProjectEditCommand`, brouillons, publication et undo/redo |
+| `application/use-cases/PlaybackService.ts` | Transports, préécoutes, convergence des projections, planification, préparation et identités d’exécution applicatives |
 | `application/use-cases/ProjectFileService.ts` | Ouverture, sauvegarde, contrôle du catalogue et remplacement du document |
 | `application/ports/` | Contrats abstraits du moteur audio, du catalogue d’instruments et du stockage |
 | `infrastructure/audio/` | Catalogue concret, ressources `smplr`, moteur, sessions, contextes et instances |
@@ -1981,7 +1994,7 @@ Les modules de `models/` décrivent des données immuables et empêchent leur co
 
 Les commandes et erreurs propres à une transformation restent dans son module. Les erreurs de création restent auprès du modèle qui protège l'invariant correspondant. `MeterSection`, `HarmonySection` et les segments de rôle sont dérivés par les opérations et ne sont pas persistés. `Clip` demeure possédé directement par `Project` malgré son fichier distinct. Enfin, `ScoreContentRef` reste une adresse typée d'entité locale et non une sélection ; `Selection.ts` l'emploie sans déplacer sa propriété hors du domaine.
 
-Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` demande à `PlaybackService` la coordination sonore des publications ; `ProjectFileService` coordonne ses publications avec ces services. `PlaybackService` ne dépend pas en retour d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent séparément `GlobalEditorState`, `ArrangementEditorState` et `ScoreEditorState` et conservent les détails d’interface ; ils ne les regroupent pas dans un autre modèle d’éditeur et ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
+Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` publie les projections sans attendre l’audio ; `PlaybackService` les observe et converge indépendamment vers leur dernière révision. `ProjectFileService` coordonne le remplacement d’un document avec les arrêts nécessaires. `PlaybackService` ne dépend pas d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent séparément `GlobalEditorState`, `ArrangementEditorState` et `ScoreEditorState` et conservent les détails d’interface ; ils ne les regroupent pas dans un autre modèle d’éditeur et ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
 
 ## Questions ouvertes
 
@@ -1996,21 +2009,21 @@ Les grandes responsabilités et les règles déjà actées ci-dessus constituent
 
 ### Points bloquants
 
-#### Q1 — Publication du document et plan audio accepté
+#### Q1 — Plans audio successifs et ancrages temporels
 
-Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel), [Préparation sonore des éditions](#préparation-sonore-des-éditions), [Sessions et concurrence](#sessions-et-concurrence) et [Éditeur d’arrangement](#éditeur-darrangement).
+Voir [Projection du projet et convergence audio](#projection-du-projet-et-convergence-audio), [Convergence audio des projections](#convergence-audio-des-projections), [Sessions et concurrence](#sessions-et-concurrence) et [Éditeur d’arrangement](#éditeur-darrangement).
 
-- Le document devient-il visible dès l’acceptation du plan ou seulement à sa borne future `safeAt` ? La préparation sonore et le cas 14 décrivent une publication après acceptation suivie d’une prise d’effet sonore, tandis que la présentation évoque une visibilité et une audibilité à la borne sûre : quelle formulation fait autorité ?
-- Qui possède la représentation du plan accepté, distincte de l’état actuellement audible et de la dernière projection candidate ?
-- Comment représenter les ancrages temporels encore nécessaires lorsque plusieurs changements de tempo sont acceptés avant leur prise d’effet ? L’unique `ActiveTransport.anchor` présenté suffit-il au contrat ?
-- Lors d’un nouveau `replaceSchedule`, quels changements futurs d’ancrage, de contexte ou d’instrument sont conservés, remplacés ou annulés ?
-- Sur quelle version du plan et de ses ancrages se fondent la tête affichée et la réconciliation suivante ?
+La projection devient désormais visible immédiatement et `PlaybackService` possède le dernier plan accepté ainsi que l’état de convergence. Il reste à préciser :
+
+- comment représenter les ancrages temporels encore nécessaires lorsque plusieurs changements de tempo sont acceptés avant leur prise d’effet ; l’unique `ActiveTransport.anchor` présenté suffit-il au contrat ?
+- lors d’un nouveau `replaceSchedule`, quels changements futurs d’ancrage, de contexte ou d’instrument sont conservés, remplacés ou annulés ?
+- sur quelle version du plan accepté et de ses ancrages se fondent la tête affichée et la réconciliation suivante ?
 
 Cas à résoudre : un changement de tempo est accepté pour 5,04 s ; un second changement arrive avant cette borne. La conversion temps/tick doit rester définie avant, entre et après les bornes conservées.
 
 #### Q2 — État de réconciliation exactement à la borne
 
-Voir [Projet effectif et modification en temps réel](#projet-effectif-et-modification-en-temps-réel) et [AudioEngine](#audioengine).
+Voir [Projection du projet et convergence audio](#projection-du-projet-et-convergence-audio) et [AudioEngine](#audioengine).
 
 - L’état utilisé à `from` est-il celui obtenu après les seuls événements strictement antérieurs à cette borne, ou après les anciens événements situés exactement à cette borne ?
 - Comment rendre cette définition compatible avec le retrait des événements `at >= from` par `replaceSchedule` et l’ordre `NOTE_OFF`, `ContextCompletion`, `NOTE_ON` du nouveau plan ?
@@ -2021,15 +2034,15 @@ Les études de cas doivent distinguer explicitement un événement strictement a
 
 ### Contrats importants à compléter
 
-#### Q3 — Transitions complètes du cycle d’édition
+#### Q3 — Codes et transitions complètes du cycle d’édition
 
-Voir [Intention, session et projet effectif](#intention-session-et-projet-effectif) et [Historique des versions validées](#historique-des-versions-validées).
+Voir [Intention, session et projection du projet](#intention-session-et-projection-du-projet) et [Historique des versions validées](#historique-des-versions-validées).
 
-- Quel résultat et quels effets produisent deux `commitEdit()` pendant la même préparation, ou deux soumissions de la même décision avant la fin de la première ?
-- Comment un échec de préparation déclenchée par `updateEdit()` devient-il observable si aucun commit n’attend son résultat ? Quel état conserve la session et comment réessayer ?
-- À quel instant `cancelEdit(): void` est-elle considérée comme acquise si le retour au projet validé requiert une réconciliation audio, notamment après un refus `SCHEDULE_TOO_LATE` ?
-- Que reste-t-il observable pendant cette annulation et à partir de quand une nouvelle édition est-elle autorisée ?
-- Quelle table exhaustive « état + événement → résultat + nouvel état + effets » couvre les éditions, décisions, préparations, commits, annulations et restaurations ?
+Le cycle d’édition est désormais synchrone et indépendant de la convergence audio. Il reste à préciser :
+
+- quels codes exacts distinguent l’absence de session, une seconde soumission de décision devenue périmée et une actualisation interdite pendant `AWAITING_DECISION` ;
+- quelle table exhaustive « état + événement → résultat + nouvel état + effets » couvre les éditions, décisions, commits, annulations et restaurations ;
+- quels effets applicatifs annexes sont restaurés immédiatement avec la projection et lesquels restent acquis, indépendamment de la convergence ultérieure du son.
 
 #### Q4 — Effets applicatifs de l’annulation d’un brouillon
 
@@ -2055,7 +2068,7 @@ Voir [GridResolution](#gridresolution), [Clip](#clip) et [Responsabilités d’E
 
 #### Q6 — Ordres canoniques et identités des fragments
 
-Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Résolution des chevauchements de notes](#résolution-des-chevauchements-de-notes) et [Intention, session et projet effectif](#intention-session-et-projet-effectif).
+Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Résolution des chevauchements de notes](#résolution-des-chevauchements-de-notes) et [Intention, session et projection du projet](#intention-session-et-projection-du-projet).
 
 - Comment l’application construit-elle l’ordre des `manipulatedNoteIds` depuis une sélection : ordre de sélection, ordre musical ou ordre canonique d’identifiants ? Cet ordre fait-il partie de l’intention conservée ?
 - Quel ordre exact détermine le premier score invalide, la première erreur de validation et l’ordre des `overlappingNoteIds` ?
