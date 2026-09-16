@@ -271,9 +271,9 @@ Les frontières des `HarmonySection` sont réunies avec celles du `TimeRange` po
 
 Si un clip du score commence au tick global `10000`, ces bornes locales correspondent aux ticks globaux `10960`, `11920`, `13840` et `15280`. Les objets locaux ne sont pas réécrits pour autant.
 
-## Cas 14 — Replanification du projet transitoire
+## Cas 14 — Projection immédiate et convergence audio
 
-Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement un clip déjà actif et déplace un changement local situé plus loin dans le score qu’il référence. La commande fournit une nouvelle projection candidate. Elle deviendra l’`effectiveProject` partagé par la présentation et l’audio après acceptation de sa replanification.
+Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement un clip déjà actif et déplace un changement local situé plus loin dans le score qu’il référence. La commande fournit une nouvelle projection candidate dans `EditSession.draft`. Elle devient immédiatement la `projectProjection` affichée, tandis que le plan sonore précédent continue jusqu’à l’acceptation de sa replanification.
 
 Le `PlaybackService` consulte l’horloge de la session :
 
@@ -291,13 +291,13 @@ const updateResult = audioEngine.replaceSchedule(transportSessionId, {
 });
 ```
 
-Si la borne est encore sûre, le moteur conserve les événements antérieurs, remplace atomiquement les commandes et fins de contexte à partir de cette borne et retourne `ok(undefined)`. Si elle est dépassée, `updateResult` contient `SCHEDULE_TOO_LATE` et aucune collection n’est modifiée ; le service recalcule depuis une nouvelle borne avant publication. Dans la suite de ce cas, « tête » désigne le tick de cette borne acceptée.
+Si la borne est encore sûre, le moteur conserve les événements antérieurs, remplace atomiquement les commandes et fins de contexte à partir de cette borne et retourne `ok(undefined)`. Si elle est dépassée, `updateResult` contient `SCHEDULE_TOO_LATE` et aucune collection audio n’est modifiée ; le service recalcule depuis une nouvelle borne sans revenir sur la projection déjà affichée. Dans la suite de ce cas, « tête » désigne le tick de cette borne acceptée.
 
 Si l'ancien et le nouveau début global de la note restent avant la tête, tandis que sa fin reste après, l'occurrence de note audible est conservée et seul son `NOTE_OFF` est replanifié. Si le déplacement d’un `Clip` place l'attaque après la tête, l'occurrence de note reçoit un `NOTE_OFF` à la borne et sa future attaque est replanifiée. Une note auparavant inactive qui couvre désormais la tête reçoit un `NOTE_ON` à cette borne.
 
-Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Un changement d’instrument utilise la préparation sonore commune aux éditions : l’ancien instrument continue de jouer jusqu’à ce que la nouvelle banque soit prête, puis chaque clip actif concerné de cette piste bascule vers un nouveau contexte tandis que l’ancien se draine. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
+Une modification de hauteur ou de vélocité de la note impose une relâche puis une réattaque lorsqu'elle reste couverte. Un changement d’instrument rend immédiatement le nouvel instrument visible dans la projection ; l’ancien instrument continue toutefois de jouer jusqu’à ce que la nouvelle banque soit prête, puis chaque clip actif concerné de cette piste bascule vers un nouveau contexte tandis que l’ancien se draine. Un changement du tempo du projet replanifie les instants futurs sans réattaquer une note dont les données sonores sont inchangées.
 
-Le changement local appartient à la même édition atomique, mais ne produit aucun événement sonore en lui-même. Le `PlaybackSessionId` et l’origine temporelle ne changent pas ; la position poursuit son avance continue. Le document est publié après acceptation du plan, et le son le rejoint à la borne sûre.
+Le changement local appartient à la même édition atomique, mais ne produit aucun événement sonore en lui-même. Le `PlaybackSessionId` et l’origine temporelle ne changent pas ; la position poursuit son avance continue. Le document est déjà projeté visuellement ; seul le son le rejoint à la borne sûre.
 
 Si le transport actif était `SCORE` sur ce même score, le service ignorerait le déplacement d’un `Clip` et réconcilierait uniquement le contenu local depuis la tête du score. Une modification d’un autre score n’affecterait pas cette session ; le tempo du projet et l’instrument de sa piste d’écoute continueraient en revanche à s’y appliquer. La portée reste le score attaché à la session, même si le piano roll en affiche un autre.
 
@@ -345,7 +345,7 @@ Dans un autre scénario, `playScore()` démarre le score `Motif`, puis l'utilisa
 
 Un score contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, le `ProjectCandidate` conservé dans `projectCandidate` montre et fait entendre `note-m` et `note-a` simultanément dans leur position provisoire. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché et audible tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation.
+Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
 
 Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -355,7 +355,7 @@ Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`
 | Note manipulée | `C4` | `[960, 1440)` | conserve `note-m` | 100 |
 | Fragment droit | `C4` | `[1440, 1920)` | nouveau `NoteId` | 70 |
 
-Avec le choix `MERGE` soumis à la même décision, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `projectCandidate` et restauré `project` à l’écran comme dans l’audio.
+Avec le choix `MERGE` soumis à la même décision, `note-a` est absorbée et supprimée. `note-m` devient `[0, 1920)` tout en conservant son identité et sa vélocité `100`. Dans les deux modes, la note `E4` reste intacte et le résultat complet est appliqué comme une seule transformation. Le nouveau `NoteId` du fragment droit de `SLICE` est généré seulement à cet instant. Une annulation aurait simplement supprimé `EditSession` et restauré immédiatement `project` à l’écran ; l’audio aurait ensuite convergé vers cette nouvelle projection.
 
 Une note `C4` commençant exactement au tick `1920` serait seulement contiguë au résultat : les intervalles semi-ouverts ne déclenchent alors ni question ni résolution automatique.
 
@@ -385,27 +385,25 @@ La lecture d'une sauvegarde suit le même chemin de validation. Un clip dont `sc
 
 Un transport `PROJECT` joue deux clips actifs sur `track-piano` : le premier référence `Ostinato`, le second `Contrechant`. L’utilisateur choisit un vibraphone pour cette piste ; sa banque n’est pas encore chargée. Un autre clip d’`Ostinato` sur `track-strings` reste joué aux cordes.
 
-`EditService` ouvre une édition portant la commande de changement d’instrument de `track-piano`. Sa préparation est suivie par `PendingEditPreparation`, liée à l’identité et à la révision de cette commande. Il demande la préparation à `PlaybackService`, unique appelant applicatif du moteur :
+`EditService` publie immédiatement le nouveau brouillon. La grille et l’inspecteur lisent donc le vibraphone dans `projectProjection`, sans attendre l’audio. `PlaybackService` observe la nouvelle `projectionRevision`, place son `AudioProjectionState` en `CONVERGING` et demande seul la préparation au moteur :
 
 ```ts
 const preparation = await audioEngine.prepareInstruments([vibraphoneId]);
 // Result<"READY", InstrumentPreparationError>
 ```
 
-`PlaybackService` transmet le résultat à l’orchestration d’édition. `PendingEditPreparation` protège la continuation de cette édition ; il ne constitue pas un second chargeur.
-
 Pendant le chargement :
 
-- `project` et `effectiveProject` conservent le piano ;
-- les deux contextes actifs continuent leurs attaques avec le piano ;
-- la présentation indique que le vibraphone est en préparation ;
-- une annulation ou un autre choix rend cette demande obsolète.
+- la présentation montre déjà le vibraphone ;
+- le plan audio accepté et les deux contextes actifs continuent avec le piano ;
+- `appliedRevision` reste antérieure à `targetRevision` ;
+- une actualisation ou une annulation du geste produit une nouvelle cible et rend cette continuation obsolète.
 
-Lorsque la banque est prête et la commande toujours courante, le service calcule un plan commun aux deux clips à la même borne sûre. Il ouvre leurs nouveaux contextes de vibraphone et inclut les relâchements et fins des anciens contextes dans `replaceSchedule`. Après acceptation, l’édition est publiée ; à la borne choisie, les pianos passent à `DRAINING` et les notes couvrant cette borne sont réattaquées au vibraphone. Les attaques futures sont planifiées dans les nouveaux contextes. Un refus temporel conserve l’ancien plan et provoque un nouveau calcul, sans appliquer le changement d’instrument ni relâcher prématurément les pianos.
+Lorsque la banque est prête et la révision toujours ciblée, le service calcule un plan commun aux deux clips à la même borne sûre. Il ouvre leurs nouveaux contextes de vibraphone et inclut les relâchements et fins des anciens contextes dans `replaceSchedule`. À la borne acceptée, les pianos passent à `DRAINING`, les notes couvrant cette borne sont réattaquées au vibraphone et `appliedRevision` rejoint `targetRevision`. Les attaques futures sont planifiées dans les nouveaux contextes. Un refus temporel conserve l’ancien plan et provoque un nouveau calcul sans revenir sur la projection visuelle.
 
 Les releases et tails du piano peuvent donc coexister temporairement avec les nouvelles voix de vibraphone. Aucun nouveau transport n’est créé et la tête globale ne se déplace pas.
 
-Si la préparation retourne `err(InstrumentPreparationError)`, aucun contexte n’est remplacé et `Track.instrumentId` reste celui du piano. Les clips sur `track-strings` n’ont jamais été affectés.
+Si la préparation retourne `err(InstrumentPreparationError)`, aucun contexte n’est remplacé. `AudioProjectionState` passe à `FAILED`, mais le brouillon ou le projet validé conserve bien le vibraphone : l’échec technique ne révoque pas l’édition. Les clips sur `track-strings` ne sont jamais affectés.
 
 ## Cas 21 — Réconciliation après modification d’une répétition
 
@@ -475,7 +473,7 @@ Le même comportement s’applique à `playScore()` et `playScore(tick)` avec `s
 
 Un transport `SCORE` se trouve au tick local `6000`. Une édition valide réduit `score.duration` de `7680` à `4800` ticks.
 
-Le service prépare la fin du plan à une borne sûre. Après acceptation, l’application publie la durée et mémorise la tête locale à `4800`. Le plan annule les attaques futures remplaçables et relâche les voix actives à la borne acceptée. L’`ActiveTransport` est supprimé ; la session est fermée à cette borne puis libérée après drainage. Les contextes possédant encore des releases ou tails passent à `DRAINING`.
+L’application affiche immédiatement la nouvelle durée et ramène la tête locale à `4800`. `PlaybackService` prépare ensuite la fin du plan à une borne sûre : il annule les attaques futures remplaçables, relâche les voix actives à la borne acceptée puis supprime l’`ActiveTransport`. La session est fermée à cette borne et libérée après drainage ; les contextes possédant encore des releases ou tails passent à `DRAINING`.
 
 Si la nouvelle durée avait été `7000`, la tête serait restée à `6000` et le transport aurait continué jusqu’à sa nouvelle fin replanifiée. Si aucun transport n’avait été actif, seul le clamp de la tête aurait été nécessaire.
 
@@ -483,15 +481,14 @@ Si la nouvelle durée avait été `7000`, la tête serait restée à `6000` et l
 
 Le score non placé `Esquisse` est ouvert dans le piano roll et joué par une session `SCORE` utilisant explicitement `track-piano`. Comme aucun `Clip` ne le référence, l’utilisateur peut demander sa suppression.
 
-Le cas d’usage produit d’abord un candidat validé, sans le publier. Au remplacement effectif du projet, il :
+Le cas d’usage valide le candidat puis publie immédiatement la suppression : `ScoreEditorState` est fermé, sa tête locale disparaît et les préécoutes liées à `Esquisse` sont terminées. `PlaybackService` fait ensuite converger le son :
 
-1. arrête gracieusement la session `SCORE` ;
-2. annule ses attaques futures et relâche ses voix actives ;
-3. supprime l’`ActiveTransport` ;
-4. arrête les préécoutes liées à `Esquisse` ;
-5. invalide ses préparations devenues sans objet ; aucune édition concurrente n’est acceptée ;
-6. ferme son `ScoreEditorState` et fait disparaître sa tête locale ;
-7. supprime enfin le score du projet.
+1. il invalide les préparations devenues sans objet ;
+2. annule les attaques futures de la session `SCORE` ;
+3. relâche ses voix actives à la borne sûre ;
+4. supprime l’`ActiveTransport` lorsque l’arrêt gracieux est accepté.
+
+Le score a déjà disparu du projet pendant cette convergence.
 
 Les contextes peuvent terminer leurs tails en `DRAINING`, mais la session ne continue pas à lire une copie orpheline du score. Une tête locale n’est jamais transférée au prochain score ouvert.
 
@@ -526,7 +523,7 @@ Le projet est arrêté au tick `1920`. Un premier `playProject()` crée la requ�
 
 Avant la fin du chargement, l’utilisateur appelle `playProject(7680)`. Le service crée `request-b`, rend `request-a` obsolète et résout sa promesse avec `ok("SUPERSEDED")`. Même si le piano termine ensuite son chargement pour `request-a`, cette ancienne requête ne peut ouvrir aucune session.
 
-Pendant la préparation de `request-b`, l’utilisateur modifie `effectiveProject` et ajoute après le tick `7680` un clip sur une piste utilisant un vibraphone. `effectiveProjectRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
+Pendant la préparation de `request-b`, l’utilisateur modifie `projectProjection` et ajoute après le tick `7680` un clip sur une piste utilisant un vibraphone. `projectionRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
 
 Si `stop()` intervient pendant cette seconde préparation :
 
@@ -544,15 +541,15 @@ Un geste déplace une note et un changement harmonique. `EditService.beginEdit` 
 
 Un delta qui placerait une note avant `0` est refusé sans changer la dernière projection admissible. Un delta qui crée seulement un chevauchement de même hauteur peut être prévisualisé ; au commit, `NOTE_OVERLAP` est traduit en décision `NOTE_OVERLAP`, le brouillon est conservé et la commande reste figée. Une seconde édition ou `undo()` pendant cette attente retourne `EDIT_IN_PROGRESS`.
 
-La présentation soumet le choix `SLICE` avec l’identité de la décision. Il produit un seul nouveau projet et une seule entrée d’historique. Une réponse portant une ancienne identité est refusée. Une annulation aurait supprimé le brouillon sans rien inscrire. Si une préparation audio était en cours, `cancelEdit` l’aurait rendue obsolète ; sa réponse tardive ne pourrait ni modifier le projet ni démarrer des notes.
+La présentation soumet le choix `SLICE` avec l’identité de la décision. Il produit un seul nouveau projet et une seule entrée d’historique. Une réponse portant une ancienne identité est refusée. Une annulation aurait supprimé le brouillon sans rien inscrire. Si l’audio convergait vers le brouillon, `cancelEdit` aurait publié une nouvelle `projectionRevision` ciblant le projet validé ; une réponse tardive de l’ancienne convergence n’aurait pu appliquer aucun plan obsolète.
 
 ## Cas 29 — Placement sur une piste dont la banque n’est pas prête
 
 Le transport `PROJECT` lit les clips de `track-piano`. Une piste vide `track-vibes` utilise le vibraphone ; sa banque n’a pas été requise au démarrage. Un score existe sans clip. L’utilisateur le place sur `track-vibes`, dans la portée encore à lire, avec un intervalle qui peut recouvrir celui d’un clip de piano.
 
-La superposition est valide. La banque manquante déclenche toutefois `PendingEditPreparation` avant publication de cette nouvelle projection. L’ancien projet effectif continue de jouer ; le placement demandé dispose d’un repère en chargement. Aucun `NOTE_ON` de vibraphone n’est envoyé prématurément.
+La superposition est valide et le nouveau placement apparaît immédiatement dans `projectProjection`. La banque manquante place l’audio en `CONVERGING` ; l’ancien plan continue de jouer et aucun `NOTE_ON` de vibraphone n’est envoyé prématurément.
 
-À la fin du chargement, le service vérifie la commande et la portée actuelles, recalcule depuis la nouvelle borne sûre et publie après acceptation du plan. Les notes du score qui couvrent cette borne sont poursuivies par une attaque minimale ; celles déjà entièrement passées ne sont pas rejouées. Annuler ou modifier le geste rend la préparation précédente obsolète. Un échec conserve l’ancien projet effectif et n’ajoute rien à l’historique.
+À la fin du chargement, le service vérifie la révision ciblée et la portée actuelle, puis recalcule depuis une nouvelle borne sûre. Les notes du score qui couvrent cette borne sont poursuivies par une attaque minimale ; celles déjà entièrement passées ne sont pas rejouées. Annuler ou modifier le geste publie une nouvelle cible et rend la convergence précédente obsolète. Un échec place l’audio en `FAILED`, mais conserve la projection affichée et, si le geste a été validé, son entrée d’historique.
 
 ## Cas 30 — Note terminée avant la borne de réconciliation
 
@@ -673,7 +670,7 @@ Une destination de clip invalide ou une identité de score déjà utilisée fait
 
 ## Cas 41 — Réglages d’un score transitoire
 
-Le projet validé contient `score-a`, dont la résolution locale persistante vaut `120` ticks. Un geste crée un nouveau `score-b`. Tant que le geste n’est pas validé, `score-b` existe uniquement dans `projectCandidate` : `ProjectState.settings` reste associé au projet validé et ne contient aucune entrée pour `score-b`. L’édition provisoire de ce nouveau score utilise la valeur par défaut de `240` ticks.
+Le projet validé contient `score-a`, dont la résolution locale persistante vaut `120` ticks. Un geste crée un nouveau `score-b`. Tant que le geste n’est pas validé, `score-b` existe uniquement dans `editSession.draft.candidate` : `ProjectState.settings` reste associé au projet validé et ne contient aucune entrée pour `score-b`. L’édition provisoire de ce nouveau score utilise la valeur par défaut de `240` ticks.
 
 Si une sauvegarde intervient pendant le geste, le fichier contient seulement `score-a` et son réglage de `120` ticks. Le score et le réglage transitoires n’y apparaissent pas.
 
@@ -692,7 +689,7 @@ Un score contient deux notes de même hauteur qui ne se chevauchent pas :
 
 Le geste demande leur échange dans une seule commande. Les deux placements finaux sont exprimés relativement au même `baseProject`. `buildProjectCandidate` les applique collectivement, puis inspecte la collection obtenue. Il ne déplace jamais `note-a` et ne valide jamais cet état intermédiaire avant de déplacer `note-b`. Le candidat final ne contient aucun chevauchement ; `finalizeProjectCandidate` construit donc directement le nouveau `Project`.
 
-Si les intervalles finaux se recouvrent, la même inspection produit une `DeferredViolation` de type `NOTE_OVERLAP`. Le `ProjectCandidate` reste affichable et audible pendant le geste, mais ne peut pas être fourni à une opération exigeant un `Project`. Au commit, `finalizeProjectCandidate` exige une `DeferredResolution` `SLICE` ou `MERGE`, applique la résolution puis relance les mêmes inspections avant de construire le projet validé.
+Si les intervalles finaux se recouvrent, la même inspection produit une `DeferredViolation` de type `NOTE_OVERLAP`. Le `ProjectCandidate` reste immédiatement affichable et devient la cible de convergence audio pendant le geste, mais ne peut pas être fourni à une opération exigeant un `Project`. Au commit, `finalizeProjectCandidate` exige une `DeferredResolution` `SLICE` ou `MERGE`, applique la résolution puis relance les mêmes inspections avant de construire le projet validé.
 
 Une durée nulle, une référence de score absente ou un dépassement de `MAX_TICK` produit au contraire une erreur bloquante : aucun candidat ne remplace la dernière projection admissible. Ajouter à l’avenir une autre violation différable nécessitera une nouvelle variante de `DeferredViolation`, sa variante de `DeferredResolution` et son résolveur métier ; le cycle générique de candidature et de finalisation restera inchangé.
 
