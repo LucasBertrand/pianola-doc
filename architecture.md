@@ -912,6 +912,27 @@ const projectProjection: Project | ProjectCandidate =
   state.editSession?.draft.candidate ?? state.project;
 ```
 
+Le cycle complet se lit ainsi :
+
+```mermaid
+flowchart TD
+    A["Intention d’édition"] --> B["beginEdit / updateEdit"]
+    B --> C["EditService construit la commande"]
+    C --> D["buildProjectCandidate depuis baseProject"]
+    D -->|Erreur bloquante| E["Conserver le dernier brouillon admissible"]
+    D -->|Candidat admissible| F["Remplacer EditSession.draft"]
+    F --> G["projectProjection = draft.candidate"]
+    G --> H["Présentation mise à jour immédiatement"]
+    G --> I["Convergence audio asynchrone"]
+    F --> J["commitEdit"]
+    J --> K["finalizeProjectCandidate"]
+    K -->|Violation sans résolution| L["phase = AWAITING_DECISION"]
+    L --> M["submitEditDecision"]
+    M --> K
+    K -->|Project valide| N["Publier Project et fermer la session"]
+    F -->|cancelEdit| P["Fermer la session et reprojeter Project"]
+```
+
 `project` est la version musicale courante validée faisant autorité, éventuellement non encore sauvegardée. `settings` contient les configurations persistantes associées à ce fichier. `EditSession.baseProject` référence la version immuable du projet au début du geste. Le mécanisme couvre toutes les modifications musicales du document : contenu local d’un score dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de score ne possède donc ni session ni projet transitoire séparés.
 
 `EditService` traduit l’`EditIntent` en `ProjectEditCommand` du domaine. Il réunit cette commande et le `ProjectCandidate` obtenu dans `EditSession.draft` : le brouillon exprime ainsi une seule proposition courante, entièrement possédée par la session. Son calcul relève du contrat décrit dans [Transformations du projet et données candidates](#transformations-du-projet-et-données-candidates).
