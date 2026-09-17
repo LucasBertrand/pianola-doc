@@ -345,7 +345,7 @@ Dans un autre scénario, `playScore()` démarre le score `Motif`, puis l'utilisa
 
 Un score contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, le domaine signale `NOTE_OVERLAP`. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
+Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, la progression commune consulte la violation `NOTE_OVERLAP` déjà portée par le candidat. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
 
 Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -475,7 +475,7 @@ Un transport `SCORE` se trouve au tick local `6000`. Une édition valide réduit
 
 L’application affiche immédiatement la nouvelle durée et ramène la tête locale à `4800`. `PlaybackService` prépare ensuite la fin du plan à une borne sûre : il annule les attaques futures remplaçables, relâche les voix actives à la borne acceptée puis supprime l’`ActiveTransport`. La session est fermée à cette borne et libérée après drainage ; les contextes possédant encore des releases ou tails passent à `DRAINING`.
 
-Si la nouvelle durée avait été `7000`, la tête serait restée à `6000` et le transport aurait continué jusqu’à sa nouvelle fin replanifiée. Si aucun transport n’avait été actif, seul le clamp de la tête aurait été nécessaire.
+Si la nouvelle durée avait été `7000`, la tête serait restée à `6000` et le transport aurait continué jusqu’à sa nouvelle fin replanifiée. Sans transport actif, le bornage serait seulement visuel pendant le brouillon ; la position mémorisée ne serait bornée qu’au commit, comme dans le cas 46.
 
 ## Cas 25 — Suppression du score lu isolément
 
@@ -676,7 +676,7 @@ Si une sauvegarde intervient pendant le geste, le fichier contient seulement `sc
 
 Lorsque le geste est validé, `score-b` et son réglage de `240` ticks sont publiés atomiquement. Si le geste est annulé, aucun des deux ne subsiste.
 
-Dans une variante où `score-b` est une duplication indépendante de `score-a`, sa résolution de geste puis sa résolution publiée valent `120` ticks, valeur capturée depuis le score source au début de la commande. Une modification persistante de résolution ne peut cibler `score-b` qu’après son commit.
+Dans une variante où `score-b` est une duplication indépendante de `score-a`, sa résolution de geste puis sa résolution publiée valent `120` ticks, valeur capturée depuis le score source dans `EditSession.context` au début du geste. Une modification persistante de résolution ne peut cibler `score-b` qu’après son commit.
 
 ## Cas 42 — Transformation collective et violations différées
 
@@ -689,9 +689,49 @@ Un score contient deux notes de même hauteur qui ne se chevauchent pas :
 
 Le geste demande leur échange dans une seule commande. Les deux placements finaux sont exprimés relativement au même `baseProject`. `buildProjectCandidate` les applique collectivement, puis inspecte la collection obtenue. Il ne déplace jamais `note-a` et ne valide jamais cet état intermédiaire avant de déplacer `note-b`. Le candidat final ne contient aucun chevauchement ; `finalizeProjectCandidate` construit donc directement le nouveau `Project`.
 
-Si les intervalles finaux se recouvrent, la même inspection produit une `DeferredViolation` de type `NOTE_OVERLAP`. Le `ProjectCandidate` reste immédiatement affichable et devient la cible de convergence audio pendant le geste, mais ne peut pas être fourni à une opération exigeant un `Project`. Au commit, `finalizeProjectCandidate` exige une `DeferredResolution` `SLICE` ou `MERGE`, applique la résolution puis relance les mêmes inspections avant de construire le projet validé.
+Si les intervalles finaux se recouvrent, la même inspection produit une `DeferredViolation` de type `NOTE_OVERLAP`. Le `ProjectCandidate` reste immédiatement affichable et devient la cible de convergence audio pendant le geste, mais ne peut pas être fourni à une opération exigeant un `Project`. Au commit, la progression commune demande une `DeferredResolution` `SLICE` ou `MERGE`. Après les décisions requises, `finalizeProjectCandidate` applique les résolutions puis relance les mêmes inspections avant de construire le projet validé.
 
 Une durée nulle, une référence de score absente ou un dépassement de `MAX_TICK` produit au contraire une erreur bloquante : aucun candidat ne remplace la dernière projection admissible. Ajouter à l’avenir une autre violation différable nécessitera une nouvelle variante de `DeferredViolation`, sa variante de `DeferredResolution` et son résolveur métier ; le cycle générique de candidature et de finalisation restera inchangé.
+
+## Cas 43 — Action atomique avec confirmation
+
+L’utilisateur demande une suppression explicite de contenu avec confirmation. La présentation appelle `beginEdit` puis `commitEdit`, sans `updateEdit`. Le candidat valide est immédiatement visible ; le projet validé et son historique n’ont pas changé. La progression détecte la confirmation requise et publie une décision `CONFIRMATION`, de code `DELETE_CONTENT`, avec le choix `CONFIRM`. Le brouillon reste figé dans `AWAITING_DECISION`.
+
+Une réponse valide est conservée dans `EditSession.decisions.confirmations`. La même progression reprend, finalise le candidat puis publie une seule entrée d’historique. La confirmation n’a produit aucune `DeferredViolation`, aucune résolution métier et aucun nouveau candidat. Sans différence musicale entre le candidat et le projet final, cette publication n’incrémente pas `projectionRevision`.
+
+Refuser appelle `cancelEdit` : les données réapparaissent, aucune entrée d’historique n’est créée et les auditions déjà arrêtées ne redémarrent pas. Une seconde soumission de l’ancienne décision est refusée. Une action atomique sans confirmation ni violation parcourt le même circuit et se termine immédiatement.
+
+## Cas 44 — Plusieurs décisions pour un même brouillon
+
+Une commande collective déplace des notes dans deux scores et demande une suppression explicite avec confirmation. Le candidat contient un chevauchement dans chaque score. `commitEdit` demande d’abord la résolution du premier score selon l’ordre du domaine.
+
+L’utilisateur choisit `SLICE`. L’application conserve la résolution et les identités des nouveaux fragments dans `EditSession.decisions.resolutions`. La progression demande ensuite le choix du second score, avec un nouveau `decisionId`. Les fragments du premier score ne sont pas encore publiés dans la projection et leurs identités ne sont pas réallouées. Une réponse visant la première décision est désormais périmée.
+
+Après un choix `MERGE` pour le second score, la progression demande `CONFIRMATION` pour la suppression explicite. Cette confirmation couvre la commande figée et les résolutions acceptées. Elle ne concerne pas les suppressions induites par `SLICE` ou `MERGE`, déjà approuvées par leur choix. Une réponse `CONFIRM` permet la finalisation unique et la publication atomique de tous les changements. Une annulation à n’importe laquelle de ces attentes retire toute la session, sans résultat partiel ni historique.
+
+## Cas 45 — Suppression provisoire et conservation de l’éditeur
+
+Le piano roll affiche un score sans clip, avec une sélection et une tête mémorisée. Une suppression avec confirmation retire ce score du candidat. Son état d’éditeur demeure présent, mais indisponible ; la sélection n’est pas effacée. Une commande exigeant ce score dans la projection est refusée. Si un transport `SCORE` le joue, sa disparition provisoire provoque l’arrêt selon la politique audio ordinaire.
+
+Annuler la décision rétablit le score et la disponibilité de l’éditeur avec ses références conservées. Un transport déjà arrêté ne redémarre pas. Si l’utilisateur avait explicitement ouvert un autre score pendant l’attente, ce choix reste acquis : l’annulation ne restaure pas une capture globale de l’interface.
+
+Confirmer ferme définitivement l’éditeur si son score reste absent, nettoie les références et crée une seule entrée d’historique. Un undo ultérieur restaure le score, mais ne rouvre pas son ancien éditeur. La suppression provisoire d’une piste d’écoute suit la même distinction : sa référence est temporairement indisponible, puis réactivée à l’annulation ou effacée au commit ; aucune audition arrêtée n’est relancée.
+
+## Cas 46 — Bornage provisoire et références créées par le geste
+
+Une tête inactive est mémorisée au tick `7000`. Un brouillon raccourcit sa portée à `4800` ticks : la tête affichée vaut `4800`, mais la valeur mémorisée reste `7000`. Annuler rend de nouveau visible `7000` si la portée rétablie le permet. Valider borne définitivement la position mémorisée à `4800`.
+
+Si l’utilisateur déplace explicitement la tête à `2400` pendant le brouillon, annuler conserve ce choix. Si un transport actif se termine à cause du raccourcissement et mémorise sa position d’arrêt, cette écriture réelle est également conservée ; annuler ne reprend pas la lecture.
+
+Dans une autre variante, le brouillon crée un score que l’utilisateur ouvre. Annuler retire ce score et ferme l’éditeur devenu sans référence valide. Aucune configuration persistante du score annulé ne subsiste. Cette règle complète la conservation des références préexistantes sans restaurer un état d’interface complet.
+
+## Cas 47 — Contexte stable et actualisation depuis la base
+
+Un déplacement commence avec deux notes sélectionnées et un pas de grille de `120` ticks. `EditSession.context` capture leurs identifiants ordonnés et ce pas. Une sélection ultérieure différente ou un réglage persistant passé à `240` ticks ne change pas les cibles ou la quantification de ce geste. Les actualisations restent des deltas cumulés depuis `baseProject`. Le prochain geste utilisera les nouveaux réglages.
+
+Une actualisation incompatible avec la famille ou les cibles capturées est refusée et conserve le dernier brouillon admissible. Les identifiants d’une duplication sont également alloués une seule fois et réutilisés. Il n’existe aucun `EditDraft.revision` ; les changements effectifs de projection sont identifiés par `projectionRevision`, et chaque demande de décision possède son propre `decisionId`.
+
+Les scores non concernés peuvent conserver leurs objets immuables et leurs analyses. Le résultat doit rester identique à celui d’un calcul complet depuis la base, y compris les contrôles des références et des invariants collectifs.
 
 ## Référence des contrats
 
