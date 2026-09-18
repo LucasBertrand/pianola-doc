@@ -868,7 +868,7 @@ interface EditSession {
   baseProject: Project;
   context: EditContext;
   draft: EditDraft;
-  decisions: AcceptedEditDecisions;
+  resolutions: readonly DeferredResolution[];
   phase: EditSessionPhase;
 }
 
@@ -879,15 +879,11 @@ interface EditDraft {
 
 // Contrats applicatifs spécialisés selon la famille d’intention.
 interface EditContext {
-  readonly initialIntent: EditIntent;
+  readonly operation: EditIntent["kind"];
+  readonly confirmation?: EditConfirmation;
   readonly targets: CapturedEditTargets;
   readonly grid: CapturedEditGrid;
-  readonly creations: EditCreationIds;
-}
-
-interface AcceptedEditDecisions {
-  resolutions: readonly DeferredResolution[];
-  confirmations: readonly EditConfirmation[];
+  readonly creations: EditCreations;
 }
 
 type EditConfirmation = {
@@ -898,7 +894,12 @@ type EditSessionPhase =
   | { status: "EDITING" }
   | {
       status: "AWAITING_DECISION";
-      pendingDecision: EditDecisionRequest;
+      pendingDecision: NoteOverlapDecisionRequest;
+    }
+  | {
+      status: "AWAITING_DECISION";
+      pendingDecision: ConfirmationDecisionRequest;
+      preparedProject: Project;
     };
 
 interface PendingEditDecision<
@@ -912,17 +913,21 @@ interface PendingEditDecision<
   choices: readonly Choice[];
 }
 
+type NoteOverlapDecisionRequest = PendingEditDecision<
+  "NOTE_OVERLAP",
+  { scoreId: ScoreId; overlaps: readonly NoteOverlap[] },
+  NoteOverlapResolution
+>;
+
+type ConfirmationDecisionRequest = PendingEditDecision<
+  "CONFIRMATION",
+  EditConfirmation,
+  "CONFIRM"
+>;
+
 type EditDecisionRequest =
-  | PendingEditDecision<
-      "NOTE_OVERLAP",
-      { scoreId: ScoreId; overlaps: readonly NoteOverlap[] },
-      NoteOverlapResolution
-    >
-  | PendingEditDecision<
-      "CONFIRMATION",
-      EditConfirmation,
-      "CONFIRM"
-    >;
+  | NoteOverlapDecisionRequest
+  | ConfirmationDecisionRequest;
 
 interface EditDecision<Kind extends string, Choice> {
   decisionId: EditDecisionId;
@@ -946,25 +951,65 @@ const projectProjection: Project | ProjectCandidate =
   state.editSession?.draft.candidate ?? state.project;
 ```
 
-Le diagramme représente le circuit commun. Une action atomique appelle `beginEdit` puis `commitEdit` ; un geste continu intercale des appels à `updateEdit`. Les deux utilisent la même session et les mêmes décisions.
+Les trois diagrammes décrivent le même circuit d’édition, sous trois angles complémentaires. Une action atomique appelle `beginEdit` puis `commitEdit` avec l’identité retournée ; un geste continu intercale des appels à `updateEdit` avec cette même identité. Les contrôles d’identité et les appels interdits sont détaillés dans [Identité de session et transitions refusées](#identité-de-session-et-transitions-refusées) : ils s’appliquent avant les transitions représentées.
+
+**Construction et actualisation du brouillon**
 
 ```mermaid
 flowchart TD
-    Begin["beginEdit : capturer base et contexte"] --> Draft["EDITING : publier le brouillon"]
-    Draft -->|updateEdit : recalcul depuis la base| Draft
-    Draft -->|commitEdit| Advance{"Progression commune : décision requise ?"}
-    Advance -->|Résolution ou confirmation| Wait["AWAITING_DECISION : brouillon figé"]
-    Wait -->|submitEditDecision| Advance
-    Advance -->|Aucune| Finalize["Finaliser avec les résolutions acquises"]
-    Finalize -->|Project valide| Commit["Publier Project, nettoyer, historiser et fermer la session"]
-    Draft -->|cancelEdit| Cancel["Retirer la session et reprojeter Project"]
-    Wait -->|cancelEdit| Cancel
+    Begin["beginEdit : capturer base et contexte"] --> Command["Construire ProjectEditCommand"]
+    Command --> Build["buildProjectCandidate depuis baseProject"]
+    Build -->|Erreur bloquante| Reject["Conserver le dernier brouillon admissible"]
+    Build -->|Candidat admissible| Draft["EDITING : remplacer draft et publier la projection"]
+    Draft -->|updateEdit avec la même identité| Command
+    Draft -->|commitEdit| Progress["Progression commune : diagramme suivant"]
+    Draft -->|cancelEdit| Cancel["Retirer la session et reprojeter project"]
 ```
 
-Le diagramme montre le parcours nominal et l’annulation. Une erreur de construction conserve le dernier brouillon admissible ; au premier appel, elle ne laisse aucune session ouverte. Une réponse invalide conserve la décision attendue. Une erreur finale bloquante revient en `EDITING` sans publication, après retrait des décisions acquises ; une violation finale encore arbitrable demande une nouvelle décision. Ces branches sont précisées ci-dessous. Le nettoyage et l’entrée d’historique sont atomiques avec la publication, et `NO_CHANGE` ne crée aucune entrée.
+Au premier appel, une erreur laisse le projet intact et aucune session ouverte. Un candidat admissible peut porter des violations différées : elles ne bloquent pas son affichage. Chaque actualisation utilise le contexte capturé et la même base, jamais le candidat précédent. L’annulation ne crée aucune entrée d’historique ; une ancienne identité ne peut pas annuler une autre session.
 
+**Résolutions, finalisation et confirmation**
 
-Les trois publications du diagramme — brouillon, version validée, retrait du brouillon — passent par la même coordination interne. Elles rendent immédiatement la projection disponible à la présentation. `PlaybackService` observe séparément `projectionRevision` et converge de manière asynchrone ; aucune flèche de retour audio ne conditionne la progression de l’édition.
+```mermaid
+flowchart TD
+    Commit["commitEdit : progression commune"] --> Need{"Résolution manquante ?"}
+    Need -->|Oui| Resolve["AWAITING_DECISION : résolution"]
+    Resolve -->|submitEditDecision valide : conserver la résolution| Need
+    Resolve -->|Réponse périmée ou invalide : erreur| Resolve
+    Need -->|Non| Finalize["finalizeProjectCandidate"]
+    Finalize -->|Erreur bloquante| Error["EDITING : conserver le brouillon et retirer les résolutions"]
+    Finalize -->|Violation encore arbitrable| Resolve
+    Finalize -->|Project valide| Changed{"Différent du projet validé ?"}
+    Changed -->|Non| NoChange["NO_CHANGE : fermer sans historique ni confirmation"]
+    Changed -->|Oui| Required{"Confirmation requise ?"}
+    Required -->|Non| Applied["APPLIED : publier, nettoyer, historiser et fermer"]
+    Required -->|Oui| Confirm["AWAITING_DECISION : confirmation et preparedProject"]
+    Confirm -->|submitEditDecision valide : publier le résultat conservé| Applied
+    Confirm -->|Réponse périmée ou invalide : erreur| Confirm
+    Resolve -->|cancelEdit| Cancel["Annuler toute la session sans historique"]
+    Confirm -->|cancelEdit| Cancel
+```
+
+Chaque attente retourne `DECISION_REQUIRED` et possède un nouveau `decisionId`. Le candidat reste figé et projeté pendant les décisions. Les choix de résolution et les identités des fragments sont conservés dans la session ; aucune résolution partielle n’est publiée. Le résultat finalisé reste privé à la phase de confirmation jusqu’à l’accord. La confirmation ne revient jamais vers la finalisation. `APPLIED` désigne une publication atomique du projet, des effets applicatifs et de l’historique. `NO_CHANGE` ferme la session par la même coordination et conserve la pile redo. Une erreur finale ne modifie ni le projet validé ni l’historique ; une erreur de réponse ne modifie même pas la session.
+
+**Projection visible et convergence audio**
+
+```mermaid
+flowchart TD
+    Publish["Brouillon, commit, annulation, undo ou redo"] --> Projection["projectProjection : candidat de session ou project"]
+    Projection --> View["Présentation immédiate"]
+    Projection --> Revision{"Contenu projeté modifié ?"}
+    Revision -->|Non| Unchanged["Révision conservée : aucun travail audio supplémentaire"]
+    Revision -->|Oui| Target["Incrémenter projectionRevision"]
+    Target --> Playback["PlaybackService observe la dernière cible"]
+    Playback -->|Sans transport ou sans effet sur sa portée| Skip["Aucun remplacement de plan nécessaire"]
+    Playback -->|Transport concerné| Plan["CONVERGING : préparer et replanifier"]
+    Plan -->|Dernier plan accepté| Synced["SYNCED"]
+    Plan -->|Cible dépassée ou borne trop tardive| Playback
+    Plan -->|Échec de préparation| Failed["FAILED : conserver la publication du document"]
+```
+
+Les effets visuels n’attendent pas l’audio. Sans transport, le prochain départ lit la projection courante ; avec un transport non affecté, sa révision appliquée rejoint la cible sans remplacer le plan. Une réponse audio périmée ne peut pas appliquer un ancien plan. Un commit identique au candidat n’incrémente pas la révision, même s’il effectue le nettoyage applicatif. Une résolution qui change le contenu ou une annulation qui rétablit un autre contenu produit une nouvelle cible. L’annulation ne redémarre pas une audition déjà arrêtée. La préparation d’un `preparedProject` en attente de confirmation ne publie aucune nouvelle projection.
 
 `project` est la version musicale courante validée faisant autorité, éventuellement non encore sauvegardée. `settings` contient les configurations persistantes associées à ce fichier. `EditSession.baseProject` référence la version immuable du projet au début du geste. Le mécanisme couvre toutes les modifications musicales du document : contenu local d’un score dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de score ne possède donc ni session ni projet transitoire séparés.
 
@@ -978,7 +1023,7 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 `EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
-`PendingEditDecision<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision ajoute une variante et son traitement typé sans modifier la structure de `EditSession` ni introduire un autre circuit public.
+`PendingEditDecision<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision étend les unions et son traitement typé, avec les données d’attente nécessaires dans `EditSessionPhase`, sans introduire un autre circuit public.
 
 `EditDecision<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `SubmittedEditDecision` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
 
@@ -989,13 +1034,14 @@ Une demande contient des codes et des données structurées, jamais un titre ou 
 Le cycle public de `EditService` est :
 
 ```ts
-beginEdit(intent: EditIntent): Result<void, EditError>;
-updateEdit(intent: EditIntent): Result<void, EditError>;
-commitEdit(): Result<EditOutcome, EditError>;
+beginEdit(intent: EditIntent): Result<EditSessionId, EditError>;
+updateEdit(sessionId: EditSessionId, intent: EditIntent): Result<void, EditError>;
+commitEdit(sessionId: EditSessionId): Result<EditOutcome, EditError>;
 submitEditDecision(
+  sessionId: EditSessionId,
   decision: SubmittedEditDecision
 ): Result<EditOutcome, EditError>;
-cancelEdit(): void;
+cancelEdit(sessionId: EditSessionId): void;
 
 type EditOutcome =
   | "APPLIED"
@@ -1004,32 +1050,64 @@ type EditOutcome =
 type EditError = ProjectEditError | EditValidationError;
 ```
 
-`beginEdit` capture la base et le contexte, construit la commande initiale et publie le premier `EditDraft`. `updateEdit` reconstruit depuis cette même base un brouillon complet contenant la commande et son candidat, puis remplace atomiquement le précédent. Une entrée invalide conserve le dernier brouillon admissible ; un `beginEdit` invalide ne laisse pas de session ouverte. Ces opérations sont synchrones et n’attendent jamais l’audio.
+`beginEdit` capture la base et le contexte, construit la commande initiale, publie le premier `EditDraft` et retourne son `EditSessionId`. La présentation conserve cette identité pendant le geste et la fournit à chaque appel suivant. `updateEdit` reconstruit depuis cette même base un brouillon complet contenant la commande et son candidat, puis remplace atomiquement le précédent. Une entrée invalide conserve le dernier brouillon admissible ; un `beginEdit` invalide ne laisse pas de session ouverte. Ces opérations sont synchrones et n’attendent jamais l’audio.
 
-`EditContext` conserve les entrées stables du geste. `CapturedEditTargets` représente les identifiants résolus depuis la sélection, dans leur ordre capturé et avec leur portée ; `CapturedEditGrid` représente les pas de quantification concernés, ou l’absence de quantification ; `EditCreationIds` contient les correspondances typées des identités de créations ordinaires, ainsi que les réglages de grille à copier pour de nouveaux scores. Ces contrats sont spécialisés par famille d’intention, sans dictionnaire de valeurs non typées. Ils sont possédés par `EditSession.ts` et ne sont pas de nouveaux services.
+`EditContext` conserve uniquement les entrées stables nécessaires aux actualisations : la famille `operation`, issue du discriminant `kind` de l’intention, l’éventuelle confirmation exigée, les cibles, la quantification et les créations. Il ne conserve pas une copie complète de l’intention initiale. Les paramètres variables sont traduits dans `draft.command`, qui représente la proposition courante.
 
-Une actualisation peut changer les paramètres variables du geste, par exemple son delta total, mais pas sa famille, ses cibles ou ses identités de création. Elle ne relit pas la sélection ni les réglages courants : la quantification utilise les valeurs capturées au début. Un changement de réglage persistant pendant le geste ne prendra effet que sur le prochain geste. Une intention incompatible avec ce contexte est refusée sans remplacer le brouillon. `baseProject` reste explicite pour garantir le recalcul depuis une base fixe, sans accumulation d’erreurs.
+`CapturedEditTargets` contient les identifiants résolus depuis la sélection, avec leur ordre et leur portée. `CapturedEditGrid` contient les pas concernés ou l’absence de quantification. `EditCreations` regroupe les correspondances typées d’identifiants alloués une fois pour les créations ordinaires et les réglages à copier pour les nouveaux scores. Son nom couvre donc toutes ces données, pas seulement les identités. Ces contrats sont spécialisés par famille d’intention dans `EditSession.ts`, sans dictionnaire de valeurs non typées. La commande métier reçoit les identités nécessaires au domaine, mais pas les réglages applicatifs.
 
-`AcceptedEditDecisions` est initialement vide. Il possède toutes les résolutions et confirmations acquises pour le brouillon figé, y compris les identifiants de fragments fournis dans les résolutions. `EditService` ne conserve pas de copie de ces données hors session. Supprimer la session abandonne le contexte, le brouillon et toutes ses décisions.
+Une actualisation peut changer les paramètres variables, par exemple le delta total, mais pas la famille, les cibles, les identités de création ou l’exigence de confirmation. Elle ne relit ni la sélection ni les réglages courants : la quantification utilise les valeurs capturées. Un réglage modifié pendant le geste ne prendra effet que sur le prochain geste. Une intention incompatible est refusée sans remplacer le brouillon. `baseProject` garantit le recalcul depuis une base fixe, sans accumulation d’erreurs.
+
+`EditSession.resolutions` est initialement vide et possède les résolutions acquises pour le brouillon figé, y compris les identifiants de fragments. Une confirmation acceptée provoque directement la publication : aucune collection de confirmations acquises n’est nécessaire. Seule la phase d’attente d’une confirmation conserve `preparedProject`, résultat déjà finalisé et valide. Ce résultat n’est ni le `ProjectState.project`, ni une nouvelle projection, ni une entrée d’historique. `EditService` ne conserve aucune copie de ces données hors session.
+
+#### Identité de session et transitions refusées
+
+Chaque session reçoit une identité qui n’est pas réutilisée pendant la vie de l’application, y compris après un remplacement de document. Le service vérifie l’identité avant toute transformation ou transition. `updateEdit`, `commitEdit` et `submitEditDecision` retournent une erreur structurée si aucune session n’existe ou si l’identité ne correspond pas ; ils ne modifient pas la session courante. Une réponse de décision doit en plus correspondre au `decisionId`, au `kind` et à un choix autorisé.
+
+`cancelEdit(sessionId)` est idempotente et sans effet si cette session est déjà terminée ou remplacée. Un événement retardé du geste A ne peut donc ni modifier, ni valider, ni annuler le geste B. La présentation doit transmettre l’identité capturée par le gestionnaire du geste, et non relire l’identité de la session courante lors du callback.
+
+| État et appel | Résultat et effet |
+| --- | --- |
+| Aucune session, `beginEdit` admissible | Ouvrir `EDITING`, publier le brouillon, retourner l’identité |
+| Aucune session, `beginEdit` invalide | Erreur, aucune session ni projection nouvelle |
+| Session ouverte, nouveau `beginEdit` | `EDIT_IN_PROGRESS`, conserver la session |
+| Identité absente ou périmée, actualisation, commit ou réponse | Erreur, aucun changement |
+| Identité absente ou périmée, annulation | Aucun effet |
+| `EDITING`, actualisation admissible | Remplacer le brouillon depuis la base |
+| `EDITING`, actualisation invalide | Erreur, conserver le dernier brouillon admissible |
+| `EDITING`, réponse de décision | Erreur, aucune décision n’est attendue |
+| `EDITING`, commit | Lancer la progression ci-dessous |
+| `AWAITING_DECISION`, actualisation ou second commit | Erreur, conserver le brouillon figé et la décision |
+| `AWAITING_DECISION`, réponse périmée ou incompatible | Erreur, conserver la décision et les données acquises |
+| Attente de résolution, réponse valide | Conserver la résolution puis reprendre la progression |
+| Attente de confirmation, réponse valide | Publier le `preparedProject` déjà validé, sans nouveau calcul |
+| Session correspondante, annulation | Retirer toute la session, reprojeter le projet validé, sans historique |
+
+Une session ouverte interdit aussi undo, redo et l’ouverture d’un document (`EDIT_IN_PROGRESS`). Les commandes de transport et la sauvegarde de la version validée restent disponibles. Les codes détaillés des autres refus restent à fixer dans Q3.
 
 #### Progression commune des décisions
 
-`commitEdit` et `submitEditDecision` appellent la même routine interne de progression. Il ne s’agit pas d’un nouveau point d’entrée public. Elle procède dans cet ordre :
+`commitEdit` et `submitEditDecision` utilisent la même routine interne de progression. Elle suit cet ordre :
 
 1. chercher la première violation différée sans résolution, dans l’ordre fourni par le domaine, et demander son arbitrage ;
-2. lorsque toutes les résolutions sont acquises, demander les confirmations applicatives nécessaires qui ne sont pas encore acceptées ;
-3. lorsqu’il ne reste aucune décision, appeler `finalizeProjectCandidate` avec le candidat figé et toutes les résolutions ;
-4. publier atomiquement le projet valide, ses effets applicatifs, la fin de session et une seule entrée d’historique, sauf `NO_CHANGE`.
+2. lorsque les résolutions sont acquises, appeler `finalizeProjectCandidate` avec le candidat figé et ces résolutions ;
+3. si le résultat ne change pas le projet validé, fermer la session par la coordination de publication et retourner `NO_CHANGE`, sans confirmation ni entrée d’historique ;
+4. si une confirmation est requise, conserver le résultat dans `phase.preparedProject` et demander l’accord ; sinon publier immédiatement ;
+5. à l’accord, publier exactement ce résultat déjà valide, réconcilier les états applicatifs et fermer la session, avec une seule entrée d’historique.
 
-Une collision produit une demande `NOTE_OVERLAP` portant sur un score, avec les choix `SLICE` et `MERGE`. Une confirmation utilise `CONFIRMATION` et un code applicatif, initialement `DELETE_CONTENT`, pour une intention demandant une suppression explicite de contenu avec confirmation. Le besoin de confirmation fait partie de l’intention applicative capturée ; il n’est pas déduit de toute disparition d’entité dans le candidat. Elle propose `CONFIRM` ; le refus utilise `cancelEdit`, commun à tous les types de décision. Le code n’est pas un texte localisé. Une suppression résultant d’un `MERGE` ou d’un `SLICE` déjà choisi ne demande pas en plus `DELETE_CONTENT`. Aucun dialogue de confirmation n’est imposé aux autres familles d’intentions.
+Une collision produit une demande `NOTE_OVERLAP` portant sur un score, avec les choix `SLICE` et `MERGE`. Chaque attente retourne `ok("DECISION_REQUIRED")`. Une réponse valide ajoute sa résolution à `session.resolutions` ; la décision suivante reçoit une nouvelle identité. Les résolutions d’un score sont conservées lorsque le suivant demande son arbitrage. Aucun résultat partiel ne remplace le brouillon affiché.
 
-Une confirmation autorise à poursuivre ; elle ne constitue ni une violation du domaine ni une `DeferredResolution` et ne modifie pas le candidat. Elle porte sur la commande entière et les résolutions déjà acquises. Elle autorise la publication validée : comme toute édition, la suppression peut déjà être visible et audible provisoirement avant confirmation. La géométrie, les cibles et la commande restent figées pendant toute la succession des décisions. Pour les changer, il faut annuler et commencer une nouvelle session ; aucune confirmation n’est transférée à un autre brouillon.
+Les fragments de `SLICE` sont déterminés par un calcul pur du domaine sur le candidat figé et le choix reçu ; ce calcul partage l’algorithme de résolution utilisé par la finalisation. L’application alloue leurs identifiants une seule fois lors de l’acceptation du choix et les fournit dans la `DeferredResolution`. La finalisation vérifie la correspondance exacte des fragments. Une reprise conserve les identités déjà acquises ; le domaine ne génère aucun identifiant aléatoire.
 
-Chaque attente place la phase en `AWAITING_DECISION` et retourne `ok("DECISION_REQUIRED")`. `submitEditDecision` vérifie `decisionId`, `kind` et le choix autorisé, conserve la réponse dans `session.decisions`, puis reprend la progression. La décision suivante reçoit une nouvelle identité. Une réponse périmée ou incompatible ne modifie rien. Les résolutions acquises pour un score sont conservées lorsque le score suivant demande son arbitrage. Aucune résolution partielle ne remplace le brouillon affiché et aucun projet partiel n’est publié.
+Une erreur finale bloquante conserve la base, le contexte et le brouillon, retire les résolutions acquises et remet la phase en `EDITING`, sans publier de projet ni modifier l’historique. Une violation finale encore arbitrable produit une nouvelle demande de résolution avant toute confirmation. Si elle remet en cause une résolution acquise, celle-ci et les résolutions qui en dépendent sont invalidées ; dans le premier périmètre, les résolutions de scores distincts sont indépendantes. Les refus de réponse ou d’identité ne déclenchent jamais ce retrait.
 
-Les fragments de `SLICE` sont déterminés par un calcul pur du domaine sur le candidat figé et le choix reçu ; ce calcul partage l’algorithme de résolution utilisé par la finalisation. L’application alloue leurs identifiants une seule fois, au moment de l’acceptation du choix, et les fournit dans la `DeferredResolution`. Une reprise réutilise cette correspondance ; le domaine ne génère aucun identifiant aléatoire. La finalisation vérifie que cette correspondance couvre exactement les fragments attendus.
+La confirmation utilise `CONFIRMATION`, le code applicatif `DELETE_CONTENT` et le choix `CONFIRM`. Son exigence provient de l’intention capturée ; elle n’est pas déduite de toute disparition d’entité. Une suppression induite par `SLICE` ou `MERGE` ne provoque donc pas une seconde confirmation. Le refus appelle `cancelEdit(sessionId)`. Le domaine ne connaît pas cette confirmation et ne reçoit aucune `DeferredResolution` à son sujet.
 
-Un second `commitEdit` pendant une attente est refusé : seule la réponse à la décision courante ou l’annulation peut faire progresser la session. Une erreur finale bloquante conserve la base, le contexte et le brouillon sans publier de projet, retire les décisions acquises et remet la phase en `EDITING` pour permettre correction ou annulation. Les anciennes réponses deviennent périmées ; une nouvelle tentative devra obtenir de nouvelles décisions. Une violation encore non résolue est traduite en une nouvelle décision si elle est arbitrable ; si elle survient après une confirmation, cette confirmation est invalidée et devra être redemandée après résolution. Le contrôle des décisions ne remplace jamais les inspections finales du domaine. Les défauts de programmation restent des exceptions.
+La confirmation porte sur un résultat déjà calculé et valide. Le candidat, la commande et les résolutions restent figés jusqu’à l’accord ou l’annulation ; modifier l’opération exige une nouvelle session. Une réponse valide ne relance ni résolution ni finalisation : elle publie le `preparedProject` conservé. Il n’existe donc plus de boucle de confirmation suivie d’une nouvelle erreur de validation du domaine.
+
+La projection continue d’exposer le candidat pendant cette attente, même si le résultat résolu diffère. La présentation peut consulter le résultat préparé pour décrire exactement ce qui sera publié, sans en faire la cible audio. Une suppression provisoire peut déjà être visible et audible avant l’accord. Cette confirmation autorise la publication validée ; elle ne garantit pas l’absence d’effets provisoires. Le refus ne redémarre pas les auditions déjà arrêtées.
+
+Les erreurs attendues ne publient jamais un nouveau projet validé et ne modifient jamais l’historique. Elles peuvent modifier la session uniquement selon les transitions explicites ci-dessus. Les défauts de programmation restent des exceptions.
 
 #### Publication et annulation du brouillon
 
@@ -1049,7 +1127,7 @@ Pour une tête inactive, le bornage provisoire est une valeur d’affichage dér
 
 L’audio continue de suivre chaque projection. Une disparition provisoire de score ou de piste peut arrêter les auditions concernées ; un raccourcissement peut terminer le transport. `cancelEdit` ne redémarre jamais une audition arrêtée, ne ressuscite pas un handle terminé et ne rembobine pas un transport. Un transport toujours actif converge vers le projet rétabli selon les règles ordinaires.
 
-`cancelEdit` est idempotente. Elle retire immédiatement toute la session et ne crée ni historique ni sauvegarde. Elle ne restaure pas un instantané global des éditeurs ou de l’audio. Contrairement à cette annulation, undo/redo intervient après le nettoyage définitif d’une version validée et ne restaure pas les anciennes sélections ou pistes d’écoute.
+`cancelEdit(sessionId)` est idempotente. Pour la session correspondante, elle retire immédiatement toute la session et ne crée ni historique ni sauvegarde. Elle ne restaure pas un instantané global des éditeurs ou de l’audio. Contrairement à cette annulation, undo/redo intervient après le nettoyage définitif d’une version validée et ne restaure pas les anciennes sélections ou pistes d’écoute.
 
 #### Coût des actualisations
 
@@ -1074,7 +1152,7 @@ Il orchestre aussi bien les transformations du contenu local d’un score que ce
 
 Le cycle d’édition est commun à ces intentions explicites. Une commande peut composer plusieurs transformations de notes, de changements, de pistes et de clips ; le résultat est validé et publié atomiquement. Les commandes métier élémentaires et `ProjectEditCommand` appartiennent aux modules du domaine qui réalisent leurs transformations. `EditService` possède leur construction à partir de l’`EditIntent` et leur conservation pendant la session. Les références de contenu `ScoreContentRef` restent des adresses d’entités du domaine, sans porter de notion de sélection ; les sélections applicatives les réutilisent.
 
-Un cas d'usage propage explicitement une erreur de domaine ou la traduit vers une erreur applicative plus contextuelle. Il ne la remplace jamais par une exception et ne met à jour `ProjectState` que depuis la branche `ok: true`.
+Un cas d’usage propage une erreur de domaine ou la traduit vers une erreur applicative contextualisée, sans la remplacer par une exception. Une erreur ne modifie ni le projet validé ni l’historique ; elle peut faire évoluer la session selon les transitions documentées, notamment le retour en `EDITING` après une erreur finale bloquante.
 
 Un déplacement collectif reçoit un delta temporel global et, pour chaque clip, une piste cible explicite. L’application traduit le déplacement vertical selon l’ordre des pistes dans la base du geste, en conservant les écarts de rang entre les blocs sélectionnés. Une destination hors de la collection est refusée, sans créer de piste ni borner silencieusement le geste. Le domaine reçoit des identités stables, jamais un delta d’indice d’affichage :
 
@@ -1110,9 +1188,9 @@ Pendant une manipulation continue, la présentation appelle `EditService.updateE
 
 Une erreur bloquante ne remplace pas le dernier `EditDraft` admissible. Une violation différée reste au contraire visible dans `ProjectCandidate.deferredViolations` : la projection suit immédiatement le pointeur. L’audio reçoit cette projection comme nouvelle cible et peut la rejoindre plus tard ; avec `NOTE_OVERLAP`, il peut alors faire entendre simultanément les notes provisoirement superposées. Aucune résolution `SLICE` ou `MERGE` et aucun fragment ne sont produits à ce stade.
 
-Au relâchement, `commitEdit` lance la [progression commune](#progression-commune-des-décisions). Elle collecte les résolutions puis les confirmations nécessaires avant de finaliser. Sans décision, le projet valide est publié immédiatement. Avec une décision, le brouillon reste affiché et figé jusqu’à la réponse ou l’annulation ; la même règle vaut pour une action atomique.
+Au relâchement, `commitEdit` lance la [progression commune](#progression-commune-des-décisions). Elle collecte les résolutions, finalise le résultat puis demande, si nécessaire, sa confirmation avant publication. Sans décision, le projet valide est publié immédiatement. Avec une décision, le brouillon reste affiché et figé jusqu’à la réponse ou l’annulation ; la même règle vaut pour une action atomique.
 
-Pour `NOTE_OVERLAP`, `submitEditDecision` conserve la résolution et ses identifiants de fragments dans la session. Une autre violation produit la décision suivante, sans publication partielle. Après toutes les décisions, la finalisation produit un seul projet. Si son contenu diffère du candidat, notamment après `SLICE` ou `MERGE`, la publication incrémente `projectionRevision` ; sinon le passage au projet validé ne demande aucune nouvelle réconciliation audio.
+Pour `NOTE_OVERLAP`, `submitEditDecision` conserve la résolution et ses identifiants de fragments dans `EditSession.resolutions`. Une autre violation produit la décision suivante, sans publication partielle. Après les résolutions, la finalisation produit un seul projet, conservé sans publication si une confirmation est nécessaire. Si son contenu diffère du candidat, notamment après `SLICE` ou `MERGE`, la publication incrémente `projectionRevision` ; sinon le passage au projet validé ne demande aucune nouvelle réconciliation audio.
 
 Le domaine ne dépend d’aucune interaction utilisateur. Il reçoit le candidat et les résolutions typées ; l’application possède les confirmations, l’ordre des demandes et la progression de session, tandis que la présentation possède leurs composants et libellés.
 
@@ -1129,7 +1207,7 @@ undo(): Result<"APPLIED" | "NO_CHANGE", EditError>;
 redo(): Result<"APPLIED" | "NO_CHANGE", EditError>;
 ```
 
-Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent synchroniquement la version précédente ou suivante et publient immédiatement la nouvelle `projectProjection`. `PlaybackService` converge ensuite vers sa nouvelle révision sans bloquer l’historique. Un échec de domaine conserve le projet et les piles ; un échec audio ultérieur ne les annule pas. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` et ne crée pas d’entrée ; une pile vide retourne également `NO_CHANGE`.
+Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent synchroniquement la version précédente ou suivante et publient immédiatement la nouvelle `projectProjection`. `PlaybackService` converge ensuite vers sa nouvelle révision sans bloquer l’historique. Un échec de domaine conserve le projet et les piles ; un échec audio ultérieur ne les annule pas. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` avant toute confirmation, ne crée pas d’entrée et conserve la branche de rétablissement ; une pile vide retourne également `NO_CHANGE`.
 
 Après publication, les références de sélection absentes sont retirées et les têtes immobiles sont ramenées dans les nouvelles bornes. Un éditeur dont le score a disparu est fermé ; les transports concernés suivent les règles de suppression et de fin de portée. Undo/redo n’a pas pour rôle de restaurer une sélection ou une ancienne position de transport.
 
@@ -2129,10 +2207,9 @@ Les études de cas doivent distinguer explicitement un événement strictement a
 
 Voir [Intention, session et projection du projet](#intention-session-et-projection-du-projet) et [Historique des versions validées](#historique-des-versions-validées).
 
-Le cycle d’édition est désormais synchrone et indépendant de la convergence audio. Il reste à préciser :
+Le cycle d’édition est synchrone et indépendant de la convergence audio. Il reste à fixer les codes publics distinguant l’absence de session, une identité de session périmée, une réponse de décision périmée, une intention incompatible avec le contexte capturé et une actualisation ou un commit interdit pendant `AWAITING_DECISION`.
 
-- quels codes exacts distinguent l’absence de session, une réponse périmée, une intention incompatible avec le contexte capturé et une actualisation ou un commit interdit pendant `AWAITING_DECISION` ;
-- quelle table exhaustive « état + événement → résultat + nouvel état + effets » couvre les éditions, décisions, commits, annulations et restaurations ;
+La table des transitions d’édition et la protection par identité sont définies dans [Identité de session et transitions refusées](#identité-de-session-et-transitions-refusées). Les branches de progression et d’erreur finale figurent dans la section suivante ; undo/redo conserve le contrat de l’historique.
 
 La politique des effets applicatifs est fixée dans [Publication et annulation du brouillon](#publication-et-annulation-du-brouillon).
 
@@ -2157,7 +2234,7 @@ Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Réso
 
 - Comment l’application construit-elle l’ordre des `manipulatedNoteIds` depuis une sélection : ordre de sélection, ordre musical ou ordre canonique d’identifiants ? L’ordre choisi est ensuite conservé dans le contexte capturé et la commande.
 - Quel ordre exact détermine le premier score invalide, la première erreur de validation et l’ordre des `overlappingNoteIds` ?
-- Quel ordre canonique de parcours des fragments impose l’allocation reproductible de leurs identifiants ? Leur correspondance est portée par `DeferredResolution.fragments` et conservée dans `EditSession.decisions`, avec une portée de score et les bornes de chaque fragment.
+- Quel ordre canonique de parcours des fragments impose l’allocation reproductible de leurs identifiants ? Leur correspondance est portée par `DeferredResolution.fragments` et conservée dans `EditSession.resolutions`, avec une portée de score et les bornes de chaque fragment.
 - Quels ordres de collections doivent être conservés ou normalisés pour que les résultats et erreurs restent reproductibles ?
 
 #### Q7 — Préécoute de sélection et références disparues

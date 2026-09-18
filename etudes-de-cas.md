@@ -345,9 +345,9 @@ Dans un autre scénario, `playScore()` démarre le score `Motif`, puis l'utilisa
 
 Un score contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, la progression commune consulte la violation `NOTE_OVERLAP` déjà portée par le candidat. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit()`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
+Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, la progression commune consulte la violation `NOTE_OVERLAP` déjà portée par le candidat. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit(sessionId)`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
 
-Avec `submitEditDecision({ decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
+Avec `submitEditDecision(sessionId, { decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
 | Note résultante | Hauteur | Intervalle | Identité | Vélocité |
 | --- | --- | --- | --- | ---: |
@@ -695,19 +695,19 @@ Une durée nulle, une référence de score absente ou un dépassement de `MAX_TI
 
 ## Cas 43 — Action atomique avec confirmation
 
-L’utilisateur demande une suppression explicite de contenu avec confirmation. La présentation appelle `beginEdit` puis `commitEdit`, sans `updateEdit`. Le candidat valide est immédiatement visible ; le projet validé et son historique n’ont pas changé. La progression détecte la confirmation requise et publie une décision `CONFIRMATION`, de code `DELETE_CONTENT`, avec le choix `CONFIRM`. Le brouillon reste figé dans `AWAITING_DECISION`.
+L’utilisateur demande une suppression explicite de contenu avec confirmation. La présentation appelle `beginEdit`, conserve le `sessionId` retourné puis appelle `commitEdit(sessionId)`, sans `updateEdit`. Le candidat valide est immédiatement visible ; le projet validé et son historique n’ont pas changé. La progression finalise le résultat, vérifie qu’il change le projet puis détecte la confirmation requise et publie une décision `CONFIRMATION`, de code `DELETE_CONTENT`, avec le choix `CONFIRM`. Le brouillon reste figé dans `AWAITING_DECISION`.
 
-Une réponse valide est conservée dans `EditSession.decisions.confirmations`. La même progression reprend, finalise le candidat puis publie une seule entrée d’historique. La confirmation n’a produit aucune `DeferredViolation`, aucune résolution métier et aucun nouveau candidat. Sans différence musicale entre le candidat et le projet final, cette publication n’incrémente pas `projectionRevision`.
+Avant la demande de confirmation, la progression a déjà finalisé le résultat et l’a conservé dans `phase.preparedProject`. Une réponse valide publie exactement ce résultat avec une seule entrée d’historique, sans relancer les calculs du domaine. La confirmation n’a produit aucune `DeferredViolation`, aucune résolution métier et aucun nouveau candidat. Sans différence musicale entre le candidat et le projet final, cette publication n’incrémente pas `projectionRevision`.
 
-Refuser appelle `cancelEdit` : les données réapparaissent, aucune entrée d’historique n’est créée et les auditions déjà arrêtées ne redémarrent pas. Une seconde soumission de l’ancienne décision est refusée. Une action atomique sans confirmation ni violation parcourt le même circuit et se termine immédiatement.
+Refuser appelle `cancelEdit(sessionId)` : les données réapparaissent, aucune entrée d’historique n’est créée et les auditions déjà arrêtées ne redémarrent pas. Une seconde soumission de l’ancienne décision est refusée. Une action atomique sans confirmation ni violation parcourt le même circuit et se termine immédiatement.
 
 ## Cas 44 — Plusieurs décisions pour un même brouillon
 
 Une commande collective déplace des notes dans deux scores et demande une suppression explicite avec confirmation. Le candidat contient un chevauchement dans chaque score. `commitEdit` demande d’abord la résolution du premier score selon l’ordre du domaine.
 
-L’utilisateur choisit `SLICE`. L’application conserve la résolution et les identités des nouveaux fragments dans `EditSession.decisions.resolutions`. La progression demande ensuite le choix du second score, avec un nouveau `decisionId`. Les fragments du premier score ne sont pas encore publiés dans la projection et leurs identités ne sont pas réallouées. Une réponse visant la première décision est désormais périmée.
+L’utilisateur choisit `SLICE`. L’application conserve la résolution et les identités des nouveaux fragments dans `EditSession.resolutions`. La progression demande ensuite le choix du second score, avec un nouveau `decisionId`. Les fragments du premier score ne sont pas encore publiés dans la projection et leurs identités ne sont pas réallouées. Une réponse visant la première décision est désormais périmée.
 
-Après un choix `MERGE` pour le second score, la progression demande `CONFIRMATION` pour la suppression explicite. Cette confirmation couvre la commande figée et les résolutions acceptées. Elle ne concerne pas les suppressions induites par `SLICE` ou `MERGE`, déjà approuvées par leur choix. Une réponse `CONFIRM` permet la finalisation unique et la publication atomique de tous les changements. Une annulation à n’importe laquelle de ces attentes retire toute la session, sans résultat partiel ni historique.
+Après un choix `MERGE` pour le second score, la progression finalise les deux résolutions, obtient un projet valide et le conserve avant de demander `CONFIRMATION` pour la suppression explicite. Cette confirmation couvre la commande figée et les résolutions acceptées. Elle ne concerne pas les suppressions induites par `SLICE` ou `MERGE`, déjà approuvées par leur choix. Une réponse `CONFIRM` publie atomiquement le projet déjà finalisé, sans recalculer les résolutions. Une annulation à n’importe laquelle de ces attentes retire toute la session, sans résultat partiel ni historique.
 
 ## Cas 45 — Suppression provisoire et conservation de l’éditeur
 
@@ -732,6 +732,24 @@ Un déplacement commence avec deux notes sélectionnées et un pas de grille de 
 Une actualisation incompatible avec la famille ou les cibles capturées est refusée et conserve le dernier brouillon admissible. Les identifiants d’une duplication sont également alloués une seule fois et réutilisés. Il n’existe aucun `EditDraft.revision` ; les changements effectifs de projection sont identifiés par `projectionRevision`, et chaque demande de décision possède son propre `decisionId`.
 
 Les scores non concernés peuvent conserver leurs objets immuables et leurs analyses. Le résultat doit rester identique à celui d’un calcul complet depuis la base, y compris les contrôles des références et des invariants collectifs.
+
+## Cas 48 — Événement retardé d’une ancienne session
+
+`beginEdit` ouvre le geste A et retourne `session-a`. L’utilisateur l’annule, puis commence le geste B, identifié par `session-b`. Un callback retardé de A appelle `cancelEdit(session-a)` : il ne produit aucun effet sur B. Un ancien `updateEdit(session-a, intent)` ou `commitEdit(session-a)` retourne une erreur sans toucher au brouillon de B.
+
+Une réponse de décision doit correspondre à la fois à la session et à sa décision courante. Le gestionnaire conserve donc l’identité de son geste ; il ne récupère pas celle de B depuis l’état courant au moment de son exécution. Après fermeture du document, ces mêmes callbacks ne peuvent pas atteindre une édition du document suivant.
+
+## Cas 49 — Résultat inchangé et erreur avant confirmation
+
+Une édition prévoit une confirmation, mais la finalisation retourne un projet identique au projet validé selon l’égalité retenue. La progression ferme la session avec `NO_CHANGE`, sans poser de question, sans entrée d’historique et sans effacer la branche redo. Si le candidat affiché différait du résultat final, la fermeture publie la projection rétablie avec une nouvelle révision.
+
+Dans une autre branche, la finalisation retourne une erreur bloquante. Aucun projet ni historique n’est publié. La session conserve son contexte et son brouillon, retire les résolutions et retourne en `EDITING` pour correction ou annulation. Cette transition applicative est autorisée même si l’appel retourne une erreur. Une réponse périmée, au contraire, conserve toute la session sans transition. Aucune confirmation n’a encore été demandée.
+
+## Cas 50 — Confirmation d’un résultat déjà validé
+
+Une commande résout une collision et demande une suppression avec confirmation. Après les résolutions, le domaine produit un `Project` valide, conservé dans `phase.preparedProject`. Le projet courant reste inchangé et l’affichage principal continue de montrer le candidat figé ; l’interface de confirmation peut consulter le résultat préparé pour expliquer ce qui sera publié.
+
+Une réponse valide publie exactement ce résultat, avec les identités de fragments déjà allouées, sans appeler de nouveau `finalizeProjectCandidate`. Un refus retire la session et son résultat préparé. Une tentative d’actualisation pendant cette attente est refusée ; changer l’opération demande une nouvelle session et une nouvelle confirmation. Aucune collection de confirmations acceptées n’est conservée.
 
 ## Référence des contrats
 
