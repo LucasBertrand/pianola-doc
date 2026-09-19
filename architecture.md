@@ -902,7 +902,7 @@ type EditSessionPhase =
       finalizedProject: Project;
     };
 
-interface EditDecisionRequest<
+interface DecisionRequest<
   Kind extends string,
   Details,
   Choice
@@ -913,31 +913,31 @@ interface EditDecisionRequest<
   choices: readonly Choice[];
 }
 
-type NoteOverlapDecisionRequest = EditDecisionRequest<
+type NoteOverlapDecisionRequest = DecisionRequest<
   "NOTE_OVERLAP",
   { scoreId: ScoreId; overlaps: readonly NoteOverlap[] },
   NoteOverlapResolution
 >;
 
-type ConfirmationDecisionRequest = EditDecisionRequest<
+type ConfirmationDecisionRequest = DecisionRequest<
   "CONFIRMATION",
   EditConfirmation,
   "CONFIRM"
 >;
 
-type AnyEditDecisionRequest =
+type EditDecisionRequest =
   | NoteOverlapDecisionRequest
   | ConfirmationDecisionRequest;
 
-interface EditDecision<Kind extends string, Choice> {
+interface DecisionResponse<Kind extends string, Choice> {
   decisionId: EditDecisionId;
   kind: Kind;
   choice: Choice;
 }
 
 type EditDecisionResponse =
-  | EditDecision<"NOTE_OVERLAP", NoteOverlapResolution>
-  | EditDecision<"CONFIRMATION", "CONFIRM">;
+  | DecisionResponse<"NOTE_OVERLAP", NoteOverlapResolution>
+  | DecisionResponse<"CONFIRMATION", "CONFIRM">;
 
 interface ProjectState {
   project: Project;
@@ -1023,9 +1023,9 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 `EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
-`EditDecisionRequest<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `AnyEditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision étend les unions et son traitement typé, avec les données d’attente nécessaires dans `EditSessionPhase`, sans introduire un autre circuit public.
+`DecisionRequest<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision étend les unions et son traitement typé, avec les données d’attente nécessaires dans `EditSessionPhase`, sans introduire un autre circuit public.
 
-`EditDecision<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `EditDecisionResponse` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
+`DecisionResponse<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `EditDecisionResponse` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
 
 Une demande contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; le couple `kind` et `choice` interdit d’envoyer le choix d’un autre type d’arbitrage.
 
