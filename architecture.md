@@ -820,7 +820,7 @@ La résolution locale sert à créer, déplacer et redimensionner les notes, à 
 
 Modifier une résolution ne modifie jamais l’autre. Il n’existe ni lien automatique, ni conversion, ni option de synchronisation entre elles dans le premier périmètre.
 
-`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `projectProjection`. Pendant un geste, un score présent seulement dans `editSession.draft.candidate` n’ajoute aucune entrée provisoire dans `Settings` :
+`ProjectState.settings` correspond toujours au `ProjectState.project` validé, jamais à `effectiveProject`. Pendant un geste, un score présent seulement dans `editSession.draft.candidate` n’ajoute aucune entrée provisoire dans `Settings` :
 
 - une création ordinaire utilise la résolution locale par défaut de `240` ticks ;
 - une duplication indépendante utilise la résolution du score source capturée dans `EditSession.context` ;
@@ -899,10 +899,10 @@ type EditSessionPhase =
   | {
       status: "AWAITING_DECISION";
       pendingDecision: ConfirmationDecisionRequest;
-      preparedProject: Project;
+      finalizedProject: Project;
     };
 
-interface PendingEditDecision<
+interface EditDecisionRequest<
   Kind extends string,
   Details,
   Choice
@@ -913,19 +913,19 @@ interface PendingEditDecision<
   choices: readonly Choice[];
 }
 
-type NoteOverlapDecisionRequest = PendingEditDecision<
+type NoteOverlapDecisionRequest = EditDecisionRequest<
   "NOTE_OVERLAP",
   { scoreId: ScoreId; overlaps: readonly NoteOverlap[] },
   NoteOverlapResolution
 >;
 
-type ConfirmationDecisionRequest = PendingEditDecision<
+type ConfirmationDecisionRequest = EditDecisionRequest<
   "CONFIRMATION",
   EditConfirmation,
   "CONFIRM"
 >;
 
-type EditDecisionRequest =
+type AnyEditDecisionRequest =
   | NoteOverlapDecisionRequest
   | ConfirmationDecisionRequest;
 
@@ -935,7 +935,7 @@ interface EditDecision<Kind extends string, Choice> {
   choice: Choice;
 }
 
-type SubmittedEditDecision =
+type EditDecisionResponse =
   | EditDecision<"NOTE_OVERLAP", NoteOverlapResolution>
   | EditDecision<"CONFIRMATION", "CONFIRM">;
 
@@ -947,7 +947,7 @@ interface ProjectState {
   projectionRevision: number;
 }
 
-const projectProjection: Project | ProjectCandidate =
+const effectiveProject: Project | ProjectCandidate =
   state.editSession?.draft.candidate ?? state.project;
 ```
 
@@ -983,7 +983,7 @@ flowchart TD
     Changed -->|Non| NoChange["NO_CHANGE : fermer sans historique ni confirmation"]
     Changed -->|Oui| Required{"Confirmation requise ?"}
     Required -->|Non| Applied["APPLIED : publier, nettoyer, historiser et fermer"]
-    Required -->|Oui| Confirm["AWAITING_DECISION : confirmation et preparedProject"]
+    Required -->|Oui| Confirm["AWAITING_DECISION : confirmation et finalizedProject"]
     Confirm -->|submitEditDecision valide : publier le résultat conservé| Applied
     Confirm -->|Réponse périmée ou invalide : erreur| Confirm
     Resolve -->|cancelEdit| Cancel["Annuler toute la session sans historique"]
@@ -996,7 +996,7 @@ Chaque attente retourne `DECISION_REQUIRED` et possède un nouveau `decisionId`.
 
 ```mermaid
 flowchart TD
-    Publish["Brouillon, commit, annulation, undo ou redo"] --> Projection["projectProjection : candidat de session ou project"]
+    Publish["Brouillon, commit, annulation, undo ou redo"] --> Projection["effectiveProject : candidat de session ou project"]
     Projection --> View["Présentation immédiate"]
     Projection --> Revision{"Contenu projeté modifié ?"}
     Revision -->|Non| Unchanged["Révision conservée : aucun travail audio supplémentaire"]
@@ -1009,13 +1009,13 @@ flowchart TD
     Plan -->|Échec de préparation| Failed["FAILED : conserver la publication du document"]
 ```
 
-Les effets visuels n’attendent pas l’audio. Sans transport, le prochain départ lit la projection courante ; avec un transport non affecté, sa révision appliquée rejoint la cible sans remplacer le plan. Une réponse audio périmée ne peut pas appliquer un ancien plan. Un commit identique au candidat n’incrémente pas la révision, même s’il effectue le nettoyage applicatif. Une résolution qui change le contenu ou une annulation qui rétablit un autre contenu produit une nouvelle cible. L’annulation ne redémarre pas une audition déjà arrêtée. La préparation d’un `preparedProject` en attente de confirmation ne publie aucune nouvelle projection.
+Les effets visuels n’attendent pas l’audio. Sans transport, le prochain départ lit la projection courante ; avec un transport non affecté, sa révision appliquée rejoint la cible sans remplacer le plan. Une réponse audio périmée ne peut pas appliquer un ancien plan. Un commit identique au candidat n’incrémente pas la révision, même s’il effectue le nettoyage applicatif. Une résolution qui change le contenu ou une annulation qui rétablit un autre contenu produit une nouvelle cible. L’annulation ne redémarre pas une audition déjà arrêtée. La préparation d’un `finalizedProject` en attente de confirmation ne publie aucune nouvelle projection.
 
 `project` est la version musicale courante validée faisant autorité, éventuellement non encore sauvegardée. `settings` contient les configurations persistantes associées à ce fichier. `EditSession.baseProject` référence la version immuable du projet au début du geste. Le mécanisme couvre toutes les modifications musicales du document : contenu local d’un score dans le piano roll, clips dans la grille, pistes instrumentales et propriétés générales du projet. L’éditeur de score ne possède donc ni session ni projet transitoire séparés.
 
 `EditService` traduit l’`EditIntent` en `ProjectEditCommand` du domaine. Il réunit cette commande et le `ProjectCandidate` obtenu dans `EditSession.draft` : le brouillon exprime ainsi une seule proposition courante, entièrement possédée par la session. Son calcul relève du contrat décrit dans [Transformations du projet et données candidates](#transformations-du-projet-et-données-candidates).
 
-`projectProjection` est dérivé depuis `editSession.draft.candidate` lorsqu’une session existe, sinon depuis le `project` validé. Il constitue la source du document affiché et la cible souhaitée par l’audio, sans prétendre décrire le plan déjà accepté par le moteur. Le candidat ne peut donc pas exister comme état frère de sa session et ne peut pas être sauvegardé.
+`effectiveProject` est dérivé depuis `editSession.draft.candidate` lorsqu’une session existe, sinon depuis le `project` validé. Il constitue la source du document affiché et la cible souhaitée par l’audio, sans prétendre décrire le plan déjà accepté par le moteur. Le candidat ne peut donc pas exister comme état frère de sa session et ne peut pas être sauvegardé.
 
 Cette projection contient une seule entrée par `ScoreId`, résolue par tous ses clips : une édition locale partagée n’est pas recopiée dans chaque bloc. Une copie indépendante introduit une nouvelle entrée avec ses propres identités, stables pendant toutes les actualisations du geste. Annuler ce geste retire simultanément ses créations et rétablit les références initiales ; aucun clip orphelin ni score créé par un geste annulé ne subsiste.
 
@@ -1023,13 +1023,13 @@ Une seule édition du document est ouverte à la fois, y compris pendant une dé
 
 `EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
-`PendingEditDecision<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision étend les unions et son traitement typé, avec les données d’attente nécessaires dans `EditSessionPhase`, sans introduire un autre circuit public.
+`EditDecisionRequest<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `AnyEditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision étend les unions et son traitement typé, avec les données d’attente nécessaires dans `EditSessionPhase`, sans introduire un autre circuit public.
 
-`EditDecision<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `SubmittedEditDecision` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
+`EditDecision<Kind, Choice>` est le conteneur générique symétrique pour la réponse. `EditDecisionResponse` réunit ses spécialisations acceptées par l’application. Les conteneurs génériques restent indépendants du domaine musical ; les unions applicatives établissent la correspondance exhaustive entre chaque `kind`, ses `details` et ses `choices`.
 
 Une demande contient des codes et des données structurées, jamais un titre ou un message déjà localisé. La présentation choisit le composant et les libellés à partir de `kind`. `decisionId` empêche une réponse tardive de résoudre une décision remplacée ou annulée ; le couple `kind` et `choice` interdit d’envoyer le choix d’un autre type d’arbitrage.
 
-`EditDraft` ne possède pas de compteur de révision : le brouillon est remplacé atomiquement, `decisionId` protège les réponses et aucune actualisation n’est autorisée pendant une décision. `projectionRevision` est un compteur monotone incrémenté lorsque le contenu de `projectProjection` change : nouveau candidat, résolution, annulation, undo, redo ou remplacement du document. Un commit qui remplace le candidat par un `Project` musicalement identique ne l’incrémente pas. Le `PlaybackService` utilise cette révision pour converger vers la projection la plus récente sans retarder sa publication visuelle.
+`EditDraft` ne possède pas de compteur de révision : le brouillon est remplacé atomiquement, `decisionId` protège les réponses et aucune actualisation n’est autorisée pendant une décision. `projectionRevision` est un compteur monotone incrémenté lorsque le contenu de `effectiveProject` change : nouveau candidat, résolution, annulation, undo, redo ou remplacement du document. Un commit qui remplace le candidat par un `Project` musicalement identique ne l’incrémente pas. Le `PlaybackService` utilise cette révision pour converger vers la projection la plus récente sans retarder sa publication visuelle.
 
 Le cycle public de `EditService` est :
 
@@ -1039,7 +1039,7 @@ updateEdit(sessionId: EditSessionId, intent: EditIntent): Result<void, EditError
 commitEdit(sessionId: EditSessionId): Result<EditOutcome, EditError>;
 submitEditDecision(
   sessionId: EditSessionId,
-  decision: SubmittedEditDecision
+  decision: EditDecisionResponse
 ): Result<EditOutcome, EditError>;
 cancelEdit(sessionId: EditSessionId): void;
 
@@ -1058,7 +1058,7 @@ type EditError = ProjectEditError | EditValidationError;
 
 Une actualisation peut changer les paramètres variables, par exemple le delta total, mais pas la famille, les cibles, les identités de création ou l’exigence de confirmation. Elle ne relit ni la sélection ni les réglages courants : la quantification utilise les valeurs capturées. Un réglage modifié pendant le geste ne prendra effet que sur le prochain geste. Une intention incompatible est refusée sans remplacer le brouillon. `baseProject` garantit le recalcul depuis une base fixe, sans accumulation d’erreurs.
 
-`EditSession.resolutions` est initialement vide et possède les résolutions acquises pour le brouillon figé, y compris les identifiants de fragments. Une confirmation acceptée provoque directement la publication : aucune collection de confirmations acquises n’est nécessaire. Seule la phase d’attente d’une confirmation conserve `preparedProject`, résultat déjà finalisé et valide. Ce résultat n’est ni le `ProjectState.project`, ni une nouvelle projection, ni une entrée d’historique. `EditService` ne conserve aucune copie de ces données hors session.
+`EditSession.resolutions` est initialement vide et possède les résolutions acquises pour le brouillon figé, y compris les identifiants de fragments. Une confirmation acceptée provoque directement la publication : aucune collection de confirmations acquises n’est nécessaire. Seule la phase d’attente d’une confirmation conserve `finalizedProject`, résultat déjà finalisé et valide. Ce résultat n’est ni le `ProjectState.project`, ni une nouvelle projection, ni une entrée d’historique. `EditService` ne conserve aucune copie de ces données hors session.
 
 #### Identité de session et transitions refusées
 
@@ -1080,7 +1080,7 @@ Chaque session reçoit une identité qui n’est pas réutilisée pendant la vie
 | `AWAITING_DECISION`, actualisation ou second commit | Erreur, conserver le brouillon figé et la décision |
 | `AWAITING_DECISION`, réponse périmée ou incompatible | Erreur, conserver la décision et les données acquises |
 | Attente de résolution, réponse valide | Conserver la résolution puis reprendre la progression |
-| Attente de confirmation, réponse valide | Publier le `preparedProject` déjà validé, sans nouveau calcul |
+| Attente de confirmation, réponse valide | Publier le `finalizedProject` déjà validé, sans nouveau calcul |
 | Session correspondante, annulation | Retirer toute la session, reprojeter le projet validé, sans historique |
 
 Une session ouverte interdit aussi undo, redo et l’ouverture d’un document (`EDIT_IN_PROGRESS`). Les commandes de transport et la sauvegarde de la version validée restent disponibles. Les codes détaillés des autres refus restent à fixer dans Q3.
@@ -1092,7 +1092,7 @@ Une session ouverte interdit aussi undo, redo et l’ouverture d’un document (
 1. chercher la première violation différée sans résolution, dans l’ordre fourni par le domaine, et demander son arbitrage ;
 2. lorsque les résolutions sont acquises, appeler `finalizeProjectCandidate` avec le candidat figé et ces résolutions ;
 3. si le résultat ne change pas le projet validé, fermer la session par la coordination de publication et retourner `NO_CHANGE`, sans confirmation ni entrée d’historique ;
-4. si une confirmation est requise, conserver le résultat dans `phase.preparedProject` et demander l’accord ; sinon publier immédiatement ;
+4. si une confirmation est requise, conserver le résultat dans `phase.finalizedProject` et demander l’accord ; sinon publier immédiatement ;
 5. à l’accord, publier exactement ce résultat déjà valide, réconcilier les états applicatifs et fermer la session, avec une seule entrée d’historique.
 
 Une collision produit une demande `NOTE_OVERLAP` portant sur un score, avec les choix `SLICE` et `MERGE`. Chaque attente retourne `ok("DECISION_REQUIRED")`. Une réponse valide ajoute sa résolution à `session.resolutions` ; la décision suivante reçoit une nouvelle identité. Les résolutions d’un score sont conservées lorsque le suivant demande son arbitrage. Aucun résultat partiel ne remplace le brouillon affiché.
@@ -1103,7 +1103,7 @@ Une erreur finale bloquante conserve la base, le contexte et le brouillon, retir
 
 La confirmation utilise `CONFIRMATION`, le code applicatif `DELETE_CONTENT` et le choix `CONFIRM`. Son exigence provient de l’intention capturée ; elle n’est pas déduite de toute disparition d’entité. Une suppression induite par `SLICE` ou `MERGE` ne provoque donc pas une seconde confirmation. Le refus appelle `cancelEdit(sessionId)`. Le domaine ne connaît pas cette confirmation et ne reçoit aucune `DeferredResolution` à son sujet.
 
-La confirmation porte sur un résultat déjà calculé et valide. Le candidat, la commande et les résolutions restent figés jusqu’à l’accord ou l’annulation ; modifier l’opération exige une nouvelle session. Une réponse valide ne relance ni résolution ni finalisation : elle publie le `preparedProject` conservé. Il n’existe donc plus de boucle de confirmation suivie d’une nouvelle erreur de validation du domaine.
+La confirmation porte sur un résultat déjà calculé et valide. Le candidat, la commande et les résolutions restent figés jusqu’à l’accord ou l’annulation ; modifier l’opération exige une nouvelle session. Une réponse valide ne relance ni résolution ni finalisation : elle publie le `finalizedProject` conservé. Il n’existe donc plus de boucle de confirmation suivie d’une nouvelle erreur de validation du domaine.
 
 La projection continue d’exposer le candidat pendant cette attente, même si le résultat résolu diffère. La présentation peut consulter le résultat préparé pour décrire exactement ce qui sera publié, sans en faire la cible audio. Une suppression provisoire peut déjà être visible et audible avant l’accord. Cette confirmation autorise la publication validée ; elle ne garantit pas l’absence d’effets provisoires. Le refus ne redémarre pas les auditions déjà arrêtées.
 
@@ -1207,7 +1207,7 @@ undo(): Result<"APPLIED" | "NO_CHANGE", EditError>;
 redo(): Result<"APPLIED" | "NO_CHANGE", EditError>;
 ```
 
-Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent synchroniquement la version précédente ou suivante et publient immédiatement la nouvelle `projectProjection`. `PlaybackService` converge ensuite vers sa nouvelle révision sans bloquer l’historique. Un échec de domaine conserve le projet et les piles ; un échec audio ultérieur ne les annule pas. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` avant toute confirmation, ne crée pas d’entrée et conserve la branche de rétablissement ; une pile vide retourne également `NO_CHANGE`.
+Ces opérations appartiennent à `EditService`. Sans édition ouverte, elles restaurent synchroniquement la version précédente ou suivante et publient immédiatement la nouvelle `effectiveProject`. `PlaybackService` converge ensuite vers sa nouvelle révision sans bloquer l’historique. Un échec de domaine conserve le projet et les piles ; un échec audio ultérieur ne les annule pas. Une nouvelle édition validée après undo efface la branche de rétablissement. Un commit sans effet retourne `NO_CHANGE` avant toute confirmation, ne crée pas d’entrée et conserve la branche de rétablissement ; une pile vide retourne également `NO_CHANGE`.
 
 Après publication, les références de sélection absentes sont retirées et les têtes immobiles sont ramenées dans les nouvelles bornes. Un éditeur dont le score a disparu est fermé ; les transports concernés suivent les règles de suppression et de fin de portée. Undo/redo n’a pas pour rôle de restaurer une sélection ou une ancienne position de transport.
 
@@ -1241,7 +1241,7 @@ L’ouverture partage l’exclusion des modifications du document : elle est ref
 
 #### Projection du projet et convergence audio
 
-Le service observe `projectProjection` et sa `projectionRevision`. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc la projection la plus récente, y compris ses collisions provisoires. La présentation l’affiche immédiatement ; un transport déjà actif peut encore exécuter un plan issu d’une révision antérieure pendant que l’audio converge.
+Le service observe `effectiveProject` et sa `projectionRevision`. Une lecture ou une préécoute déclenchée pendant une manipulation utilise donc la projection la plus récente, y compris ses collisions provisoires. La présentation l’affiche immédiatement ; un transport déjà actif peut encore exécuter un plan issu d’une révision antérieure pendant que l’audio converge.
 
 ```ts
 type AudioProjectionState =
@@ -1327,7 +1327,7 @@ Avec un transport actif, la convergence prépare toute banque introduite dans la
 
 À chaque changement de `projectionRevision`, le service capture la nouvelle cible et passe à `CONVERGING` lorsqu’elle affecte le transport. Il revalide la portée sonore au moment où les ressources deviennent disponibles, réutilise les banques déjà prêtes et ne charge que les banques supplémentaires. Une cible plus récente rend l’ancienne continuation obsolète sans annuler le chargement partagé.
 
-Un échec de banque produit `InstrumentPreparationError` dans `AudioProjectionState` et place la convergence en `FAILED`. Il ne modifie ni `projectProjection`, ni le projet validé, ni l’historique ; le moteur conserve son dernier plan accepté. Une nouvelle projection ou une nouvelle demande de synchronisation peut reprendre la convergence en réutilisant le cache déjà disponible.
+Un échec de banque produit `InstrumentPreparationError` dans `AudioProjectionState` et place la convergence en `FAILED`. Il ne modifie ni `effectiveProject`, ni le projet validé, ni l’historique ; le moteur conserve son dernier plan accepté. Une nouvelle projection ou une nouvelle demande de synchronisation peut reprendre la convergence en réutilisant le cache déjà disponible.
 
 Quand toutes les ressources sont disponibles, le service calcule le remplacement à une borne sûre. Un refus `SCHEDULE_TOO_LATE` conserve l’ancien plan et relance le calcul à une nouvelle borne. L’acceptation met à jour le plan sonore et `appliedRevision`, sans publication supplémentaire du document.
 
@@ -1467,7 +1467,7 @@ Pour les requêtes locales nécessitant une préparation, `scoreId` et `trackId`
 La requête capture `projectionRevision` avant de déterminer les instruments nécessaires. Après chaque préparation réussie, le service compare cette révision à la valeur courante :
 
 1. si elles sont égales et que la requête est toujours courante, il poursuit l’opération : ouverture de session pour un play/seek, ou publication du choix et éventuelle réconciliation de la session existante pour `SET_AUDITION_TRACK` ;
-2. si elles diffèrent, il relit la dernière `projectProjection`, revalide les références et les bornes applicables, puis recalcule la portée et les instruments requis ;
+2. si elles diffèrent, il relit la dernière `effectiveProject`, revalide les références et les bornes applicables, puis recalcule la portée et les instruments requis ;
 3. les banques déjà préparées sont réutilisées et seules les banques supplémentaires sont chargées ;
 4. le contrôle recommence avant le démarrage ou la publication du choix d’écoute.
 
@@ -1559,9 +1559,9 @@ L’audition est soutenue jusqu’à `PreviewPitchHandle.release()` ou jusqu’�
 
 ##### Préécoute d’une sélection
 
-`previewSelection(noteIds)` résout les notes dans le score édité depuis l’`projectProjection`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
+`previewSelection(noteIds)` résout les notes dans le score édité depuis l’`effectiveProject`, ignore leurs positions et leurs durées, déduplique leurs `Pitch` et attaque simultanément l’ensemble obtenu avec une vélocité de préécoute fixe. Chaque attaque est brève et produit automatiquement ses `NOTE_OFF` après une durée applicative fixe : aucune note n’est soutenue jusqu’à la fin du geste.
 
-Le `PreviewSelectionHandle` reste toutefois actif pendant le geste afin de suivre les transformations. À chaque remplacement de l’`projectProjection`, le service compare la hauteur de chaque `NoteId` sélectionné avec sa valeur précédente :
+Le `PreviewSelectionHandle` reste toutefois actif pendant le geste afin de suivre les transformations. À chaque remplacement de l’`effectiveProject`, le service compare la hauteur de chaque `NoteId` sélectionné avec sa valeur précédente :
 
 - si aucune hauteur sélectionnée n’a changé, notamment pendant un déplacement seulement temporel, aucune attaque n’est produite ;
 - dès que la hauteur d’au moins une note sélectionnée change, toute attaque précédente encore active est relâchée, puis l’ensemble complet des hauteurs actuelles est de nouveau dédupliqué et réattaqué brièvement ;
@@ -1619,7 +1619,7 @@ Si le tempo est modifié pendant le transport, le service ancre la nouvelle conv
 ```text
 command.at = replanAt
            + ((eventTick - replanTick) / 960)
-           * (60 / projectProjection.tempo.bpm)
+           * (60 / effectiveProject.tempo.bpm)
 ```
 
 `eventTick` et `replanTick` sont interprétés dans le référentiel du transport actif. La borne conserve donc le tick global atteint pour `PROJECT`, ou le tick local atteint pour `SCORE`.
@@ -1861,7 +1861,7 @@ Dans cette représentation :
 
 Tous les clips d’une piste utilisent son instrument. Déplacer un clip verticalement change sa piste et peut donc changer le son ; la superposition avec un bloc de la piste cible reste valide. Réordonner les pistes conserve au contraire toutes les affectations instrumentales. La présentation permet de distinguer et sélectionner les blocs superposés ; leur ordre de dessin n’introduit aucune priorité audio.
 
-La présentation affiche toujours la `projectProjection`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` construit `editSession.draft.candidate` avec la commande quantifiée et la base du geste. Cette projection devient visible immédiatement, même si une collision provisoire empêche encore d’en faire un `Project` valide ; l’audio la rejoint ensuite selon son propre état de convergence. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
+La présentation affiche toujours la `effectiveProject`. Ouvrir un bloc dans le piano roll résout son `scoreId` et son `trackId`, initialise la piste d’écoute et crée, si le score change, le `ScoreEditorState` avec une position mémorisée au tick `0` et édite le contenu référencé ; si ce score est déjà lu isolément, sa tête affichée suit la position dérivée du transport ; tous les clips correspondants reflètent immédiatement la modification. Pendant un geste, `EditService` construit `editSession.draft.candidate` avec la commande quantifiée et la base du geste. Cette projection devient visible immédiatement, même si une collision provisoire empêche encore d’en faire un `Project` valide ; l’audio la rejoint ensuite selon son propre état de convergence. Les coordonnées acceptées au terme du geste appartiennent au domaine ; le pointeur brut, les pixels, le zoom et le défilement restent des états de présentation.
 
 Les actions de duplication distinguent clairement le partage du score et la création d’une copie indépendante. Le nombre de clips utilisant un score peut être dérivé de leurs `scoreId` pour informer l’utilisateur de la portée d’une édition. Cette information n’est ni un champ du document ni un mode d’édition : modifier le score ouvert modifie toujours ce score et tous les clips qui le référencent.
 

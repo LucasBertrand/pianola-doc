@@ -273,7 +273,7 @@ Si un clip du score commence au tick global `10000`, ces bornes locales correspo
 
 ## Cas 14 — Projection immédiate et convergence audio
 
-Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement un clip déjà actif et déplace un changement local situé plus loin dans le score qu’il référence. La commande fournit une nouvelle projection candidate dans `EditSession.draft`. Elle devient immédiatement la `projectProjection` affichée, tandis que le plan sonore précédent continue jusqu’à l’acceptation de sa replanification.
+Un transport `PROJECT` est actif. À cinq secondes depuis le début de sa session, un même geste déplace globalement un clip déjà actif et déplace un changement local situé plus loin dans le score qu’il référence. La commande fournit une nouvelle projection candidate dans `EditSession.draft`. Elle devient immédiatement la `effectiveProject` affichée, tandis que le plan sonore précédent continue jusqu’à l’acceptation de sa replanification.
 
 Le `PlaybackService` consulte l’horloge de la session :
 
@@ -345,7 +345,7 @@ Dans un autre scénario, `playScore()` démarre le score `Motif`, puis l'utilisa
 
 Un score contient une note existante `note-a`, de hauteur `C4`, vélocité `70` et intervalle `[0, 1920)`. Une note `note-m`, de même hauteur et de vélocité `100`, est manipulée jusqu'à l'intervalle quantifié `[960, 1440)`. Une note `E4` recouvre également cette zone, mais sa hauteur différente l'exclut de la collision.
 
-Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, la progression commune consulte la violation `NOTE_OVERLAP` déjà portée par le candidat. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`EditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit(sessionId)`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
+Pendant le geste, le `ProjectCandidate` conservé dans `EditSession.draft.candidate` montre immédiatement `note-m` et `note-a` dans leur position provisoire. L’audio peut les faire entendre simultanément dès qu’il a rejoint cette révision. Aucun fragment n’est encore créé. Au relâchement, la progression commune consulte la violation `NOTE_OVERLAP` déjà portée par le candidat. `EditService` traduit ce constat en une variante `NOTE_OVERLAP` d’`AnyEditDecisionRequest`, conserve le score concerné dans `details.scoreId`, place les conflits dans `details.overlaps`, passe `EditSession.phase` à `AWAITING_DECISION` et fait retourner `ok("DECISION_REQUIRED")` par `commitEdit(sessionId)`. Le brouillon final reste affiché tandis que la présentation demande `SLICE`, `MERGE` ou l’annulation ; le son peut encore converger vers cette projection.
 
 Avec `submitEditDecision(sessionId, { decisionId, kind: "NOTE_OVERLAP", choice: "SLICE" })`, `note-m` reste inchangée et `note-a` est soustraite autour d'elle :
 
@@ -385,7 +385,7 @@ La lecture d'une sauvegarde suit le même chemin de validation. Un clip dont `sc
 
 Un transport `PROJECT` joue deux clips actifs sur `track-piano` : le premier référence `Ostinato`, le second `Contrechant`. L’utilisateur choisit un vibraphone pour cette piste ; sa banque n’est pas encore chargée. Un autre clip d’`Ostinato` sur `track-strings` reste joué aux cordes.
 
-`EditService` publie immédiatement le nouveau brouillon. La grille et l’inspecteur lisent donc le vibraphone dans `projectProjection`, sans attendre l’audio. `PlaybackService` observe la nouvelle `projectionRevision`, place son `AudioProjectionState` en `CONVERGING` et demande seul la préparation au moteur :
+`EditService` publie immédiatement le nouveau brouillon. La grille et l’inspecteur lisent donc le vibraphone dans `effectiveProject`, sans attendre l’audio. `PlaybackService` observe la nouvelle `projectionRevision`, place son `AudioProjectionState` en `CONVERGING` et demande seul la préparation au moteur :
 
 ```ts
 const preparation = await audioEngine.prepareInstruments([vibraphoneId]);
@@ -523,7 +523,7 @@ Le projet est arrêté au tick `1920`. Un premier `playProject()` crée la requ�
 
 Avant la fin du chargement, l’utilisateur appelle `playProject(7680)`. Le service crée `request-b`, rend `request-a` obsolète et résout sa promesse avec `ok("SUPERSEDED")`. Même si le piano termine ensuite son chargement pour `request-a`, cette ancienne requête ne peut ouvrir aucune session.
 
-Pendant la préparation de `request-b`, l’utilisateur modifie `projectProjection` et ajoute après le tick `7680` un clip sur une piste utilisant un vibraphone. `projectionRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
+Pendant la préparation de `request-b`, l’utilisateur modifie `effectiveProject` et ajoute après le tick `7680` un clip sur une piste utilisant un vibraphone. `projectionRevision` change. Lorsque la préparation courante se termine, le service détecte cette différence, recalcule la portée, réutilise le piano déjà prêt et prépare en plus le vibraphone. Il ne planifie la session qu’après un nouveau contrôle sur la dernière révision.
 
 Si `stop()` intervient pendant cette seconde préparation :
 
@@ -547,7 +547,7 @@ La présentation soumet le choix `SLICE` avec l’identité de la décision. Il 
 
 Le transport `PROJECT` lit les clips de `track-piano`. Une piste vide `track-vibes` utilise le vibraphone ; sa banque n’a pas été requise au démarrage. Un score existe sans clip. L’utilisateur le place sur `track-vibes`, dans la portée encore à lire, avec un intervalle qui peut recouvrir celui d’un clip de piano.
 
-La superposition est valide et le nouveau placement apparaît immédiatement dans `projectProjection`. La banque manquante place l’audio en `CONVERGING` ; l’ancien plan continue de jouer et aucun `NOTE_ON` de vibraphone n’est envoyé prématurément.
+La superposition est valide et le nouveau placement apparaît immédiatement dans `effectiveProject`. La banque manquante place l’audio en `CONVERGING` ; l’ancien plan continue de jouer et aucun `NOTE_ON` de vibraphone n’est envoyé prématurément.
 
 À la fin du chargement, le service vérifie la révision ciblée et la portée actuelle, puis recalcule depuis une nouvelle borne sûre. Les notes du score qui couvrent cette borne sont poursuivies par une attaque minimale ; celles déjà entièrement passées ne sont pas rejouées. Annuler ou modifier le geste publie une nouvelle cible et rend la convergence précédente obsolète. Un échec place l’audio en `FAILED`, mais conserve la projection affichée et, si le geste a été validé, son entrée d’historique.
 
@@ -697,7 +697,7 @@ Une durée nulle, une référence de score absente ou un dépassement de `MAX_TI
 
 L’utilisateur demande une suppression explicite de contenu avec confirmation. La présentation appelle `beginEdit`, conserve le `sessionId` retourné puis appelle `commitEdit(sessionId)`, sans `updateEdit`. Le candidat valide est immédiatement visible ; le projet validé et son historique n’ont pas changé. La progression finalise le résultat, vérifie qu’il change le projet puis détecte la confirmation requise et publie une décision `CONFIRMATION`, de code `DELETE_CONTENT`, avec le choix `CONFIRM`. Le brouillon reste figé dans `AWAITING_DECISION`.
 
-Avant la demande de confirmation, la progression a déjà finalisé le résultat et l’a conservé dans `phase.preparedProject`. Une réponse valide publie exactement ce résultat avec une seule entrée d’historique, sans relancer les calculs du domaine. La confirmation n’a produit aucune `DeferredViolation`, aucune résolution métier et aucun nouveau candidat. Sans différence musicale entre le candidat et le projet final, cette publication n’incrémente pas `projectionRevision`.
+Avant la demande de confirmation, la progression a déjà finalisé le résultat et l’a conservé dans `phase.finalizedProject`. Une réponse valide publie exactement ce résultat avec une seule entrée d’historique, sans relancer les calculs du domaine. La confirmation n’a produit aucune `DeferredViolation`, aucune résolution métier et aucun nouveau candidat. Sans différence musicale entre le candidat et le projet final, cette publication n’incrémente pas `projectionRevision`.
 
 Refuser appelle `cancelEdit(sessionId)` : les données réapparaissent, aucune entrée d’historique n’est créée et les auditions déjà arrêtées ne redémarrent pas. Une seconde soumission de l’ancienne décision est refusée. Une action atomique sans confirmation ni violation parcourt le même circuit et se termine immédiatement.
 
@@ -747,7 +747,7 @@ Dans une autre branche, la finalisation retourne une erreur bloquante. Aucun pro
 
 ## Cas 50 — Confirmation d’un résultat déjà validé
 
-Une commande résout une collision et demande une suppression avec confirmation. Après les résolutions, le domaine produit un `Project` valide, conservé dans `phase.preparedProject`. Le projet courant reste inchangé et l’affichage principal continue de montrer le candidat figé ; l’interface de confirmation peut consulter le résultat préparé pour expliquer ce qui sera publié.
+Une commande résout une collision et demande une suppression avec confirmation. Après les résolutions, le domaine produit un `Project` valide, conservé dans `phase.finalizedProject`. Le projet courant reste inchangé et l’affichage principal continue de montrer le candidat figé ; l’interface de confirmation peut consulter le résultat préparé pour expliquer ce qui sera publié.
 
 Une réponse valide publie exactement ce résultat, avec les identités de fragments déjà allouées, sans appeler de nouveau `finalizeProjectCandidate`. Un refus retire la session et son résultat préparé. Une tentative d’actualisation pendant cette attente est refusée ; changer l’opération demande une nouvelle session et une nouvelle confirmation. Aucune collection de confirmations acceptées n’est conservée.
 
