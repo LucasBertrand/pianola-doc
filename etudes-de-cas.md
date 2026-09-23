@@ -438,6 +438,7 @@ Le service fournit une mise à jour contenant :
 ```ts
 {
   from: 5.04,
+  through: 6.5, // borne exclusive de couverture
   audioCommands: [
     { kind: "NOTE_OFF", contextId: oldContext, at: 6.0, occurrenceId: oldVoice },
     { kind: "NOTE_ON", contextId: newContext, at: 6.0, occurrenceId: newVoice, /* … */ }
@@ -753,4 +754,4 @@ Une réponse valide publie exactement ce résultat, avec les identités de fragm
 
 ## Référence des contrats
 
-Les règles communes, les signatures des services et ports et les questions encore ouvertes sont centralisées dans [architecture.md](architecture.md). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
+Les règles communes, les signatures des services et ports et la matrice de validation du premier périmètre sont centralisées dans [architecture.md](architecture.md). Les cas ci-dessus illustrent ces règles sans constituer une seconde spécification.
