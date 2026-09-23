@@ -4,6 +4,8 @@ Ce document décrit l'architecture de Pianola, une application de piano roll ave
 
 Il fixe le vocabulaire courant, les responsabilités des couches et leurs dépendances. Les scénarios détaillés sont regroupés dans [etudes-de-cas.md](etudes-de-cas.md).
 
+Le contrat du premier périmètre est arrêté pour les couches **domaine, application et infrastructure**. Les décisions ci-dessous remplacent les anciennes questions Q1 à Q11 pour ces couches. La présentation reste descriptive : ses composants, gestes et parcours seront spécifiés séparément. Le cœur doit être exécutable et vérifiable sans React, Zustand ni interface graphique.
+
 ## Navigation
 
 - [Vue d'ensemble](#vue-densemble)
@@ -22,7 +24,8 @@ Il fixe le vocabulaire courant, les responsabilités des couches et leurs dépen
 - [Infrastructure](#infrastructure)
 - [Dépendances architecturales](#dépendances-architecturales)
 - [Arborescence cible](#arborescence-cible)
-- [Questions ouvertes](#questions-ouvertes)
+- [Déterminisme et configuration du premier périmètre](#déterminisme-et-configuration-du-premier-périmètre)
+- [Critères de validation et travaux différés](#critères-de-validation-et-travaux-différés)
 
 ## Vue d'ensemble
 
@@ -211,7 +214,7 @@ type DeferredResolution =
       }[];
     };
 
-interface ProjectCandidate {
+interface ProjectCandidate extends ProjectView {
   // Surface de lecture complète du projet projeté, distincte de Project.
   readonly deferredViolations: readonly DeferredViolation[];
 }
@@ -273,6 +276,45 @@ makeClipIndependent(
 
 `ProjectCandidate` est un type du domaine distinct de `Project`. Il expose une surface de lecture complète pour la présentation et la planification audio, ainsi que la collection de ses `deferredViolations`, mais il ne peut pas être fourni à une opération exigeant un agrégat validé. Dans le premier périmètre, seul `NOTE_OVERLAP` peut apparaître dans cette collection. Les bornes numériques, durées positives, références finales, identités, limites locales des notes et chronologies restent valides. Aucun `Project` invalide n’est construit.
 
+#### Représentation candidate et commandes implémentables
+
+`Project` et `ProjectCandidate` implémentent une interface de lecture immuable `ProjectView` (`id`, `name`, `tempo`, `tracks`, `scores`, `clips`, `duration` dérivée). Ses scores sont des `ScoreView` : valeurs et collections de notes/changements lisibles, sans méthode supposant l'absence de collision. Un candidat ne contient donc pas de faux `Score` validé. Les types validés possèdent une marque privée que les vues n'ont pas ; un cast TypeScript ne constitue jamais une validation. Les notes individuelles et Value Objects du candidat restent valides.
+
+`ProjectView` est déclaré avec `Project` et `ScoreView` avec `Score` dans leurs fichiers de modèle. Leurs collections sont en lecture seule ; elles exposent les mêmes champs que leurs modèles, sans leurs méthodes de transformation ni leur marque de validation. `ProjectCandidate` et sa construction restent dans `ProjectTransformations.ts`. La finalisation seule transforme les vues candidates en agrégat validé.
+
+La normalisation des commandes produit une proposition finale typée par collection : créations avec identités fournies, remplacements de champs explicitement autorisés, suppressions et ordre final des pistes. Elle conserve aussi `manipulatedNoteIds` par score. Les commandes spécialisées de déplacement et duplication ci-dessus sont des entrées de cette normalisation, pas des mutations successives du candidat.
+
+| Famille de `ProjectEditCommand` | Données finales requises |
+| --- | --- |
+| Projet | Nom ou tempo proposé |
+| Pistes | Créations complètes ; nom/instrument proposés par identité ; suppressions ; permutation complète des identités |
+| Scores | Créations complètes ; nom/durée proposés ; suppressions ; copies avec correspondances d'identités |
+| Clips | Créations complètes ; `scoreId`, `trackId`, `start`, `repeatCount` proposés ; suppressions ; duplications |
+| Contenu d'un score | Notes et changements créés ; valeurs proposées par identité ; suppressions ; portée `scoreId` obligatoire |
+| Composition | Liste non vide des commandes précédentes, toutes résolues depuis la même base ; aucune composition récursive nécessaire |
+
+Deux propositions égales pour un champ sont dédupliquées ; deux valeurs différentes, une suppression et une modification de la même entité ou plusieurs créations de même identité retournent `CONFLICTING_EDIT_COMMAND`. Une création complète n'est pas suivie d'une modification de sa propre identité : ses valeurs finales doivent être fournies d'emblée. Une référence vers une autre création de la transaction est autorisée. Les commandes de suppression vérifient l'existence dans la base ; une création ne réutilise pas une identité supprimée dans la même transaction. Les opérations ne se composent jamais par l'application successive de factories `Score.create` sur des états intermédiaires.
+
+Les familles correspondantes d'`EditIntent` couvrent ces opérations, avec une portée explicite ou une sélection à capturer, des paramètres sémantiques et l'option de quantification. `beginEdit` fixe la structure d'une intention composée et de ses créations ; `updateEdit` ne change que ses paramètres variables. Les suppressions explicites peuvent porter `confirmation: { code: "DELETE_CONTENT" }` ; une intention sans cette option reste sans confirmation. Une composition ne porte qu'une confirmation pour l'ensemble. Ce choix appartient à l'appelant applicatif, sans composant d'interface imposé.
+
+#### Ordres, validation et égalité
+
+Les identifiants sont des chaînes ASCII opaques de 1 à 128 caractères, de forme `[A-Za-z0-9][A-Za-z0-9._:-]*`. Aucune normalisation ne les modifie. Leur tri est lexicographique par code ASCII, sans `localeCompare`. Les noms sont des chaînes Unicode de 1 à 200 points de code, sans caractères de contrôle U+0000–U+001F/U+007F, déjà normalisées en NFC et sans espace initial ou final ; une factory refuse une entrée non canonique (`INVALID_NAME`) au lieu de la corriger. Deux entités peuvent porter le même nom. Les factories d'identité utilisent `INVALID_PROJECT_ID`, `INVALID_TRACK_ID`, `INVALID_SCORE_ID`, `INVALID_CLIP_ID`, `INVALID_NOTE_ID`, `INVALID_METER_CHANGE_ID`, `INVALID_HARMONY_CHANGE_ID` ou `INVALID_INSTRUMENT_ID` avec `{ received }`.
+
+| Collection | Ordre canonique |
+| --- | --- |
+| `tracks` | Ordre explicite du document, musicalement significatif |
+| `scores`, `clips` | Identité croissante ; le placement ne dépend pas de cet ordre |
+| Notes d'un score | `(range.start, pitch.midiNumber, id)` croissant |
+| Changements | `(tick, id)` croissant ; doublons de tick ensuite refusés |
+| Scores à arbitrer | `ScoreId` croissant |
+| `overlaps` | Ordre capturé de `manipulatedNoteIds` |
+| `overlappingNoteIds` | `NoteId` croissant, sans doublon ni auto-référence |
+
+La validation contrôle successivement : forme/discriminants et valeurs élémentaires ; unicité des identités et conflits de commande ; invariants locaux hors collision ; ordre et limites des pistes ; références finales et bornes globales ; collisions. À chaque étape, parcours projet, pistes, scores, clips ; les entités sont inspectées par identité, les champs dans l'ordre de leur schéma ci-dessous, les notes avant métrique puis harmonie. Les nombres doivent d'abord être finis, puis avoir la précision requise, puis respecter les bornes. Une validation complète retourne la première erreur selon cet ordre. La candidature retourne la première erreur bloquante, puis, s'il n'y en a aucune, toutes les violations différées par score. La finalisation relance le même ordre. Les erreurs de référence de suppression utilisent `SCORE_IN_USE`/`TRACK_IN_USE` plutôt qu'une référence absente générique.
+
+L'égalité de projet compare toutes les valeurs persistantes, identités comprises et ordre des pistes compris, après normalisation des collections. Deux scores identiques de nouvelles identités sont différents. Les caches, objets dérivés, références mémoire et `deferredViolations` ne participent pas à cette égalité. `NO_CHANGE` compare les deux projets validés ; `projectionRevision` compare les mêmes données lisibles entre deux `ProjectView`, même lorsque leurs types validé/candidat diffèrent. Une édition de nom incrémente donc la révision, mais son absence d'effet sonore évite un remplacement de plan.
+
 ### Bornes numériques et valeurs élémentaires
 
 Le premier périmètre fixe les limites suivantes :
@@ -312,16 +354,16 @@ Une valeur reçue hors de ces bornes produit une `ValidationError` typée. Aucun
 
 `Project` représente le document musical complet ouvert dans l'application.
 
-Attributs possibles :
+Attributs persistants :
 
 - `id` ;
 - `name` ;
 - `tempo` ;
 - `tracks` : collection ordonnée de pistes ;
 - `scores` ;
-- `clips` ;
-- `createdAt` ;
-- `updatedAt`.
+- `clips`.
+
+Le premier format ne contient pas de dates de création ou de modification. Elles n'interviennent donc ni dans l'égalité, ni dans l'historique, ni dans la sauvegarde. Une date technique de fichier reste extérieure au document musical.
 
 Responsabilités et invariants :
 
@@ -375,7 +417,7 @@ La création au-delà de la limite retourne `TRACK_LIMIT_EXCEEDED` ; une référ
 
 `Score` représente un contenu musical indépendant, éditable dans le piano roll et partageable par plusieurs clips. Il décrit les notes et leur organisation locale sans imposer de placement, de répétition ou d’instrument de lecture.
 
-Attributs possibles :
+Attributs persistants :
 
 - `id: ScoreId` ;
 - `name` ;
@@ -418,6 +460,8 @@ Chaque changement possède une identité, une position locale et sa nouvelle val
 
 Le `HarmonyChange` initial au tick `0` ne peut être ni supprimé ni déplacé, mais sa valeur peut être remplacée par un accord ou une autre gamme. `SCALE · C CHROMATIC` est la valeur créée par défaut ; sa `RootNote` est conservée par cohérence de modèle même si elle ne modifie pas les douze classes de hauteur de la gamme chromatique.
 
+Le `MeterChange` initial suit exactement cette protection : sa valeur est modifiable, son identité est conservée, son déplacement ou sa suppression retourne `INITIAL_CHANGE_PROTECTED`. Une transaction ne contourne pas la protection en supprimant puis recréant un changement au tick `0`. Modifier sa valeur n'impose pas de modifier la durée. Un changement métrique ultérieur peut être placé à tout tick entier : ce tick devient le début d'une nouvelle mesure et tronque si nécessaire la précédente ; il n'a pas à coïncider avec une ancienne frontière de mesure.
+
 Chaque nouveau `HarmonyChange` remplace indifféremment l’accord ou la gamme précédente. Il est donc impossible qu’un `Chord` et une `Scale` soient actifs simultanément ou que deux marqueurs harmoniques occupent le même tick.
 
 Un changement placé exactement à `score.duration` est valide et persistant. Il n’affecte aucune note et ne produit aucun événement audio tant que la durée ne change pas. Si le score est allongé, il devient automatiquement le début de la nouvelle section terminale. Si un raccourcissement placerait un changement au-delà de la nouvelle durée, l’opération doit également déplacer ou supprimer ce changement, faute de quoi la validation échoue.
@@ -428,7 +472,7 @@ Les marqueurs visibles dans l'éditeur sont la représentation des changements e
 
 `Clip` représente l’application concrète d’un `Score` dans la composition. Il prend la forme d’un bloc persistant dans la grille globale.
 
-Attributs possibles :
+Attributs persistants :
 
 - `id` ;
 - `scoreId: ScoreId` ;
@@ -448,6 +492,8 @@ clipEnd = clip.start
 ```
 
 Déplacer un clip modifie son `start` ou son `trackId`. Le déplacement horizontal change son instant de lecture ; le déplacement vers une autre piste change son instrument effectif si les deux pistes utilisent des instruments différents. Le score source et les autres clips restent inchangés. Le redimensionner depuis la grille globale ne modifie jamais la durée du score partagé : l’opération ajoute ou retire uniquement des répétitions complètes en modifiant son `repeatCount`.
+
+Les formules suivantes appartiennent à la **traduction applicative** dans `EditService`, pas aux transformations du domaine. `round` désigne l'arrondi à mi-distance en s'éloignant de zéro défini dans `Grid.ts`. Le minimum d'une répétition est une règle explicite du redimensionnement ; toute autre borne dépassée reste une erreur. Le domaine reçoit le `start` et le `repeatCount` finaux et les valide sans correction.
 
 Le bord droit conserve `start` et détermine le nouveau nombre de répétitions depuis sa position quantifiée :
 
@@ -494,7 +540,7 @@ Pour une sélection de clips, la duplication par référence conserve les relati
 
 `Note` représente une note placée dans un score. Elle ne porte aucun instrument : celui-ci est résolu depuis la piste du clip ou la piste d’écoute du piano roll.
 
-Attributs possibles :
+Attributs persistants :
 
 - `id` ;
 - `pitch` ;
@@ -535,6 +581,8 @@ L'invariant d'absence de chevauchement appartient au modèle `Score`. Sa détect
 
 Une commande collective fournit ses `manipulatedNoteIds` dans un ordre stable. Cet ordre définit la priorité de résolution sans introduire de `primaryNoteId` supplémentaire.
 
+L'application capture cet ordre par `(début dans la base, midiNumber, NoteId)`, croissant, indépendamment de l'ordre des clics. Une note créée utilise son début et sa hauteur à `beginEdit`. Cet ordre ne change pas pendant le geste. Tous les groupes en collision contiennent au moins une note créée ou modifiée ; les notes inchangées de la base valide ne peuvent pas se chevaucher seules.
+
 `SLICE` donne priorité à la première note manipulée, puis à chacune des suivantes dans l’ordre de la commande. Chaque note conserve son identité, son intervalle et sa vélocité tant qu’elle n’est pas découpée par une note manipulée plus prioritaire. Les notes non manipulées sont moins prioritaires que toutes les notes manipulées. Toute note moins prioritaire de même hauteur est remplacée par la différence entre son intervalle et celui de la note prioritaire :
 
 - une partie entièrement couverte est supprimée ;
@@ -547,11 +595,13 @@ Une détection collective retourne une seule `NoteOverlapError` dont `details.sc
 
 Après résolution, le `Score` valide de nouveau l'ensemble de ses notes. Il retourne `ok(score)` lorsque le résultat satisfait tous les invariants, ou une erreur typée sans modifier le score d'origine. `SLICE` comme `MERGE` forme une seule transformation atomique sur l’ensemble de la commande.
 
+Pour plusieurs découpes d'une même note, l'algorithme soustrait l'union des intervalles prioritaires et produit directement les fragments finaux, sans allouer d'identité intermédiaire. Le premier fragment survivant dans l'ordre temporel conserve l'identité source ; chaque fragment suivant en reçoit une nouvelle. `describeOverlapFragments(candidate, scoreId, choice)` retourne les descripteurs `(sourceNoteId, start, end)` triés par `(sourceNoteId, start, end)`. L'application alloue les identités dans cet ordre. La finalisation exige exactement cette correspondance, sans doublon, omission ou entrée superflue (`INVALID_RESOLUTION_FRAGMENTS`).
+
 ### Instrument
 
 `Instrument` est la représentation publique, stable et minimale d'un instrument intégré.
 
-Attributs possibles :
+Attributs publics :
 
 - `id` ;
 - `name`.
@@ -656,6 +706,23 @@ type ScaleTypeId =
 
 Les types d’accords et de gammes définissent leurs classes de hauteur à partir de la fondamentale ou de la tonique. Le choix d’une nouvelle valeur est explicite dans l’éditeur et n’est pas limité par l’harmonie précédente. Les suggestions de remplacements compatibles sont hors du premier périmètre.
 
+Les intervalles sont des demi-tons ascendants, modulo 12, ajoutés à la classe chromatique de `root` :
+
+| Accord | Intervalles | Gamme | Intervalles |
+| --- | --- | --- | --- |
+| `MAJOR` | 0, 4, 7 | `CHROMATIC` | 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 |
+| `MINOR` | 0, 3, 7 | `IONIAN` | 0, 2, 4, 5, 7, 9, 11 |
+| `DIMINISHED` | 0, 3, 6 | `DORIAN` | 0, 2, 3, 5, 7, 9, 10 |
+| `AUGMENTED` | 0, 4, 8 | `PHRYGIAN` | 0, 1, 3, 5, 7, 8, 10 |
+| `DOMINANT_SEVENTH` | 0, 4, 7, 10 | `LYDIAN` | 0, 2, 4, 6, 7, 9, 11 |
+| `MAJOR_SEVENTH` | 0, 4, 7, 11 | `MIXOLYDIAN` | 0, 2, 4, 5, 7, 9, 10 |
+| `MINOR_SEVENTH` | 0, 3, 7, 10 | `AEOLIAN` | 0, 2, 3, 5, 7, 8, 10 |
+| — | — | `LOCRIAN` | 0, 1, 3, 5, 6, 8, 10 |
+| — | — | `MAJOR_PENTATONIC` | 0, 2, 4, 7, 9 |
+| — | — | `MINOR_PENTATONIC` | 0, 3, 5, 7, 10 |
+
+`C,D,E,F,G,A,B` correspondent à `0,2,4,5,7,9,11`, et les altérations à `-1,0,+1`, avec modulo positif. Une valeur hors de ces unions retourne `UNKNOWN_CHORD_TYPE` ou `UNKNOWN_SCALE_TYPE`. Dans un contexte `CHORD`, l'appartenance donne `CHORD_TONE`, sinon `OUTSIDE_TONE` ; dans un contexte `SCALE`, elle donne `SCALE_TONE`, sinon `OUTSIDE_TONE`.
+
 ### Sections dérivées
 
 `MeterSection` et `HarmonySection` sont des vues locales dérivées. Chacune couvre l'intervalle entre un changement et le changement suivant du même type, ou entre ce changement et la fin du score.
@@ -754,13 +821,15 @@ interface GlobalEditorState {
 
 Ces trois états sont indépendants et possèdent chacun leur fichier. `GlobalEditorState` appartient à la vue globale toujours présente, quel que soit le statut de l’application. Il ne contient ni `ArrangementEditorState` ni `ScoreEditorState`. Ses propriétés concrètes seront déclarées lorsque cette vue aura des données applicatives à conserver ; les détails purement visuels restent dans la présentation.
 
+Pour ce premier travail sans interface, `GlobalEditorState` reste une responsabilité documentée : aucun objet vide n'est instancié. « Présent » dans la table ci-dessous désigne cette responsabilité permanente. Les deux états spécialisés restent nécessaires aux cas d'usage et sont manipulables depuis un banc d'essai sans interface.
+
 `ArrangementEditorState` existe lorsqu’un projet est ouvert dans la grille. Il possède la tête globale de la composition et la sélection de clips. Son champ `playhead` est global par son propriétaire : aucun préfixe `project` redondant n’est nécessaire.
 
 `ScoreEditorState` existe lorsqu’un score est ouvert dans le piano roll. Regrouper `scoreId`, la tête locale, la piste d’écoute et la sélection empêche qu’un état local subsiste sans score édité. Il peut cibler un score sans clip, mais toujours un score du projet ouvert.
 
 Pendant une édition, un score provisoirement absent de la projection peut conserver son état d’éditeur, rendu indisponible jusqu’au rétablissement ou au commit ; voir [Publication et annulation du brouillon](#publication-et-annulation-du-brouillon).
 
-Le score source édité et la sélection de clips expriment des faits différents. Un geste d'interface peut mettre à jour `ScoreEditorState` et `ArrangementEditorState` dans une même transaction, sans imposer de lien implicite entre leurs sélections. Le point d’assemblage applicatif conserve séparément l’unique `GlobalEditorState`, l’éventuel `ArrangementEditorState` et l’éventuel `ScoreEditorState` ; aucun quatrième modèle d’éditeur ne les enveloppe.
+Le score source édité et la sélection de clips expriment des faits différents. Un geste d'interface peut mettre à jour `ScoreEditorState` et `ArrangementEditorState` dans une même transaction, sans imposer de lien implicite entre leurs sélections. Le point d’assemblage applicatif conserve séparément l’éventuel `ArrangementEditorState` et l’éventuel `ScoreEditorState` ; aucun quatrième modèle d’éditeur ne les enveloppe. Il accueillera `GlobalEditorState` lorsqu’une propriété applicative de la vue globale le justifiera.
 
 | Situation | `GlobalEditorState` | `ArrangementEditorState` | `ScoreEditorState` |
 | --- | --- | --- | --- |
@@ -786,7 +855,7 @@ Chaque préécoute capture `scoreId`, `trackId` et l’instrument résolu. Chang
 
 `GridResolution` représente une précision de quantification utilisée pendant l'édition.
 
-Attribut possible :
+Attribut :
 
 - `snapStepTicks`.
 
@@ -832,11 +901,25 @@ Les deux espaces utilisent le même Value Object et la même unité `Tick`, sans
 
 `Settings` est validé par l’application relativement au `project` : la résolution de l’arrangement est obligatoire, chaque `ScoreId` du projet validé possède exactement un réglage et aucun réglage ne cible un score absent de ce projet. Le candidat de `EditSession.draft` n’entre pas dans cet invariant. Une création, une duplication ou une suppression de score publie atomiquement le nouveau `Project` et les réglages correspondants. Les réglages restent hors du domaine musical et de ses transformations.
 
+##### Contrat de quantification
+
+`GridResolution.create(snapStepTicks)` accepte tout entier dans `[1, MAX_TICK]`, y compris les subdivisions ternaires de 960. Une valeur non finie/non entière produit `INVALID_GRID_STEP`, une valeur hors bornes `GRID_STEP_OUT_OF_RANGE`, avec `{ received, min: 1, max: MAX_TICK }`. `SettingsValidationError` compose ces erreurs et `SETTINGS_SCORE_MISMATCH` (listes triées des identités manquantes et superflues).
+
+La grille est ancrée au tick `0` dans chaque référentiel, sans redémarrage à un changement métrique. Pour un nombre réel fini `x` et un pas `s`, `quantize(x,s) = sign(x) * floor(abs(x)/s + 0.5) * s`, avec zéro normalisé à `0`. Une mi-distance s'arrondit donc en s'éloignant de zéro : avec `s=240`, `120 → 240` et `-120 → -240`. Sans aimantation, le même calcul utilise `s=1` pour traduire une entrée réelle en ticks entiers.
+
+- Un déplacement collectif quantifie **une fois le delta total** depuis la base, puis l'applique à toutes les cibles. Les écarts et les décalages initiaux hors grille restent inchangés. Deux notes à 100 et 340 déplacées de 130 avec un pas de 240 arrivent à 340 et 580.
+- Une création quantifie séparément ses bords demandés. Un redimensionnement de note conserve le bord opposé et quantifie le bord demandé ; si la durée obtenue est nulle ou négative, il retourne `INVALID_RESIZE`, sans échange de bords ni durée minimale implicite.
+- Une durée de score demandée est quantifiée depuis zéro, reste strictement positive et ne tronque jamais implicitement les notes ou changements. Un raccourcissement incompatible est refusé à moins de déplacer/supprimer explicitement ces éléments dans la même transaction.
+- Le redimensionnement d'un clip utilise les formules de sa section : le minimum d'une répétition est explicite, y compris si le bord franchit le bord opposé. Un début négatif, une fin excessive ou un nombre de répétitions trop grand restent refusés.
+- Un déplacement collectif hors des bornes temporelles ou des hauteurs MIDI est refusé en entier. Le domaine reçoit exclusivement les résultats entiers proposés ; il ne connaît ni grille ni règle d'arrondi.
+
+Les fonctions de `Grid.ts` sont pures et applicatives. Les fonctions publiques de seek reçoivent déjà un `Tick` : elles ne quantifient pas une seconde fois. La conversion d'une position sémantique vers un tick quantifié est exposée par `Grid.ts` aux appelants.
+
 #### Têtes de lecture
 
 Les positions mémorisées `ArrangementEditorState.playhead` et `ScoreEditorState.playhead` sont des ticks applicatifs, initialisés à `0` et non sauvegardés dans le projet. Elles déterminent le départ d’une portée inactive.
 
-Pendant la lecture, `PlaybackService` est la seule autorité sur la position de la portée active. Il la dérive de l’horloge de session et d’un ancrage temps/tick ; il ne conserve pas un second compteur `playhead` avançant indépendamment. La tête affichée du projet ou du même score est une projection de cette position. À l’arrêt, au remplacement ou à la fin naturelle, le dernier tick atteint est mémorisé dans l’état de l’éditeur correspondant, si cet espace existe encore.
+Pendant la lecture, `PlaybackService` est la seule autorité sur la position de la portée active. Il la dérive de l’horloge de session et des ancrages temps/tick du plan accepté ; il ne conserve pas un second compteur `playhead` avançant indépendamment. La tête affichée du projet ou du même score est une projection de cette position. À l’arrêt, au remplacement ou à la fin naturelle, le dernier tick atteint est mémorisé dans l’état de l’éditeur correspondant, si cet espace existe encore.
 
 | Situation | Source de la tête affichée |
 | --- | --- |
@@ -844,7 +927,7 @@ Pendant la lecture, `PlaybackService` est la seule autorité sur la position de 
 | Transport `SCORE` actif sur le score ouvert | Position locale dérivée du transport |
 | Portée inactive ou autre score ouvert | Position mémorisée dans `ArrangementEditorState` ou `ScoreEditorState` |
 
-L’ancrage interne conserve la précision temporelle nécessaire, y compris une fraction de tick. La position publique en `Tick` est le tick entier atteint (partie entière, bornée par la portée) ; elle n’est pas aimantée à `GridResolution`. Un changement de tempo prend effet à la borne acceptée de replanification : jusqu’à cette borne, l’ancien ancrage reste utilisé ; à partir d’elle, le nouvel ancrage conserve exactement la continuité de position. Ces données d’exécution ne constituent pas une chronologie persistante de tempo.
+Chaque ancrage interne conserve la précision temporelle nécessaire, y compris une fraction de tick. La position publique en `Tick` est le tick entier atteint (partie entière, bornée par la portée) ; elle n’est pas aimantée à `GridResolution`. Un changement de tempo prend effet à la borne acceptée de replanification : jusqu’à cette borne, l’ancien ancrage reste utilisé ; à partir d’elle, le nouvel ancrage conserve exactement la continuité de position. Ces données d’exécution ne constituent pas une chronologie persistante de tempo.
 
 Pour une portée de fin `endTick`, une tête accepte `[0, endTick]`, mais la lecture exige un départ dans `[0, endTick)`. Un tick supérieur produit une erreur de validation. `playProject(tick)` et `playScore(tick)` positionnent immédiatement une tête inactive ; si leur portée est déjà active, le tick demandé reste une destination provisoire jusqu’au remplacement réussi, comme pour un seek. Un échec ne fait pas sauter la tête sonore existante.
 
@@ -1004,9 +1087,14 @@ flowchart TD
     Target --> Playback["PlaybackService observe la dernière cible"]
     Playback -->|Sans transport ou sans effet sur sa portée| Skip["Aucun remplacement de plan nécessaire"]
     Playback -->|Transport concerné| Plan["CONVERGING : préparer et replanifier"]
-    Plan -->|Dernier plan accepté| Synced["SYNCED"]
-    Plan -->|Cible dépassée ou borne trop tardive| Playback
-    Plan -->|Échec de préparation| Failed["FAILED : conserver la publication du document"]
+    Plan -->|Dernier suffixe accepté| Synced["SYNCED : plan et ancrages publiés ensemble"]
+    Plan -->|Cible dépassée| Playback
+    Plan -->|Borne trop tardive| Retry{"Moins de trois refus ?"}
+    Retry -->|Oui : nouvelle borne| Plan
+    Retry -->|Non| Stop["Arrêter le transport et publier l'erreur"]
+    Plan -->|Échec de préparation| Failed["FAILED : garder le dernier plan accepté"]
+    Failed -->|Nouvelle cible ou reprise explicite| Playback
+    Plan -->|Interruption ou capacité dépassée| Stop
 ```
 
 Les effets visuels n’attendent pas l’audio. Sans transport, le prochain départ lit la projection courante ; avec un transport non affecté, sa révision appliquée rejoint la cible sans remplacer le plan. Une réponse audio périmée ne peut pas appliquer un ancien plan. Un commit identique au candidat n’incrémente pas la révision, même s’il effectue le nettoyage applicatif. Une résolution qui change le contenu ou une annulation qui rétablit un autre contenu produit une nouvelle cible. L’annulation ne redémarre pas une audition déjà arrêtée. La préparation d’un `finalizedProject` en attente de confirmation ne publie aucune nouvelle projection.
@@ -1047,7 +1135,7 @@ type EditOutcome =
   | "APPLIED"
   | "NO_CHANGE"
   | "DECISION_REQUIRED";
-type EditError = ProjectEditError | EditValidationError;
+type EditError = ProjectEditError | EditValidationError | InstrumentUnavailableError;
 ```
 
 `beginEdit` capture la base et le contexte, construit la commande initiale, publie le premier `EditDraft` et retourne son `EditSessionId`. La présentation conserve cette identité pendant le geste et la fournit à chaque appel suivant. `updateEdit` reconstruit depuis cette même base un brouillon complet contenant la commande et son candidat, puis remplace atomiquement le précédent. Une entrée invalide conserve le dernier brouillon admissible ; un `beginEdit` invalide ne laisse pas de session ouverte. Ces opérations sont synchrones et n’attendent jamais l’audio.
@@ -1083,7 +1171,27 @@ Chaque session reçoit une identité qui n’est pas réutilisée pendant la vie
 | Attente de confirmation, réponse valide | Publier le `finalizedProject` déjà validé, sans nouveau calcul |
 | Session correspondante, annulation | Retirer toute la session, reprojeter le projet validé, sans historique |
 
-Une session ouverte interdit aussi undo, redo et l’ouverture d’un document (`EDIT_IN_PROGRESS`). Les commandes de transport et la sauvegarde de la version validée restent disponibles. Les codes détaillés des autres refus restent à fixer dans Q3.
+Une session ouverte interdit aussi undo, redo et l’ouverture d’un document (`EDIT_IN_PROGRESS`). Les commandes de transport et la sauvegarde de la version validée restent disponibles.
+
+Les refus applicatifs forment une union discriminée `EditValidationError`, avec les détails suivants :
+
+| Code | Condition / détails |
+| --- | --- |
+| `NO_PROJECT_OPEN` | Aucun document pour une opération qui l'exige ; `{}` |
+| `DOCUMENT_BUSY` | Une lecture/remplacement de fichier détient l'exclusion ; `{ operation }` |
+| `EDIT_IN_PROGRESS` | Une autre édition, undo/redo ou remplacement est demandé ; `{ sessionId }` |
+| `NO_EDIT_SESSION` | Aucune session pour update/commit/réponse ; `{ receivedSessionId }` |
+| `STALE_EDIT_SESSION` | Une autre session existe ; `{ receivedSessionId, currentSessionId }` |
+| `EDIT_DECISION_PENDING` | Update ou commit en `AWAITING_DECISION` ; `{ decisionId }` |
+| `NO_EDIT_DECISION` | Réponse reçue en `EDITING` ; `{ sessionId }` |
+| `STALE_EDIT_DECISION` | Mauvaise identité de décision ; `{ receivedDecisionId, currentDecisionId }` |
+| `INVALID_EDIT_DECISION` | `kind` ou choix incompatible ; `{ decisionId, receivedKind, receivedChoice }` |
+| `EDIT_CONTEXT_MISMATCH` | Famille, cibles, créations ou confirmation différentes du contexte capturé ; `{ field }` |
+| `EMPTY_EDIT_TARGETS` | Intention exigeant une sélection non vide ; `{ operation }` |
+| `INVALID_EDIT_PARAMETER` | Entrée sémantique non finie ou discriminant invalide ; `{ field, received }` |
+| `INVALID_RESIZE` | Bord de note inversé ou confondu ; `{ start, end }` |
+
+L'ordre de contrôle est : présence du document, exclusion de fichier, présence/identité de session, phase, identité de décision, compatibilité de réponse ou contexte, paramètres, domaine. Les références manquantes réutilisent les codes du modèle concerné (`NOTE_NOT_FOUND`, `METER_CHANGE_NOT_FOUND`, `HARMONY_CHANGE_NOT_FOUND`, `SCORE_NOT_FOUND`, `TRACK_NOT_FOUND`, `CLIP_NOT_FOUND`) avec l'identité et sa portée. `cancelEdit` et `stop` restent des nettoyages idempotents même sans document. Les signatures publiques reçoivent des unions TypeScript fermées, avec validation des données externes à leur frontière.
 
 #### Progression commune des décisions
 
@@ -1225,6 +1333,29 @@ L’ajout initial à la grille crée un clip référençant le score. Cette cré
 
 ### ProjectFileService
 
+#### Cycle du document et sauvegardes concurrentes
+
+Le service expose les contrats suivants, sans dialogue ni message imposé :
+
+```ts
+newProject(options?: { discardUnsaved?: boolean }): Result<"CREATED", ProjectFileServiceError>;
+openProject(options?: { discardUnsaved?: boolean }): Promise<Result<"OPENED" | "CANCELLED", ProjectFileServiceError>>;
+saveProject(): Promise<Result<"SAVED" | "CANCELLED", ProjectFileServiceError>>;
+closeProject(options?: { discardUnsaved?: boolean }): Result<"CLOSED" | "NO_CHANGE", ProjectFileServiceError>;
+```
+
+`ProjectFileServiceError` réunit `ProjectFileError`, `NO_PROJECT_OPEN`, `DOCUMENT_BUSY`, `EDIT_IN_PROGRESS`, `UNSAVED_CHANGES` et `INSTRUMENT_UNAVAILABLE`. Un remplacement ou une fermeture avec contenu non sauvegardé retourne `UNSAVED_CHANGES` avant tout effet, sauf autorisation explicite `discardUnsaved: true`. Le futur parcours d'interface décidera quand appeler cette option. Une session d'édition doit toujours être terminée ou annulée d'abord, même avec cette option. Fermer sans document retourne `NO_CHANGE`.
+
+Un nouveau projet contient un nom `Sans titre`, un tempo de 120 BPM, aucune piste, aucun score, aucun clip, la grille d'arrangement à 960 et un historique vide. Les créations applicatives de score proposent `Score`, quatre mesures de 4/4 (15360 ticks), `SCALE · C CHROMATIC` et la grille locale à 240 ; les identités sont fournies par le générateur injecté. Créer une piste exige un instrument explicitement choisi dans le catalogue ; aucune piste d'écoute n'est choisie automatiquement. Une note créée sans vélocité explicite reçoit 100. Le domaine exige les valeurs complètes et ne dépend pas de ces valeurs initiales applicatives.
+
+`ProjectFileService` possède une identité de document ouvert `documentId`, distincte du `Project.id` sauvegardé, et un instantané `savedSnapshot?: { project, settings }`. Ils changent à chaque nouveau document ou ouverture, même du même fichier. `isDirty` compare le couple validé courant à cet instantané par égalité de valeurs canonique. Sans instantané, un nouveau document est modifié ; une ouverture réussie initialise l'instantané lu. Un brouillon ne marque pas le fichier modifié tant qu'il n'est pas validé. Un undo revenant exactement à l'instantané, réglages compris, peut donc rendre le fichier propre. Ces données ne sont pas persistées et ne dupliquent pas l'agrégat mutable : les instantanés sont immuables.
+
+Les sauvegardes capturent immédiatement `(documentId, project, settings)` puis sont exécutées par une **file FIFO unique** du service. Aucun `write` ne chevauche un autre `write`. Une réussite met `savedSnapshot` à cette capture uniquement si le même `documentId` est encore ouvert ; `isDirty` est recalculé et peut rester vrai. Une annulation ou erreur conserve l'ancien instantané et libère la file. Au remplacement/fermeture, les écritures non commencées de l'ancien document sont résolues `CANCELLED` ; une écriture déjà engagée peut terminer pour ce document, mais ne change jamais le nouveau. Son résultat reste rattaché à l'appel initial. La file est commune aux documents pour empêcher l'achèvement tardif d'une ancienne écriture après une nouvelle visant le même fichier.
+
+L'ouverture détient une exclusion dès l'appel accepté jusqu'à son résultat : new/open/close, beginEdit, undo/redo et modification persistante de grille retournent `DOCUMENT_BUSY` pendant cette période. Le transport et la sauvegarde de l'ancienne version restent disponibles. À la réussite, arrêt `IMMEDIATE` de toutes les auditions de l'ancien document, invalidation de leurs requêtes, puis publication atomique du nouveau document, de ses réglages, de l'historique vide et des états d'éditeur. Aucun callback de l'ancien `documentId` ne peut modifier le nouveau. Une lecture annulée ou invalide libère seulement l'exclusion.
+
+#### Ouverture et capture validée
+
 `ProjectFileService` expose `openProject()` et `saveProject()` et utilise le port `ProjectFileStore`. L’infrastructure possède le format JSON et son décodage ; le service vérifie les références d’instrument auprès d’`InstrumentCatalog` et coordonne avec `EditService` et `PlaybackService` l’exclusion des éditions ainsi que l’arrêt des auditions de l’ancien document. Cette vérification confirme seulement qu’un `InstrumentId` est disponible dans le catalogue : `ProjectFileService` ne prépare ni ne charge aucune banque.
 
 Une ouverture valide remplace ensemble `ProjectState.project` et `ProjectState.settings`, crée un nouvel `ArrangementEditorState` avec sa tête à `0` et une sélection vide, puis ferme l’éventuel `ScoreEditorState`. `GlobalEditorState` reste présent et n’est pas recréé. Le remplacement arrête les transports et préécoutes de l’ancien document et invalide leurs demandes en attente. Le nouveau document est arrêté ; ses banques seront préparées à sa prochaine audition. Une ouverture n’est pas une commande d’undo du document précédent.
@@ -1260,7 +1391,7 @@ type AudioProjectionState =
       status: "FAILED";
       appliedRevision: number;
       targetRevision: number;
-      error: InstrumentPreparationError;
+      error: InstrumentPreparationError | AudioAvailabilityError | AudioSchedulingError;
     };
 ```
 
@@ -1270,22 +1401,48 @@ Lorsqu’un transport est actif, chaque nouvelle projection susceptible d’affe
 
 Une projection plus récente remplace la cible précédente. Une réponse tardive peut alimenter le cache d’instruments mais ne peut appliquer un plan obsolète. Quand le moteur accepte le plan de la dernière cible, `appliedRevision` la rejoint et l’état devient `SYNCED`. Valider un brouillon sans modifier son contenu projeté ne provoque aucune nouvelle planification ; l’annuler produit au contraire une nouvelle projection vers laquelle l’audio converge selon les mêmes règles.
 
-La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipId, ScoreId, repeatIndex, NoteId)`. Pour un transport `SCORE`, elle compare les notes par `(ScoreId, NoteId)` dans le score attaché à la session. Ces clés restent internes au service ; le moteur utilise les `NoteOccurrenceId`. Dans les deux cas, la comparaison est faite au tick correspondant à `safeAt`, calculé avec l’ancien ancrage, et sur les voix que l’ancien plan aura encore actives à cette borne. Dans les règles ci-dessous, « tête » désigne cette position de réconciliation, et non le tick affiché au moment du geste :
+La réconciliation dépend de la portée du transport actif. Pour un transport `PROJECT`, elle compare les notes par `(ClipId, ScoreId, repeatIndex, NoteId)`. Pour un transport `SCORE`, elle compare les notes par `(ScoreId, NoteId)` dans le score attaché à la session. Ces clés restent internes au service ; le moteur utilise les `NoteOccurrenceId`. Dans les deux cas, la comparaison est faite au tick correspondant à `safeAt`, calculé avec les ancrages du plan accepté, et sur les voix que l’ancien plan aura encore actives à cette borne. Dans les règles ci-dessous, « tête » désigne cette position de réconciliation, et non le tick affiché au moment du geste :
 
 | Avant | Après | Comportement |
 | --- | --- | --- |
-| L'occurrence de note est audible | La note couvre toujours la tête et ses données d’attaque sont inchangées | Conserver l'occurrence de note et replanifier son `NOTE_OFF` |
-| L'occurrence de note est audible | La note ne couvre plus la tête dans la portée active | Produire un `NOTE_OFF` à la borne de replanification |
-| La note n'est pas audible dans la portée active | Elle couvre désormais la tête | Créer une occurrence de note et produire un `NOTE_ON` à la borne |
-| La note n'est pas audible dans la portée active | Elle ne couvre toujours pas la tête | Replanifier uniquement ses éventuelles commandes futures |
+| L'occurrence de note est logiquement active dans `from−` | La note couvre toujours la tête et ses données d’attaque sont inchangées | Conserver l'occurrence de note et replanifier son `NOTE_OFF` |
+| L'occurrence de note est logiquement active dans `from−` | La note ne couvre plus la tête dans la portée active | Produire un `NOTE_OFF` à la borne de replanification |
+| Aucune occurrence n'est logiquement active dans `from−` | Elle couvre désormais la tête | Créer une occurrence de note et produire un `NOTE_ON` à la borne |
+| Aucune occurrence n'est logiquement active dans `from−` | Elle ne couvre toujours pas la tête | Replanifier uniquement ses éventuelles commandes futures |
 
-Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d’un `Clip`. Déplacer le début d'une note ou d’un clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà audible. Dans un transport `PROJECT`, modifier un `Score` source déclenche la réconciliation séparément pour chacun de ses clips actifs ou planifiés. Dans un transport `SCORE`, la même modification est réconciliée une seule fois dans le contexte local du score attaché à la session.
+Cette règle vaut autant pour une modification locale de la note que pour le déplacement global d’un `Clip`. Déplacer le début d'une note ou d’un clip sans faire franchir la tête à l'attaque ne redéclenche pas une occurrence de note déjà logiquement active. Dans un transport `PROJECT`, modifier un `Score` source déclenche la réconciliation séparément pour chacun de ses clips actifs ou planifiés. Dans un transport `SCORE`, la même modification est réconciliée une seule fois dans le contexte local du score attaché à la session.
 
 Dupliquer un clip, par référence ou indépendamment, crée de nouvelles clés sonores parce que le `ClipId` est nouveau. Les voix des clips d’origine sont conservées ; seules les notes de la copie qui couvrent la borne sûre ou se trouvent dans le futur sont planifiées. Créer ou dupliquer un score sans le placer n’affecte pas un transport `PROJECT`, et les éditions d’une copie indépendante n’affectent jamais les clips de l’original.
 
 Rendre un clip existant indépendant change son `scoreId` et les identités locales résolues. Dans `PROJECT`, ses anciennes voix sont relâchées à la borne acceptée ; les notes du nouveau score couvrant cette borne sont réattaquées et ses événements futurs remplacent ceux de l’ancien contenu, même si les valeurs musicales copiées sont identiques. La session et la tête globale restent inchangées. Le contexte peut être conservé si son instrument est inchangé et s’il accepte encore des commandes ; un contexte déjà en drainage ne peut pas être réactivé. Les autres clips du score d’origine conservent leurs voix. Une session `SCORE` reste attachée à son `scoreId` initial : changer la référence d’un clip ne redirige ni ce transport ni les préécoutes vers la copie.
 
 Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propriété sonore d'attaque change, l'occurrence de note existante est relâchée puis remplacée par une nouvelle occurrence de note. Un changement du tempo unique conserve cette occurrence de note et replanifie ses commandes temporelles : il ne modifie aucune donnée d'attaque. Un `NOTE_OFF` déjà engagé avant `safeAt` ne peut toutefois plus être prolongé : si le nouvel intervalle couvre la borne après ce relâchement, une nouvelle attaque est nécessaire. Une édition limitée à la métrique ou à l’harmonie, sans effet sur les intervalles sonores, n’impose aucune replanification audio.
+
+##### Plan accepté, ancrages successifs et borne exacte
+
+`PlaybackService` conserve un seul `AcceptedPlaybackPlan` par transport : version monotone du plan, projection cible acceptée, liste ordonnée d'ancrages, événements acceptés encore utiles, correspondances de contextes/occurrences, borne de couverture `through` et fin structurelle. Il contient le **préfixe réellement accepté**, même s'il provient de projections plus anciennes, et le dernier suffixe accepté. La projection cible seule ne permet pas de reconstruire ce préfixe. Une note est logiquement active entre son `NOTE_ON` et son `NOTE_OFF`/achèvement de contexte ; l'épuisement naturel de son échantillon ne change pas cet état musical et ne provoque aucune réattaque.
+
+`TransportAnchor[]` est trié par `at` strictement croissant. À un temps `t`, on utilise le dernier ancrage dont `at <= t`, puis `tick(t) = anchor.tick + (t - anchor.at) * 960 * anchor.tempo.bpm / 60`. Avant le départ, la tête reste au tick initial. Les fractions de tick internes sont conservées. L'affichage et toute réconciliation consultent cette même fonction sur le plan accepté, puis appliquent le bornage de portée déjà défini.
+
+Pour remplacer à `from` :
+
+1. capturer la version du plan accepté et la dernière `projectionRevision` ;
+2. calculer le tick continu à `from` depuis les anciens ancrages ;
+3. simuler exclusivement les événements anciens de temps **strictement inférieur** à `from`, y compris ceux déjà engagés mais pas encore audibles : c'est l'état `from−` ;
+4. conserver tous les événements et ancrages `< from`, retirer ceux `>= from`, puis construire la réconciliation et le suffixe de la dernière projection ; ajouter un ancrage à `from` avec ce tick et le nouveau tempo ;
+5. vérifier encore les identités de document/session, la version du plan et la révision cible, puis appeler `replaceSchedule` ; publier ensemble événements, ancrages, correspondances et révision appliquée uniquement après acceptation.
+
+Les calculs et cet appel sont synchrones, sans `await` dans cette portion critique. Tout chargement a lieu avant. Un refus laisse le plan accepté entièrement inchangé et libère seulement les contextes spéculatifs qui n'ont servi à aucun plan accepté. Les ancrages redondants de même tempo peuvent être fusionnés ; on conserve au minimum le dernier ancrage passé et tous les ancrages futurs encore acceptés. Les contextes futurs dont toutes les utilisations ont été retirées sont supprimés s'ils sont encore `SCHEDULED` ; un contexte actif conservé ou en drainage n'est pas détruit par ce nettoyage.
+
+Exemple : un tempo est accepté à `5.04 s`, puis une autre projection arrive avant sa prise d'effet. Si son remplacement est accepté à `5.02 s`, l'ancrage de `5.04 s` et son suffixe sont retirés ; à `5.04 s`, la tête suit déjà le tempo accepté à `5.02 s`. Si le remplacement est accepté à `5.06 s`, l'ancrage de `5.04 s` reste dans le préfixe et sert jusqu'à `5.06 s`. Une requête refusée ne modifie aucune de ces conversions. `SYNCED` signifie que le dernier suffixe demandé est **accepté**, pas qu'il est déjà devenu audible.
+
+| Événement de l'ancien plan | Strictement avant `from` | Exactement à `from` ou après |
+| --- | --- | --- |
+| `NOTE_OFF` | Déjà engagé : voix relâchée, nouvelle attaque si la nouvelle note couvre la borne | Retiré : conserver la voix de `from−` si elle couvre encore la borne, avec sa nouvelle fin |
+| `NOTE_ON` | Présent dans `from−` jusqu'à son relâchement | Retiré : aucune voix ancienne à conserver ; une attaque nouvelle est produite seulement si nécessaire |
+| `ContextCompletion` | Contexte non réactivable ; en ouvrir un autre si nécessaire | Retirée : le contexte peut rester actif avec sa nouvelle fin |
+
+Les nouveaux événements à `from` sont ensuite exécutés dans l'ordre `NOTE_OFF`, `ContextCompletion`, `NOTE_ON`. La borne est inclusive pour le remplacement et exclusive pour l'ancien préfixe. Aucun epsilon arbitraire ne déplace un événement d'un côté à l'autre : les horodatages acceptés sont conservés tels quels et réutilisés pour les comparaisons.
 
 ##### Réconciliation des répétitions
 
@@ -1327,7 +1484,7 @@ Avec un transport actif, la convergence prépare toute banque introduite dans la
 
 À chaque changement de `projectionRevision`, le service capture la nouvelle cible et passe à `CONVERGING` lorsqu’elle affecte le transport. Il revalide la portée sonore au moment où les ressources deviennent disponibles, réutilise les banques déjà prêtes et ne charge que les banques supplémentaires. Une cible plus récente rend l’ancienne continuation obsolète sans annuler le chargement partagé.
 
-Un échec de banque produit `InstrumentPreparationError` dans `AudioProjectionState` et place la convergence en `FAILED`. Il ne modifie ni `effectiveProject`, ni le projet validé, ni l’historique ; le moteur conserve son dernier plan accepté. Une nouvelle projection ou une nouvelle demande de synchronisation peut reprendre la convergence en réutilisant le cache déjà disponible.
+Un échec de banque produit `InstrumentPreparationError` dans `AudioProjectionState` et place la convergence en `FAILED`. Il ne modifie ni `effectiveProject`, ni le projet validé, ni l’historique ; le moteur conserve son dernier plan accepté. Les extensions de fenêtre continuent depuis la projection de ce plan accepté, sans adopter les nouvelles données tant que leur préparation a échoué. Une nouvelle projection ou une nouvelle demande de synchronisation peut reprendre la convergence en réutilisant le cache déjà disponible.
 
 Quand toutes les ressources sont disponibles, le service calcule le remplacement à une borne sûre. Un refus `SCHEDULE_TOO_LATE` conserve l’ancien plan et relance le calcul à une nouvelle borne. L’acceptation met à jour le plan sonore et `appliedRevision`, sans publication supplémentaire du document.
 
@@ -1356,7 +1513,7 @@ type PreviewReadyOutcome =
   | "CANCELLED";
 
 type PlaybackValidationError = ValidationError<
-  "NO_SCORE_EDITED" | "SCORE_NOT_FOUND" | "TICK_OUT_OF_RANGE" |
+  "NO_PROJECT_OPEN" | "NO_SCORE_EDITED" | "SCORE_NOT_FOUND" | "TICK_OUT_OF_RANGE" |
   "NO_AUDITION_TRACK" | "TRACK_NOT_FOUND",
   {
     tick?: Tick;
@@ -1367,7 +1524,7 @@ type PlaybackValidationError = ValidationError<
 >;
 
 type PreviewValidationError = ValidationError<
-  "NO_SCORE_EDITED" | "PITCH_OUT_OF_RANGE" |
+  "NO_PROJECT_OPEN" | "NO_SCORE_EDITED" | "SCORE_NOT_FOUND" | "PITCH_OUT_OF_RANGE" |
   "EMPTY_SELECTION" | "NOTE_NOT_IN_EDITED_SCORE" |
   "NO_AUDITION_TRACK" | "TRACK_NOT_FOUND",
   {
@@ -1384,13 +1541,20 @@ interface InstrumentPreparationError {
   instrumentIds: readonly InstrumentId[];
 }
 
+type AudioSchedulingError = {
+  kind: "AUDIO_SCHEDULING_ERROR";
+  code: "AUDIO_SCHEDULING_FAILED" | "AUDIO_CAPACITY_EXCEEDED" | "SCHEDULE_UNDERRUN";
+};
+
 type PlaybackRequestError =
   | PlaybackValidationError
-  | InstrumentPreparationError;
+  | InstrumentPreparationError
+  | AudioAvailabilityError
+  | AudioSchedulingError;
 
 interface PreviewPitchHandle {
   ready: Promise<
-    Result<PreviewReadyOutcome, InstrumentPreparationError>
+    Result<PreviewReadyOutcome, InstrumentPreparationError | AudioAvailabilityError | AudioSchedulingError>
   >;
 
   release(): void;
@@ -1398,7 +1562,7 @@ interface PreviewPitchHandle {
 
 interface PreviewSelectionHandle {
   ready: Promise<
-    Result<PreviewReadyOutcome, InstrumentPreparationError>
+    Result<PreviewReadyOutcome, InstrumentPreparationError | AudioAvailabilityError | AudioSchedulingError>
   >;
 
   stop(): void;
@@ -1434,6 +1598,9 @@ previewSelection(
 ): Result<PreviewSelectionHandle, PreviewValidationError>;
 
 stop(mode?: StopMode): void;
+
+enableAudio(): Promise<Result<"READY", AudioAvailabilityError>>;
+retryAudioProjection(): Promise<Result<"SYNCED" | "SUPERSEDED" | "CANCELLED", PlaybackRequestError>>;
 ```
 
 `StopMode` est déclaré par `application/ports/AudioEngine.ts`, qui constitue la source de vérité de cette politique d’arrêt. `PlaybackService` l’importe et le réexpose dans son API publique sans le redéfinir. `Tick` est un entier borné validé à sa création. Il représente seulement l'unité temporelle ; la méthode ou le champ qui le reçoit fixe son référentiel global ou local.
@@ -1442,23 +1609,26 @@ stop(mode?: StopMode): void;
 
 `SUPERSEDED` et `CANCELLED` sont des résultats normaux d’orchestration : ils ne doivent pas produire de message d’erreur utilisateur.
 
+`PlaybackValidationError` et `PreviewValidationError` comprennent aussi `NO_PROJECT_OPEN` avec `{}`. Un score édité mais provisoirement absent retourne `SCORE_NOT_FOUND` (également dans l'union de préécoute). Aucun service ne suppose silencieusement un document ouvert. `retryAudioProjection` reprend explicitement une convergence échouée sur la dernière cible, sans relancer un transport terminé ; sans transport, il retourne `SYNCED`. Un `stop` ou remplacement de document pendant sa préparation donne `CANCELLED`, une cible remplacée donne `SUPERSEDED`.
+
 #### Préparation asynchrone des transports
 
 Le service conserve au plus une requête en préparation pour le transport ou le changement explicite de piste d’écoute :
 
 ```ts
-interface PendingTransportRequest {
-  id: TransportRequestId;
-  kind: "PLAY_PROJECT" | "PLAY_SCORE" | "SEEK_PROJECT" | "SEEK_SCORE" | "SET_AUDITION_TRACK";
+type PendingPlaybackRequest = {
+  id: PlaybackRequestId;
+  documentId: DocumentId;
   targetTick: Tick;
-  scoreId?: ScoreId;
-  trackId?: TrackId;
   projectionRevision: number;
   status: "PREPARING";
-}
+} & (
+  | { kind: "PLAY_PROJECT" | "SEEK_PROJECT" }
+  | { kind: "PLAY_SCORE" | "SEEK_SCORE" | "SET_AUDITION_TRACK"; scoreId: ScoreId; trackId: TrackId }
+);
 ```
 
-Chaque `playProject`, `playScore`, `seekProject`, `seekScore` ou `setAuditionTrack` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
+Après validation immédiate, chaque `playProject`, `playScore`, `seekProject`, `seekScore` ou `setAuditionTrack` reçoit un nouvel identifiant et remplace la requête encore en attente. La promesse de l’ancienne se résout avec `ok("SUPERSEDED")`. Une fin de chargement tardive vérifie toujours l’identifiant courant avant toute ouverture de session.
 
 `stop(mode)` invalide la requête en attente en plus d’arrêter l’éventuel transport actif. Sa promesse se résout avec `ok("CANCELLED")`. Le service transmet un signal d’annulation au chargement lorsque l’infrastructure le permet, mais l’identité de requête reste la protection obligatoire contre les réponses tardives.
 
@@ -1572,6 +1742,10 @@ Le déclenchement dépend des hauteurs portées par les identités sélectionné
 
 Les mises à jour reçues dans un même cycle sûr de planification sont coalescées : seule la projection la plus récente déclenche l’attaque. `PreviewSelectionHandle.stop()` est idempotente, cesse d’observer le geste, annule toute attaque encore en attente et relâche les voix brèves encore actives.
 
+Le handle capture une liste immuable de `NoteId` sans doublon. Une identité absente d'une projection est retirée définitivement de son suivi ; aucun fragment créé par `SLICE` ni aucune identité restaurée ensuite ne s'y ajoute. S'il ne reste aucune note, le handle se termine ; si `ready` n'est pas résolue, elle donne `CANCELLED`. La seule disparition d'une note ne réattaque pas les survivantes : les voix des hauteurs qui ne sont plus représentées sont relâchées à la borne sûre, les autres finissent leur attaque brève. Une disparition accompagnée d'une transposition d'une survivante déclenche la réattaque complète habituelle.
+
+Un cycle désigne une impulsion du planificateur injecté, initialement toutes les 25 ms, et non un rendu React ou une frame d'écran. Le service compare les hauteurs à celles de la dernière attaque acceptée, absorbe toutes les publications reçues avant l'impulsion et attaque au plus une fois par handle et impulsion. Un aller-retour de hauteur entre deux impulsions ne produit pas de son supplémentaire. Les réponses de chargement rendent le handle éligible à l'impulsion suivante ; les tests pilotent explicitement cet ordre. Une disparition observée termine cependant le suivi immédiatement, même si l'entité revient avant cette impulsion.
+
 ##### Préparation de l’instrument
 
 `PlaybackService` demande le préchargement de l’instrument à l’ouverture du piano roll lorsqu’une piste d’écoute est définie, ou lors de son choix explicite. Sans piste, aucune banque n’est préparée. `previewPitch` et `previewSelection` effectuent d’abord leur validation synchrone et retournent `err(PreviewValidationError)` sans handle lorsque l’entrée est invalide.
@@ -1612,7 +1786,9 @@ command.at = ((eventLocalTick - sessionStartScoreTick) / 960)
            * (60 / project.tempo.bpm)
 ```
 
-La planification peut rester glissante et bornée pour limiter le volume de commandes préparées.
+La planification est glissante : le service prépare 500 ms depuis la borne de remplacement ou prolonge jusqu'à `now + 500 ms`, et vérifie le besoin d'extension toutes les 25 ms. Il parcourt seulement les clips, répétitions et notes intersectant cette fenêtre, sans développer toutes les répétitions du projet. Le plan peut être vide de commandes mais possède toujours une couverture `through`, y compris au début d'un silence. Une note longue conserve son identité entre fenêtres ; son `NOTE_OFF` n'est ajouté que lorsque sa fin entre dans la fenêtre. Les changements de tempo remplacent également la couverture et les fins de contexte concernées.
+
+La limite est de 10000 événements (`AudioCommand` et `ContextCompletion`) par mise à jour. Un calcul qui dépasse cette limite retourne `AUDIO_CAPACITY_EXCEEDED`, sans troncature ni plan partiel ; il conserve le document et termine le transport concerné. Le nombre de répétitions stockées n'est donc pas multiplié en mémoire pour préparer un départ. La fenêtre constitue une limite temporelle, la limite d'événements une protection complémentaire pour les compositions très denses.
 
 Si le tempo est modifié pendant le transport, le service ancre la nouvelle conversion à la borne de replanification. Le temps déjà écoulé n'est pas recalculé et aucune chronologie de tempo n'est créée :
 
@@ -1660,9 +1836,11 @@ interface TransportAnchor {
 }
 
 type ActiveTransport =
-  | { kind: "PROJECT"; sessionId: PlaybackSessionId; anchor: TransportAnchor }
-  | { kind: "SCORE"; sessionId: PlaybackSessionId; scoreId: ScoreId; trackId: TrackId; anchor: TransportAnchor };
+  | { kind: "PROJECT"; sessionId: PlaybackSessionId; plan: AcceptedPlaybackPlan }
+  | { kind: "SCORE"; sessionId: PlaybackSessionId; scoreId: ScoreId; trackId: TrackId; plan: AcceptedPlaybackPlan };
 ```
+
+`AcceptedPlaybackPlan.anchors` contient les ancrages successifs décrits plus haut. Son `trackId` effectif pour une portée `SCORE` suit les segments acceptés de contexte ; le `trackId` du transport indique la dernière piste acceptée et ne suffit pas à reconstruire le son avant une bascule future. Les associations nécessaires à cette reconstruction restent dans le plan.
 
 | Catégorie | Kind | Règle de concurrence |
 | --- | --- | --- |
@@ -1677,7 +1855,7 @@ Le service conserve au plus un `ActiveTransport`. Démarrer `playProject` ou `pl
 
 `previewPitch` et `previewSelection` ne remplacent jamais le transport. Démarrer une nouvelle préécoute de sélection arrête la précédente. Relâcher ou arrêter leurs handles termine structurellement leur session sans affecter les autres auditions.
 
-`stop(mode)` invalide d’abord toute `PendingTransportRequest`, puis arrête l'unique transport actif, qu'il soit `PROJECT` ou `SCORE`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. Sans transport actif, l’opération annule encore la requête de transport en préparation ; sans transport ni requête en attente, elle est sans effet.
+`stop(mode)` invalide d’abord toute `PendingPlaybackRequest`, puis arrête l'unique transport actif, qu'il soit `PROJECT` ou `SCORE`, immobilise sa tête à la position courante et n'affecte aucune préécoute. Ni `GRACEFUL` ni `IMMEDIATE` ne réinitialise l'une des deux têtes. Le service transmet au moteur l'identifiant de la session correspondante. Sans transport actif, l’opération annule encore la requête de transport en préparation ; sans transport ni requête en attente, elle est sans effet.
 
 Le mode par défaut est `GRACEFUL` :
 
@@ -1717,6 +1895,7 @@ interface ContextCompletion {
 }
 
 interface PlaybackSchedule {
+  through: number; // couverture garantie exclusive, même sans événement
   audioCommands: readonly AudioCommand[];
   contextCompletions: readonly ContextCompletion[];
 }
@@ -1736,7 +1915,22 @@ type ScheduleError = {
   safeAt: number;
 };
 
+type AudioEngineStatus = "SUSPENDED" | "RUNNING" | "INTERRUPTED" | "CLOSED";
+
+type AudioAvailabilityError = {
+  kind: "AUDIO_UNAVAILABLE";
+  code: "AUDIO_RESUME_REQUIRED" | "AUDIO_INTERRUPTED" | "AUDIO_CLOSED" | "AUDIO_START_FAILED";
+};
+
+type AudioEngineEvent =
+  | { kind: "STATUS_CHANGED"; status: AudioEngineStatus }
+  | { kind: "SESSION_UNDERRUN"; sessionId: PlaybackSessionId; at: number };
+
 interface AudioEngine {
+  getStatus(): AudioEngineStatus;
+  enable(): Promise<Result<"READY", AudioAvailabilityError>>;
+  subscribe(listener: (event: AudioEngineEvent) => void): () => void;
+
   prepareInstruments(
     instrumentIds: readonly InstrumentId[]
   ): Promise<Result<"READY", InstrumentPreparationError>>;
@@ -1745,20 +1939,21 @@ interface AudioEngine {
 
   openContext(
     sessionId: PlaybackSessionId,
-    contextId: PlaybackContextId
-  ): void;
+    contextId: PlaybackContextId,
+    instrumentId: InstrumentId
+  ): Promise<Result<"READY" | "DISCARDED", InstrumentPreparationError | AudioAvailabilityError>>;
 
   getClock(sessionId: PlaybackSessionId): PlaybackClock;
 
   schedule(
     sessionId: PlaybackSessionId,
     schedule: PlaybackSchedule
-  ): Result<void, ScheduleError>;
+  ): Result<void, ScheduleError | AudioAvailabilityError>;
 
   replaceSchedule(
     sessionId: PlaybackSessionId,
     update: ScheduleUpdate
-  ): Result<void, ScheduleError>;
+  ): Result<void, ScheduleError | AudioAvailabilityError>;
 
   closeSession(sessionId: PlaybackSessionId): void;
   stopContext(contextId: PlaybackContextId, mode: StopMode): void;
@@ -1772,7 +1967,9 @@ Tous les champs `at`, ainsi que `PlaybackClock.now`, `PlaybackClock.safeAt` et `
 
 `prepareInstruments` résout et charge toutes les ressources demandées selon le contrat universel détaillé dans [Ressources d'échantillons partagées](#ressources-déchantillons-partagées). Il retourne un échec attendu par `err(InstrumentPreparationError)` sans rejeter la promesse. Les défauts de programmation et les défaillances techniques non prévues restent des exceptions. `PlaybackService`, son unique appelant applicatif, détermine après ce résultat si la demande est toujours courante ; l’obsolescence, `CANCELLED` et `SUPERSEDED` n’appartiennent pas au port.
 
-`openContext` enregistre une seule fois la relation entre le contexte et sa session propriétaire. Chaque `AudioCommand` et `ContextCompletion` transporte donc uniquement son `contextId`.
+`openContext` réserve une seule fois la relation contexte/session/instrument et prépare l'instance isolée. Sa réussite garantit qu'elle peut attaquer sans autre attente. La banque est déjà mutualisée, mais l'initialisation asynchrone propre à une instance doit également être terminée avant la planification. `PlaybackService` attend ces contextes hors de sa portion critique, puis revalide requête/révision/plan et recalcule la borne sûre. Le contexte reste `SCHEDULED` jusqu'à l'exécution. Annuler ou arrêter pendant cette attente invalide la réservation et détruit l'instance tardive ; aucune voix ne démarre. Une erreur ne laisse aucun contexte utilisable. Le `instrumentId` des `NOTE_ON` doit correspondre à celui du contexte. `ContextCompletion` n'a besoin que du `contextId`.
+
+Une fermeture du contexte ou de sa session pendant cette préparation donne `DISCARDED` après nettoyage de l'instance tardive. L'obsolescence applicative reste traitée par le service : il résout son appel selon la cause déjà connue (`CANCELLED` ou `SUPERSEDED`) et ne produit aucune erreur publique tardive. `DISCARDED` ne permet jamais de réutiliser l'identité fermée. Les appels synchrones `openSession`/`getClock` exigent une identité valide dans le cycle décrit ; l'appelant contrôle le statut avant `openSession`, et aucune attente asynchrone ne sépare ce contrôle de l'appel.
 
 `ContextCompletion` n’est pas une commande sonore. Elle fixe la fin structurelle planifiée d’un contexte : aucune nouvelle attaque de ce contexte n’est acceptée à partir de `at`, ses voix encore actives sont relâchées, puis il passe à `DRAINING` ou directement à `DISPOSED`. Les commandes et fins nécessaires placées avant cette borne restent exécutées.
 
@@ -1781,6 +1978,10 @@ Tous les champs `at`, ainsi que `PlaybackClock.now`, `PlaybackClock.safeAt` et `
 La borne retournée peut devenir dépassée à son tour ; le service peut choisir une marge supplémentaire bornée. Une replanification ne doit jamais prolonger un `NOTE_OFF` déjà engagé avant sa borne. Le moteur conserve donc les événements remplaçables dans sa propre file et ne transmet à `smplr` que la portion engagée ; les possibilités d’annulation et le lookahead du moteur d’instrument déterminent la borne annoncée.
 
 `openSession` crée une session ouverte sans lancer une horloge audible à vide. La première planification acceptée fixe son origine technique avec une marge suffisante pour jouer les événements `at = 0`. Avant cette origine, la tête reste au tick de départ ; l’horloge peut exposer un `now` négatif pour cette courte attente technique. Les conversions et le démarrage visuel utilisent la même origine.
+
+Avant la première planification, `getClock` retourne `{ now: 0, safeAt: 0 }` dans ce référentiel non démarré. La première `schedule`, même vide de commandes, couvre `[0, through)` et fixe l'origine après 150 ms de marge initiale. Les ajouts suivants couvrent `[ancienThrough, nouveauThrough)` sans recouvrement ; un remplacement couvre `[from, through)` et retire aussi l'ancien suffixe au-delà de `through`. Tous les événements appartiennent à l'intervalle fourni, `through > from` (ou `> ancienThrough`) et les tableaux sont triés selon les règles canoniques. Une fin structurelle est incluse en couvrant au-delà de son instant, pas en la plaçant sur la borne exclusive. Ces préconditions internes erronées sont des défauts de programmation, pas des erreurs utilisateur.
+
+Le moteur conserve une frontière d'engagement monotone par session : **tout événement strictement avant `safeAt` est engagé, aucun événement à partir de cette borne n'est transmis à l'instrument**. L'engagement et l'acceptation d'un remplacement sont sérialisés dans le moteur. La valeur annoncée tient compte de la marge et de tous les événements déjà transmis ; elle ne peut jamais laisser croire qu'un arrêt irréversible reste remplaçable. Les contextes peuvent être terminés logiquement par simulation d'une fin engagée avant qu'elle soit audible. L'ordre chronologique du plan fournit cette information à l'application, sans lecture de l'amplitude audio.
 
 À un même instant `at`, le moteur garantit l’ordre suivant sur l’ensemble de la session :
 
@@ -1794,6 +1995,30 @@ Une fin de contexte interdit ainsi ses propres attaques simultanées, tandis qu�
 
 `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais ce port.
 
+##### Disponibilité, retards et interruptions
+
+`enableAudio` délègue à `AudioEngine.enable` pour créer/reprendre le contexte dans une interaction autorisée par l'hôte. L'appel ne commence aucune audition ; il retourne `READY` seulement lorsque le contexte est `RUNNING`. Un refus attendu retourne `AUDIO_START_FAILED`. Un appel sonore sans cette disponibilité échoue avec `AUDIO_RESUME_REQUIRED`, `AUDIO_INTERRUPTED` ou `AUDIO_CLOSED` selon l'état ; le chargement des ressources seul peut continuer. Aucun mécanisme de bouton ou de permission d'interface n'est spécifié ici.
+
+| Événement | Transition applicative |
+| --- | --- |
+| Préparation réussie, requête toujours courante | Revalider la projection, préparer les contextes, accepter le premier plan, puis remplacer l'ancien transport |
+| Échec de préparation ou de démarrage | Résoudre l'appel en erreur ; conserver l'ancien transport s'il est encore disponible |
+| Nouvelle requête valide | Ancienne demande `SUPERSEDED`, dernière seule éligible au démarrage |
+| `stop` / remplacement de document | Demande `CANCELLED`, arrêts selon la portée ; aucune continuation tardive |
+| Moteur quitte `RUNNING` | Capturer la dernière position d'horloge disponible, arrêter immédiatement toutes les sessions, terminer les handles et invalider les requêtes avec l'erreur d'indisponibilité |
+| Moteur redevient `RUNNING` | Aucun redémarrage automatique ; une nouvelle commande repart de la tête mémorisée |
+| `CLOSED` | État terminal de cette instance ; sa reconstruction au point d'assemblage est nécessaire avant une nouvelle audition |
+
+Les horloges n'avancent jamais selon le temps civil pendant une suspension. Les erreurs d'interruption après un démarrage déjà résolu sont publiées dans `PlaybackService.lastAudioError`, avec la portée concernée ; une promesse `ready` déjà résolue ne change pas de résultat. Si elle est encore en attente, elle reçoit cette erreur. Les publications musicales, réglages et historique restent disponibles et intacts.
+
+`AudioProjectionState` repasse à `SYNCED` sans transport actif ; l'erreur ayant provoqué l'arrêt reste consultable dans `lastAudioError` jusqu'au prochain démarrage réussi ou remplacement de document. Une erreur de préparation qui laisse le transport actif conserve au contraire `FAILED`. Les préécoutes sont également soumises à la couverture de leur session : celle d'une hauteur est prolongée jusqu'au relâchement ou au maximum de 30 s ; celle d'une sélection jusqu'à la fin des attaques prévues, puis sa session peut être fermée tandis que le handle reste disponible pour la prochaine transposition.
+
+Un refus `SCHEDULE_TOO_LATE` provoque un recalcul complet depuis la nouvelle frontière, avec une marge supplémentaire de 25 ms puis 50 ms. Il y a au plus trois tentatives par opération ; ensuite le service publie `AUDIO_SCHEDULING_FAILED`, termine gracieusement le transport concerné et conserve sa position atteinte. Aucune boucle infinie ni rafale d'attaques de rattrapage. Une préécoute en échec termine seulement son handle ; un nouveau transport qui n'a jamais démarré laisse l'ancien intact. Une erreur de chargement de convergence conserve au contraire le dernier plan accepté et peut être reprise explicitement.
+
+Le moteur protège la fin de couverture `through` par un arrêt de sécurité programmé et révocable sur le bus de session ; il ne programme pas prématurément un arrêt irréversible de chaque voix `smplr`. Sans prolongation acceptée à temps, il retire les attaques non engagées, relâche les voix, ferme la session et émet `SESSION_UNDERRUN` à la borne ; l'application termine le transport à sa position dérivée de cette borne et publie `SCHEDULE_UNDERRUN`. Un réveil tardif ne rejoue jamais toutes les attaques manquées. L'arrêt de couverture reste révocable tant qu'il n'est pas engagé ; sa prolongation tardive est refusée. Une nouvelle commande play applique alors le chase minimal depuis la position mémorisée.
+
+L'arrêt d'urgence `IMMEDIATE` déconnecte le bus ciblé et élimine ses commandes, même si certains événements avaient déjà été engagés. Le mode `GRACEFUL` supprime toutes les attaques futures de la session et relâche les voix ; l'adaptateur doit également neutraliser les sources déjà programmées mais non commencées. L'immutabilité du préfixe concerne les remplacements d'un transport continu, pas son interruption explicite.
+
 #### InstrumentCatalog
 
 `InstrumentCatalog` est un port de consultation permettant :
@@ -1803,6 +2028,15 @@ Une fin de contexte interdit ainsi ses propres attaques simultanées, tandis qu�
 - de vérifier si un identifiant peut être résolu.
 
 Il retourne directement les objets `Instrument` du domaine. Aucune configuration `smplr`, banque d'échantillons, instance technique ou donnée de chargement ne traverse ce port.
+
+```ts
+interface InstrumentCatalog {
+  list(): readonly Instrument[]; // ordre croissant d'InstrumentId
+  get(id: InstrumentId): Instrument | undefined;
+}
+```
+
+`get(id) !== undefined` suffit au contrôle de disponibilité. `InstrumentUnavailableError` porte `kind: "VALIDATION_ERROR"`, `code: "INSTRUMENT_UNAVAILABLE"` et `details: { instrumentIds }`. `EditService` vérifie également le catalogue lors de toute création de piste ou modification d'instrument, avant de publier un candidat (`INSTRUMENT_UNAVAILABLE`, `{ instrumentIds }` triés). Le domaine valide la forme de l'identité, sans dépendre du catalogue. Le catalogue est immuable pendant toute la vie d'un document.
 
 #### ProjectFileStore
 
@@ -1913,6 +2147,26 @@ Chaque `InstrumentDefinition` associe l’`Instrument` public à sa factory tech
 
 La définition choisit l'instrument ou le preset `smplr` employé. Elle ne décrit aucune chaîne de traitement ni politique d'allocation des voix propre à Pianola. Ces détails ne traversent jamais le port `InstrumentCatalog`.
 
+#### Contrat concret de l'adaptateur initial
+
+La dépendance de référence est **`smplr` 1.0.0**, sans plage flottante, tag [`v1.0.0`](https://github.com/danigb/smplr/tree/v1.0.0), commit `a8541ef0b319bdc867a7ae1066d200fa53f08cd4`. Le lockfile d'implémentation doit fixer l'intégrité du paquet. Le code de cette version fournit des factories, `ready`, `start`, un arrêt individuel et `dispose`. Les signatures de ce tag font autorité sur les exemples d'autres versions.
+
+Le catalogue de départ fixe trois identités : `piano` (Piano), `harpsichord` (Clavecin) et `vibraphone` (Vibraphone). Les sources de référence sont `FluidR3_GM/acoustic_grand_piano-mp3.js`, `FluidR3_GM/harpsichord-mp3.js` et `FluidR3_GM/vibraphone-mp3.js` du dépôt [midi-js-soundfonts au commit `044fab8`](https://github.com/gleitz/midi-js-soundfonts/tree/044fab8e1456bfafc5776e86dfd6bb8697149aef). La préparation des assets extrait les échantillons vers des fichiers locaux et construit des presets `Sampler` statiques ; les scripts soundfont ne sont pas exécutés à l'exécution. Les noms musicaux utilisés dans les études de cas restent illustratifs, sans exiger d'autres banques dans ce catalogue minimal.
+
+Le manifeste `assets/instruments/manifest.json` doit contenir pour chaque instrument son identité, la révision source ci-dessus, la liste exhaustive des fichiers et leurs SHA-256, les régions/pitches du preset, ainsi que la notice et les attributions de la banque source. Les octets et leurs empreintes seront produits lors de l'intégration des assets, pas inventés dans cette spécification. Le paquet `smplr` et les banques sont des distributions distinctes : vérifier et livrer les notices des banques fait partie de ce lot. Aucun accès distant n'est autorisé au runtime. Les presets couvrent les pitches MIDI 0–127 par leurs régions et transposition, sans boucle de sustain expérimentale ; un son percussif peut naturellement s'éteindre avant son `NOTE_OFF`.
+
+Points de réalisation obligatoires, issus du [code de chargement](https://github.com/danigb/smplr/blob/v1.0.0/src/smplr/sample-loader.ts) et du [cycle des voix](https://github.com/danigb/smplr/blob/v1.0.0/src/smplr/voice.ts) :
+
+- Le chargeur Pianola, implémenté dans `SharedSamples.ts`, conserve une promesse par ressource pendant chargement/décodage, puis son `AudioBuffer`. Le simple cache des buffers déjà terminés ne suffit pas à mutualiser les demandes simultanées. Les échecs retirent la promesse pour permettre une nouvelle tentative ; les réussites restent partagées.
+- Le chargement natif peut omettre des échantillons en échec : `ready` ou un compteur de progression ne suffisent donc pas à certifier une banque complète. Le chargeur strict compare les buffers disponibles à tous les échantillons du manifeste et retourne `INSTRUMENT_LOAD_FAILED` s'il en manque. Aucun instrument partiellement prêt ne franchit la barrière.
+- Chaque contexte prépare sa propre instance `Sampler` avec les buffers partagés et attend son `ready` dans `openContext`. Cette préparation ne refait aucun fetch/décodage. Les sorties, voix et contrôles restent séparés.
+- Pianola possède l'unique file remplaçable. Un scheduler `smplr` injecté transmet immédiatement aux nœuds les seuls événements que Pianola vient d'engager, en conservant leur temps Web Audio ; aucune seconde file à lookahead indépendant ne masque des engagements au moteur.
+- Chaque `start` reçoit un `stopId` égal à son `NoteOccurrenceId` et aucune `duration` automatique. L'arrêt retourné est conservé et invoqué avec le temps absolu calculé seulement lorsque le `NOTE_OFF` est engagé. Dans cette version, un arrêt de voix engagé ne se reprogramme pas : toute prolongation doit intervenir avant cette étape.
+- Les notifications de fin native libèrent les ressources physiques, sans effacer trop tôt l'occurrence logique du plan. Pour un événement produisant plusieurs voix natives, la fin d'un seul nœud ne prouve pas la fin de l'ensemble ; le drainage respecte également la borne de release connue et la durée maximale du contexte.
+- Les effets sont désactivés au premier périmètre : sortie sèche par contexte, aucune réverbération ni `AudioWorklet`. Après drainage, `dispose` et la déconnexion du bus sont idempotents. L'arrêt immédiat déconnecte le bus même si un arrêt natif était déjà programmé.
+
+Ces garanties décrivent le travail de l'adaptateur, pas une certification déjà obtenue en navigateur. Les tests contractuels de fin de document constituent le critère d'acceptation de ce lot avant de brancher une interface.
+
 ### PlaybackSession
 
 `PlaybackSession` est l'état technique transitoire d’un transport de projet, d’un transport de score, d’une préécoute de hauteur ou d’une préécoute de sélection. Elle possède les contextes ouverts pour cette opération et permet leur arrêt collectif.
@@ -1926,7 +2180,7 @@ Une session ouverte reste vivante pendant les silences, même sans contexte viva
 Il possède notamment :
 
 - un bus de sortie propre ;
-- l’`InstrumentId` résolu depuis la piste et son unique `InstrumentInstance`, créés paresseusement au premier `NOTE_ON` ;
+- l’`InstrumentId` résolu depuis la piste et son unique `InstrumentInstance`, préparés par `openContext` avant toute planification ;
 - une table `NoteOccurrenceId -> VoiceHandle` ;
 - les commandes programmées qui doivent pouvoir être annulées ;
 - un état `SCHEDULED`, `ACTIVE`, `DRAINING` ou `DISPOSED`.
@@ -1975,7 +2229,7 @@ Les deux formes de préécoute utilisent le même type de contexte. Le `Playback
 
 `InstrumentInstance` adapte une instance `smplr` au cycle de vie audio de Pianola.
 
-Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Un contexte utilise un seul instrument résolu depuis une piste et crée au plus une instance, paresseusement. Deux clips sur la même piste possèdent néanmoins des instances indépendantes ; il en va de même pour deux pistes utilisant le même instrument.
+Une instance appartient exclusivement à un `PlaybackContext` et dirige sa sortie vers le bus propre à ce contexte. Un contexte utilise un seul instrument résolu depuis une piste et prépare une seule instance avant de pouvoir accepter des attaques. Deux clips sur la même piste possèdent néanmoins des instances indépendantes ; il en va de même pour deux pistes utilisant le même instrument.
 
 Lors d'un `NOTE_ON`, l'instance déclenche la note à l'instant `at`. Le contrôle d'arrêt retourné par `smplr` est associé au `NoteOccurrenceId` par le contexte, afin qu'un `NOTE_OFF` puisse relâcher exactement la bonne occurrence.
 
@@ -1987,7 +2241,7 @@ Les banques `smplr` font partie des ressources statiques distribuées et version
 
 Chaque `InstrumentDefinition` référence uniquement les chemins internes des échantillons livrés avec l’application. Une mise à jour de banque est donc publiée comme une nouvelle version de l’application et reste cohérente avec le catalogue compilé correspondant.
 
-Le moteur possède un chargeur `smplr` partagé. Le chargement des ressources distribuées et leur décodage sont mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
+Le moteur possède le chargeur strict `SharedSamples`, partagé et compatible avec le contrat `SampleLoader` de `smplr`. Le chargement des ressources distribuées et leur décodage sont mutualisés entre les instances, tandis que leurs voix et leurs connexions de sortie restent isolées par contexte.
 
 `prepareInstruments` applique un contrat universel, indépendamment de la demande qui l’a déclenché :
 
@@ -1998,7 +2252,7 @@ Le moteur possède un chargeur `smplr` partagé. Le chargement des ressources di
 - l’obsolescence ou l’annulation d’une demande applicative n’invalide pas une ressource déjà chargée et n’interdit pas au chargement partagé de terminer ;
 - une réussite tardive peut alimenter le cache, mais ne déclenche par elle-même ni publication, ni session, ni attaque.
 
-Le propriétaire de chaque parcours reste responsable de vérifier que sa demande est encore courante après la préparation : `PendingTransportRequest` pour un transport, `targetRevision` dans `AudioProjectionState` pour la convergence d’un plan actif, et l’état du handle pour une préécoute. Ces contrôles ne dupliquent pas le chargement ; ils définissent des continuations applicatives différentes autour du même résultat technique.
+Le propriétaire de chaque parcours reste responsable de vérifier que sa demande est encore courante après la préparation : `PendingPlaybackRequest` pour un transport, `targetRevision` dans `AudioProjectionState` pour la convergence d’un plan actif, et l’état du handle pour une préécoute. Ces contrôles ne dupliquent pas le chargement ; ils définissent des continuations applicatives différentes autour du même résultat technique.
 
 La préparation constitue une barrière de démarrage : toutes les banques nécessaires à la portée sont chargées et décodées avant l’ouverture de la session. Le cache mémoire partagé évite de recommencer le décodage lors des lectures suivantes. Le cache HTTP éventuel des ressources statiques relève du mécanisme ordinaire de distribution de l’application et non d’un catalogue de banques téléchargées à la demande.
 
@@ -2037,9 +2291,43 @@ interface SettingsData {
 interface GridResolutionData {
   snapStepTicks: number;
 }
+
+interface ProjectData {
+  id: string;
+  name: string;
+  tempo: number;
+  tracks: { id: string; name: string; instrumentId: string }[];
+  scores: ScoreData[];
+  clips: {
+    id: string; scoreId: string; trackId: string;
+    start: number; repeatCount: number;
+  }[];
+}
+
+interface ScoreData {
+  id: string;
+  name: string;
+  duration: number;
+  notes: {
+    id: string;
+    pitch: number;
+    range: { start: number; duration: number };
+    velocity: number;
+  }[];
+  meterChanges: {
+    id: string; tick: number;
+    meter: { beatsPerMeasure: number; beatUnit: number };
+  }[];
+  harmonyChanges: { id: string; tick: number; harmony: HarmonyData }[];
+}
+
+type RootNoteData = { letter: "A" | "B" | "C" | "D" | "E" | "F" | "G"; accidental: "FLAT" | "NATURAL" | "SHARP" };
+type HarmonyData =
+  | { kind: "CHORD"; chord: { root: RootNoteData; typeId: ChordTypeId } }
+  | { kind: "SCALE"; scale: { root: RootNoteData; typeId: ScaleTypeId } };
 ```
 
-`ProjectData` est la représentation sérialisable de l’agrégat : identifiants, nom et métadonnées du projet, tempo en BPM, collection ordonnée `tracks`, collections `scores` et `clips`. Les pistes contiennent `id`, `name` et `instrumentId` ; leur ordre dans la collection est sauvegardé. Chaque `ScoreData` contient `id`, `name`, `duration` en ticks, `notes`, `meterChanges` et `harmonyChanges`, avec les identités locales de ces entités. Chaque `ClipData` contient `id`, `scoreId`, `trackId`, `start` et `repeatCount` ; `scoreId` est toujours obligatoire. Les Value Objects y sont représentés par leurs valeurs primitives validables. Les références et identités sont conservées exactement, sans dupliquer les contenus partagés.
+`ProjectData` est la représentation sérialisable de l’agrégat : identifiants, nom du projet, tempo en BPM, collection ordonnée `tracks`, collections `scores` et `clips`. Les pistes contiennent `id`, `name` et `instrumentId` ; leur ordre dans la collection est sauvegardé. Chaque `ScoreData` contient `id`, `name`, `duration` en ticks, `notes`, `meterChanges` et `harmonyChanges`, avec les identités locales de ces entités. Chaque `ClipData` contient `id`, `scoreId`, `trackId`, `start` et `repeatCount` ; `scoreId` est toujours obligatoire. Les Value Objects y sont représentés par leurs valeurs primitives validables. Les références et identités sont conservées exactement, sans dupliquer les contenus partagés.
 
 Un score est sérialisé une seule fois dans `scores`, qu’il soit référencé par zéro, un ou plusieurs clips. Une copie indépendante occupe une seconde entrée avec un autre `id`, même si son contenu est identique. Il n’existe aucun contenu musical inline, champ de liaison optionnel, indicateur de partage ni déduplication par valeur à la lecture. L’ouverture conserve donc à la fois le partage volontaire et l’indépendance des copies ; elle ne génère pas de nouveaux identifiants.
 
@@ -2050,6 +2338,18 @@ Le fichier ne contient ni sections dérivées, ni secondes, ni rôles harmonique
 Le décodage vérifie l’enveloppe et la forme des données, puis reconstitue l’agrégat avec les mêmes factories et validations que la création interactive. Il reconstitue aussi chaque `GridResolution` par sa factory et vérifie la correspondance exacte entre les clés de `SettingsData.scores` et les `ScoreId` du projet. Une incohérence métier ou applicative produit une erreur de validation sans objet partiellement valide. Un problème de syntaxe, de version ou d’accès reste distinct. `ProjectFileService` contrôle ensuite le catalogue avant de publier ensemble le projet et ses réglages.
 
 La sauvegarde porte exclusivement sur la version validée du projet et les réglages capturés par le cas d’usage. Un geste musical en cours, même audible, n’est jamais adopté implicitement.
+
+Le schéma est strict : tous les champs ci-dessus sont obligatoires, aucun champ supplémentaire ou `null` n'est accepté. Le décodage syntaxique suit `JSON.parse` (la dernière occurrence d’une clé répétée est retenue) ; l’encodeur canonique ne produit jamais de clé répétée. Les collections sont normalisées selon les ordres canoniques à la reconstitution ; l'ordre de `tracks` est conservé. Les clés de `SettingsData.scores` sont triées pour l'écriture et lues comme entrées de dictionnaire sans interprétation de prototype. Une chaîne contenant un nombre n'est pas convertie. La sérialisation UTF-8 produit des nombres JSON, une indentation de deux espaces et un saut de ligne final ; les ordres de champs suivent les interfaces.
+
+| `ProjectFileError` | Détails |
+| --- | --- |
+| `FILE_READ_FAILED`, `FILE_WRITE_FAILED` | `{ operation }`, sans chemin technique obligatoire dans le contrat public |
+| `INVALID_JSON` | `{ offset }` si connu |
+| `UNSUPPORTED_FILE_VERSION` | `{ received, supported: [1] }` |
+| `INVALID_FILE_SHAPE` | `{ path, reason }`, chemin de champ déterministe |
+| Erreur de domaine ou de réglages | Erreur structurée originale, sans remplacement de son code |
+
+L'ordre de décodage est syntaxe, enveloppe/version, structure, domaine, réglages ; le catalogue vient ensuite dans le service. Un fichier absent ou un accès refusé est une erreur de lecture, pas une annulation. `SAVED` signifie que l'adaptateur a terminé l'écriture/fermeture de son support ; une annulation ne touche pas à la cible. Le codec JSON est isolable des dialogues de l'hôte et testable sur chaînes/buffers. La sélection d'un fichier et l'export sont fournis à `JsonProjectFileStore` par des callbacks techniques injectés au point d'assemblage ; le cœur sans interface utilise des fichiers de test ou un stockage mémoire. Aucun écran ni API de navigateur de sélection particulière n'est imposé à cette étape.
 
 ---
 
@@ -2106,7 +2406,7 @@ src/
 │           ├── HarmonyTimeline.ts
 │           └── NoteRoleAnalysis.ts
 ├── application/
-│   ├── GlobalEditorState.ts
+│   ├── GlobalEditorState.ts       # réservé à la future présentation
 │   ├── ArrangementEditorState.ts
 │   ├── ScoreEditorState.ts
 │   ├── ProjectState.ts
@@ -2121,19 +2421,23 @@ src/
 │   └── ports/
 │       ├── AudioEngine.ts
 │       ├── InstrumentCatalog.ts
-│       └── ProjectFileStore.ts
+│       ├── ProjectFileStore.ts
+│       └── Runtime.ts
 ├── infrastructure/
 │   ├── audio/
 │   │   ├── instruments/
 │   │   │   ├── BuiltInCatalog.ts
-│   │   │   └── SmplrInstruments.ts
+│   │   │   ├── SmplrInstruments.ts
+│   │   │   └── SharedSamples.ts
 │   │   └── engine/
 │   │       ├── WebAudioEngine.ts
 │   │       ├── PlaybackSession.ts
 │   │       ├── PlaybackContext.ts
 │   │       └── InstrumentInstance.ts
-│   └── persistence/
-│       └── JsonProjectFileStore.ts
+│   ├── persistence/
+│   │   └── JsonProjectFileStore.ts
+│   └── runtime/
+│       └── BrowserRuntime.ts
 └── presentation/
     ├── components/
     └── stores/
@@ -2157,143 +2461,128 @@ src/
 | `application/ports/` | Contrats abstraits du moteur audio, du catalogue d’instruments et du stockage |
 | `infrastructure/audio/` | Catalogue concret, ressources `smplr`, moteur, sessions, contextes et instances |
 | `infrastructure/persistence/JsonProjectFileStore.ts` | Schéma versionné, encodage et reconstitution du fichier de projet |
+| `application/ports/Runtime.ts`, `infrastructure/runtime/BrowserRuntime.ts` | Ports d'identité/impulsions et implémentations techniques injectées |
 | `presentation/` | Rendu, interactions et état strictement visuel |
 
 Les modules de `models/` décrivent des données immuables et empêchent leur construction dans un état invalide. Les modules de `operations/` ne les modifient jamais en place : une transformation reçoit un modèle valide et retourne une nouvelle version avec `Result`, tandis qu'une timeline ou une analyse produit uniquement une vue dérivée. Le terme « transformation » décrit donc un changement métier, et non une mutation de l'objet reçu.
+
+Les erreurs et événements techniques traversant `AudioEngine` (`InstrumentPreparationError`, `AudioAvailabilityError`, `ScheduleError`, `AudioEngineEvent`) sont déclarés dans ce port. `AudioSchedulingError`, `AcceptedPlaybackPlan`, `PendingPlaybackRequest` et `lastAudioError` relèvent de `PlaybackService` ; `lastAudioError` associe l'erreur, le `documentId` et la portée transport/préécoute. `DocumentId`, l'état de sauvegarde et l'exclusion de remplacement sont possédés par `ProjectFileService` et consultables par les autres cas d'usage. Les abonnements d'état et les dépendances directes sont assemblés au point d'entrée, sans import circulaire entre services.
 
 Les commandes et erreurs propres à une transformation restent dans son module. Les erreurs de création restent auprès du modèle qui protège l'invariant correspondant. `MeterSection`, `HarmonySection` et les segments de rôle sont dérivés par les opérations et ne sont pas persistés. `Clip` demeure possédé directement par `Project` malgré son fichier distinct. Enfin, `ScoreContentRef` reste une adresse typée d'entité locale et non une sélection ; `Selection.ts` l'emploie sans déplacer sa propriété hors du domaine.
 
 Les services de `use-cases/` sont les points d’entrée applicatifs. `ports/` décrit uniquement les capacités sortantes réalisées par l’infrastructure. `EditService` publie les projections sans attendre l’audio ; `PlaybackService` les observe et converge indépendamment vers leur dernière révision. `ProjectFileService` coordonne le remplacement d’un document avec les arrêts nécessaires. `PlaybackService` ne dépend pas d’`EditService` et ne modifie pas l’historique. Les stores de présentation observent séparément `GlobalEditorState`, `ArrangementEditorState` et `ScoreEditorState` et conservent les détails d’interface ; ils ne les regroupent pas dans un autre modèle d’éditeur et ne dupliquent ni l’agrégat, ni la commande courante, ni l’horloge active.
 
-## Questions ouvertes
+## Déterminisme et configuration du premier périmètre
 
-Les grandes responsabilités et les règles déjà actées ci-dessus constituent la base du modèle. Leur articulation laisse toutefois les questions suivantes à trancher pour obtenir un comportement entièrement déterministe avant de préparer un plan d’implémentation. Les formulations alternatives et les pistes évoquées dans cette section ne sont pas des décisions : lorsqu’un contrat existant est ambigu ou contradictoire, son arbitrage devra être reporté dans la section concernée puis illustré dans les études de cas.
+À document initial, réglages, commandes, identifiants alloués, configuration et événements externes identiques **dans le même ordre**, le domaine et l'application produisent les mêmes états, erreurs, décisions et commandes audio. Les données externes rejouables comprennent les lectures d'horloge, impulsions du planificateur, résultats de préparation, acceptations/refus du moteur, changements de disponibilité et résultats de stockage. La pureté du domaine est indépendante de leur instant réel d'arrivée.
 
-### Exigence transversale — Périmètre du déterminisme
+Le déterminisme vise le document, les transitions et le plan sonore. Il ne promet pas l'identité bit à bit des échantillons rendus entre navigateurs, fréquences d'échantillonnage, appareils ou versions de banques. Les temps audio sont des nombres finis en secondes ; les ticks persistants sont des entiers. Les comparaisons aux bornes utilisent les horodatages acceptés conservés, sans reconstruire leur valeur depuis un tick public arrondi.
 
-- Quel contrat exact veut-on garantir : à état initial, commandes, identifiants alloués, configuration et événements externes horodatés identiques, les états applicatifs et commandes audio doivent-ils être identiques ?
-- Quelles entrées externes faut-il rendre explicites pour rejouer un scénario : horloge, résultats de chargement, interruptions audio, allocation d’identifiants et dates de métadonnées ?
-- Le déterminisme vise-t-il le document, les transitions applicatives et le plan sonore, ou également une identité du signal rendu entre navigateurs et versions de banques ? Comment distinguer ces garanties ?
-- Quels ordres et paramètres doivent être fixés par le contrat, et lesquels peuvent être configurables tout en restant des entrées explicites du calcul ?
+### Assemblage sans interface
 
-### Points bloquants
+Le point d'entrée construit les adaptateurs puis les services, et leur injecte l'état partagé ainsi que les dépendances. Le domaine n'importe aucune couche supérieure. Les états applicatifs sont publiés comme instantanés immuables ; un `subscribe` synchrone signale une publication complète, jamais les étapes intermédiaires. Les abonnés ne lancent pas une commande réentrante pendant la notification : ils la placent sur l'impulsion suivante. Une publication de brouillon/commit et ses réglages, nettoyages et compteurs sont observés atomiquement.
 
-#### Q1 — Plans audio successifs et ancrages temporels
+`EditService` fournit aussi les opérations applicatives non musicales `openScore(scoreId)`, `openClip(clipId)`, `closeScore()`, `setScoreSelection(items)`, `setClipSelection(clipIds)` et `setGridResolution(scope, resolution)`. Elles valident les références de la projection (du projet validé pour les réglages), appliquent les politiques déjà décrites des éditeurs et retournent `Result`. `openClip` utilise `PlaybackService.setAuditionTrack` lorsqu'il change la piste d'écoute d'un éditeur déjà ouvert sur ce score ; ce parcours retourne une promesse de `Result`. Une ouverture sur un nouveau score installe le contexte score/piste immédiatement et précharge sans démarrer le son. La fermeture et les changements de score notifient directement `PlaybackService` pour terminer les préécoutes et demandes locales concernées. Ces opérations ne créent ni `ProjectEditCommand` ni historique ; les seeks restent dans `PlaybackService`. Elles ne dessinent pas d'interface.
 
-Voir [Projection du projet et convergence audio](#projection-du-projet-et-convergence-audio), [Convergence audio des projections](#convergence-audio-des-projections), [Sessions et concurrence](#sessions-et-concurrence) et [Éditeur d’arrangement](#éditeur-darrangement).
+Deux petites capacités sortantes sont déclarées dans `application/ports/Runtime.ts` :
 
-La projection devient désormais visible immédiatement et `PlaybackService` possède le dernier plan accepté ainsi que l’état de convergence. Il reste à préciser :
+```ts
+type IdentityNamespace =
+  | "DOCUMENT" | "PROJECT" | "TRACK" | "SCORE" | "CLIP" | "NOTE"
+  | "METER_CHANGE" | "HARMONY_CHANGE" | "EDIT_SESSION" | "EDIT_DECISION"
+  | "PLAYBACK_REQUEST" | "PLAYBACK_SESSION" | "PLAYBACK_CONTEXT" | "NOTE_OCCURRENCE";
 
-- comment représenter les ancrages temporels encore nécessaires lorsque plusieurs changements de tempo sont acceptés avant leur prise d’effet ; l’unique `ActiveTransport.anchor` présenté suffit-il au contrat ?
-- lors d’un nouveau `replaceSchedule`, quels changements futurs d’ancrage, de contexte ou d’instrument sont conservés, remplacés ou annulés ?
-- sur quelle version du plan accepté et de ses ancrages se fondent la tête affichée et la réconciliation suivante ?
+interface IdGenerator {
+  next(namespace: IdentityNamespace): string;
+}
 
-Cas à résoudre : un changement de tempo est accepté pour 5,04 s ; un second changement arrive avant cette borne. La conversion temps/tick doit rester définie avant, entre et après les bornes conservées.
+interface TaskScheduler {
+  subscribePulse(intervalMs: number, listener: () => void): () => void;
+}
+```
 
-#### Q2 — État de réconciliation exactement à la borne
+`IdGenerator` produit des identités conformes, non réutilisées, pour documents, entités, sessions, décisions, requêtes, contextes et occurrences. Les namespaces sont une union fermée, pas une entrée utilisateur. L'infrastructure fournit des UUID ; les tests une suite prévisible. Les créations ordinaires suivent l'ordre canonique des cibles puis notes/métrique/harmonie, les fragments l'ordre de leurs descripteurs ; les identités rejetées ne sont pas réutilisées. `TaskScheduler` fournit les impulsions applicatives ; le temps musical provient toujours d'`AudioEngine.getClock`. Ces dépendances ont des doubles en mémoire ; elles ne créent ni bus global ni journal persistant.
 
-Voir [Projection du projet et convergence audio](#projection-du-projet-et-convergence-audio) et [AudioEngine](#audioengine).
+Les événements audio de même instant/catégorie sont émis dans l'ordre `(ClipId, ScoreId, repeatIndex, NoteId)` pour `PROJECT`, `(ScoreId, NoteId)` pour `SCORE`, et par pitch croissant pour les préécoutes. Les contextes suivent l'ordre des clips, puis l'ordre d'allocation pour leurs remplacements. Le moteur conserve l'ordre d'insertion ainsi obtenu. Les révisions de projection et de plan sont monotones pendant l'instance applicative ; l'identité du document/session complète toujours une révision dans un contrôle asynchrone.
 
-- L’état utilisé à `from` est-il celui obtenu après les seuls événements strictement antérieurs à cette borne, ou après les anciens événements situés exactement à cette borne ?
-- Comment rendre cette définition compatible avec le retrait des événements `at >= from` par `replaceSchedule` et l’ordre `NOTE_OFF`, `ContextCompletion`, `NOTE_ON` du nouveau plan ?
-- Un ancien `NOTE_OFF` exactement à `from`, remplacé par un arrêt plus tardif, permet-il de conserver la voix sans réattaque ?
-- Comment traiter une ancienne attaque ou une ancienne fin de contexte exactement à `from`, lorsqu’elle est retirée ou remplacée ?
+### Valeurs techniques initiales
 
-Les études de cas doivent distinguer explicitement un événement strictement antérieur, exactement égal et strictement postérieur à la borne.
+Ces valeurs appartiennent à une configuration immuable injectée au démarrage, testée avec le scénario ; elles ne sont ni des paramètres musicaux, ni des champs de `Settings` :
 
-### Contrats importants à compléter
+| Paramètre | Valeur initiale | Effet |
+| --- | --- | --- |
+| Capacité d'historique | 100 éditions | Retirer les plus anciennes versions au dépassement ; préserver le projet courant |
+| Impulsion applicative | 25 ms | Extension des plans et coalescence des préécoutes |
+| Fenêtre applicative | 500 ms | Planification bornée, y compris des silences |
+| Marge d'engagement du moteur | 100 ms | Frontière `safeAt` au moins égale à `now + 0.100` après démarrage, et au préfixe réellement engagé |
+| Marge du premier départ | 150 ms | Acceptation des événements à `at = 0` et fixation de l'origine |
+| Tentatives de planification | 3 | Première borne sûre, puis marges supplémentaires 25 et 50 ms |
+| Événements par mise à jour | 10000 | Refus explicite, jamais de troncature |
+| Vélocité de préécoute | 100 | Valeur indépendante des vélocités persistantes |
+| Attaque brève de sélection | 150 ms | `NOTE_OFF` automatique de chaque audition |
+| Préécoute de hauteur maximale | 30 s de temps audio | Relâchement même sans appel au handle |
+| Drainage maximal | 5 s de temps audio après fin structurelle | Déconnexion et destruction forcées du contexte |
 
-#### Q3 — Codes et transitions complètes du cycle d’édition
+La configuration exige une fenêtre supérieure à la marge d'engagement et à deux impulsions ; le départ initial dépasse la marge d'engagement. Les durées et capacités sont strictement positives. Le moteur engage les événements par lots strictement antérieurs à la frontière annoncée. Les marges sont des valeurs de départ à mesurer, pas une garantie de latence universelle. Modifier leurs valeurs n'autorise aucun changement des règles de propriété, de collision ou d'identité. Une limitation de navigateur en arrière-plan est traitée par l'arrêt sur retard ou interruption défini au port.
 
-Voir [Intention, session et projection du projet](#intention-session-et-projection-du-projet) et [Historique des versions validées](#historique-des-versions-validées).
+## Critères de validation et travaux différés
 
-Le cycle d’édition est synchrone et indépendant de la convergence audio. Il reste à fixer les codes publics distinguant l’absence de session, une identité de session périmée, une réponse de décision périmée, une intention incompatible avec le contexte capturé et une actualisation ou un commit interdit pendant `AWAITING_DECISION`.
+Les anciennes questions ont les décisions suivantes ; aucune n'est laissée à un choix implicite pendant le codage du cœur :
 
-La table des transitions d’édition et la protection par identité sont définies dans [Identité de session et transitions refusées](#identité-de-session-et-transitions-refusées). Les branches de progression et d’erreur finale figurent dans la section suivante ; undo/redo conserve le contrat de l’historique.
+| Ancienne question | Décision et contrat de référence |
+| --- | --- |
+| Q1 — Plans et ancrages | Préfixe accepté conservé et liste d'ancrages par plan ; remplacement atomique du suffixe |
+| Q2 — Borne exacte | État `from−`, retrait inclusif à `from`, ordre OFF/fin/ON |
+| Q3 — Édition | Codes publics et ordre de contrôle fixés ; une session et un circuit commun |
+| Q4 — Annulation | Références provisoires conservées, nettoyage validé, aucun redémarrage audio |
+| Q5 — Quantification | Origine zéro, arrondi symétrique, delta collectif unique, redimensionnements explicités |
+| Q6 — Ordres et fragments | Parcours canoniques et identités allouées aux fragments finaux |
+| Q7 — Préécoutes | Retrait définitif des identités disparues et coalescence par impulsion injectée |
+| Q8 — Audio concret | Disponibilité, retards bornés, couverture du silence, contrat `smplr` et chargement strict |
+| Q9 — Document | Égalité par valeurs, pas de dates, captures FIFO, schéma strict et valeurs initiales |
+| Q10 — États | `PendingPlaybackRequest` couvre transport et choix de piste ; `GlobalEditorState` sans instance vide |
+| Q11 — Paramètres / présentation | Valeurs techniques fixées ci-dessus ; interactions visuelles différées |
 
-La politique des effets applicatifs est fixée dans [Publication et annulation du brouillon](#publication-et-annulation-du-brouillon).
+### Scénarios contractuels à automatiser pendant l'implémentation
 
-#### Q4 — Politique d’annulation du brouillon — résolue
+Cette matrice complète les études de cas existantes directement dans ce fichier. Elle précise les résultats attendus sans supposer une interface déjà construite.
 
-La politique est fixée dans [Publication et annulation du brouillon](#publication-et-annulation-du-brouillon) : références provisoirement absentes conservées mais indisponibles, bornage visuel dérivé des têtes inactives, nettoyage définitif au commit, retrait des seules références devenues invalides à l’annulation et aucun redémarrage automatique des auditions. Les actions explicites de l’utilisateur et les arrêts audio restent acquis. Les cas 45 et 46 illustrent ces règles.
+| Cas | Entrées / événement | Résultat attendu |
+| --- | --- | --- |
+| D1 | Deux notes échangent leurs intervalles dans une transaction | Aucun chevauchement intermédiaire validé ; un seul projet et une seule entrée d'historique |
+| D2 | Même sélection, ordre de clics inversé | Même `manipulatedNoteIds`, même résultat `SLICE`/`MERGE`, mêmes descripteurs de fragments |
+| D3 | Note `[0,1000)` découpée par `[200,300)` puis `[500,600)` prioritaires | Fragments `[0,200)`, `[300,500)`, `[600,1000)` ; identité source sur le premier, deux identités nouvelles, aucune intermédiaire |
+| D4 | Déplacement/suppression d'un marqueur initial, même avec recréation au tick 0 | `INITIAL_CHANGE_PROTECTED` ; changement de sa seule valeur accepté |
+| D5 | Delta `+120` puis `-120`, grille 240 | Deltas `+240` et `-240` ; aucun changement des écarts internes de sélection |
+| D6 | Bord de note traverse son opposé ; bord de clip fait de même | Note : `INVALID_RESIZE` ; clip : une répétition complète si les bornes globales restent valides |
+| E1 | Callback de session A après ouverture de B | Update/commit refusés, cancel sans effet sur B |
+| E2 | Réponse à une ancienne décision, ou update pendant confirmation | Erreur précise ; candidat, résolutions et résultat finalisé inchangés |
+| E3 | Résultat identique après undo | `NO_CHANGE`, aucun accord demandé, branche redo conservée |
+| E4 | Annulation d'une suppression ayant arrêté une audition | Références préexistantes disponibles de nouveau ; audition toujours arrêtée |
+| A1 | Tempo accepté à 5.04 s, remplacé à 5.02 s puis variante à 5.06 s | Dans la première variante, ancrage 5.04 retiré ; dans la seconde, préfixe conservé et position continue aux deux bornes |
+| A2 | Ancien OFF à `from−δ`, à `from`, à `from+δ`, note allongée | Avant : nouvelle occurrence si nécessaire ; à la borne/après : occurrence conservée, OFF remplacé |
+| A3 | Ancien ON ou achèvement exactement à `from` | Ancien événement retiré ; simulation de `from−` et nouveau plan seuls déterminent l'attaque/le contexte |
+| A4 | Début silencieux de deux secondes et fenêtre 500 ms | Horloge démarre sur plan vide, tête progresse, premiers sons joués à deux secondes sans changer l'origine |
+| A5 | Fenêtre non prolongée avant engagement de sa fin | Arrêt de sécurité et `SCHEDULE_UNDERRUN`, aucune rafale au réveil |
+| A6 | Trois refus successifs `SCHEDULE_TOO_LATE` | Erreur visible, arrêt borné ; document et historique conservés |
+| A7 | Nouvelle projection pendant attente de banque ou de contexte | Résultat tardif peut remplir le cache ; seuls contexte et plan encore courants peuvent démarrer |
+| A8 | Deux clips jouent même pitch/instrument au même instant | Deux occurrences isolées ; OFF de l'une n'arrête pas l'autre |
+| A9 | Échantillon physiquement terminé, NOTE_OFF encore futur, durée allongée | Aucune réattaque uniquement motivée par le silence physique |
+| A10 | Un échantillon manque, ou deux préparations simultanées demandent la même banque | Échec explicite pour banque incomplète ; un seul fetch/décodage par ressource partagée |
+| A11 | Suspension pendant chargement, jeu ou drainage | Requêtes/handles terminés selon état, positions conservées, aucun son spontané à la reprise |
+| P1 | Suppression d'une note suivie, puis restauration/fragmentation | Identité retirée du handle ; aucune adoption automatique des fragments ou notes restaurées |
+| P2 | Toutes les notes disparaissent avant préparation terminée | `ready = CANCELLED`, aucune attaque tardive |
+| P3 | Transposition puis retour à la même hauteur avant une impulsion | Aucune réattaque si les hauteurs rejoignent celles de la dernière attaque acceptée |
+| F1 | Sauvegardes A puis B avec édition entre captures | Écritures FIFO ; A ne marque pas B sauvegardée ; après B, propreté selon sa capture |
+| F2 | Écriture de l'ancien document terminée après ouverture d'un autre | Aucun changement de l'instantané sauvegardé du nouveau document |
+| F3 | JSON mal formé, version inconnue, mauvais réglages ou instrument absent | Erreur déterministe ; ancien document et audio conservés |
+| F4 | Sauvegarde/réouverture avec score partagé et copie indépendante | Identités, partage, indépendance, ordre des pistes et réglages identiques ; aucun état audio sauvegardé |
+| F5 | Nouveau/open/close sur document modifié sans autorisation de perte | `UNSAVED_CHANGES`, aucun remplacement ; avec autorisation explicite, opération atomique |
 
-#### Q5 — Quantification et frontières de responsabilité
+Les tests du domaine utilisent des données immuables ; ceux de l'application un moteur audio, un catalogue, un stockage, un générateur d'identités et des impulsions contrôlables. Ils vérifient les traces et résultats, pas les détails internes de classes. L'adaptateur audio doit ensuite prouver dans un navigateur réel l'arrêt individuel horodaté, la prolongation avant engagement, l'isolation des contextes, le démarrage silencieux, la suspension/reprise et la destruction après drainage. Les tests de planification ne prétendent pas certifier la qualité sonore ni la latence physique de l'appareil.
 
-Voir [GridResolution](#gridresolution), [Clip](#clip) et [Responsabilités d’EditService](#responsabilités-deditservice).
+### Travaux différés et limite de cette finalisation
 
-- Quelles valeurs sont valides pour `snapStepTicks` et quelles erreurs sa factory retourne-t-elle ?
-- La grille locale est-elle toujours ancrée au tick 0 ou recommence-t-elle à chaque section métrique ?
-- Quelle règle d’arrondi s’applique à mi-distance et aux deltas négatifs ?
-- Un déplacement collectif quantifie-t-il le delta commun ou les positions de chaque élément ? Comment préserver ou transformer les écarts d’éléments initialement hors grille ?
-- Que produit un redimensionnement dont le bord traverse le bord opposé ?
-- Les formules `round()` et `max(1, …)` de la section `Clip` décrivent-elles une conversion applicative du geste ou une opération du domaine ? Comment les articuler avec l’interdiction des arrondis et clamps silencieux dans le domaine ?
+Le cœur peut être implémenté à partir de ces contrats. L'intégration technique doit encore produire les assets et leur manifeste, verrouiller la dépendance et exécuter les essais audio réels : leur réussite n'est pas affirmée par ce document. Un échec de ces essais impose de corriger l'adaptateur ou de réviser explicitement son contrat avant d'annoncer la fonction comme disponible ; il ne doit pas être masqué par une divergence silencieuse de comportement.
 
-#### Q6 — Ordres canoniques et identités des fragments
-
-Voir [Result et validation du domaine](#result-et-validation-du-domaine), [Résolution des chevauchements de notes](#résolution-des-chevauchements-de-notes) et [Intention, session et projection du projet](#intention-session-et-projection-du-projet).
-
-- Comment l’application construit-elle l’ordre des `manipulatedNoteIds` depuis une sélection : ordre de sélection, ordre musical ou ordre canonique d’identifiants ? L’ordre choisi est ensuite conservé dans le contexte capturé et la commande.
-- Quel ordre exact détermine le premier score invalide, la première erreur de validation et l’ordre des `overlappingNoteIds` ?
-- Quel ordre canonique de parcours des fragments impose l’allocation reproductible de leurs identifiants ? Leur correspondance est portée par `DeferredResolution.fragments` et conservée dans `EditSession.resolutions`, avec une portée de score et les bornes de chaque fragment.
-- Quels ordres de collections doivent être conservés ou normalisés pour que les résultats et erreurs restent reproductibles ?
-
-#### Q7 — Préécoute de sélection et références disparues
-
-Voir [Préécoute d’une sélection](#préécoute-dune-sélection) et [Préparation de l’instrument](#préparation-de-linstrument).
-
-- Que devient un handle lorsque `MERGE`, `SLICE`, une suppression ou une restauration fait disparaître un `NoteId` suivi ?
-- Les références disparues sont-elles retirées individuellement ou terminent-elles le handle ? Que se passe-t-il lorsqu’il n’en reste aucune ?
-- Un fragment créé par une résolution est-il suivi automatiquement ou reste-t-il extérieur à la sélection capturée ?
-- Une suppression seule déclenche-t-elle une nouvelle audition des hauteurs restantes ?
-- Quelle issue reçoit `ready` si toutes les notes suivies disparaissent avant la fin du chargement ?
-- Quelle définition temporelle précise du « même cycle sûr de planification » rend la coalescence des mises à jour reproductible ?
-
-#### Q8 — Disponibilité audio, retards et contrat de l’adaptateur
-
-Voir [Planification selon la portée](#planification-selon-la-portée), [AudioEngine](#audioengine), [PlaybackContext](#playbackcontext) et [InstrumentInstance](#instrumentinstance).
-
-- Quels états et événements applicatifs représentent un moteur audio suspendu, interrompu, fermé ou impossible à démarrer ? Quel est leur effet sur l’horloge, les transports, les requêtes et les handles ?
-- Quel résultat public distingue cette indisponibilité d’un échec de chargement de banque ?
-- Quelle politique s’applique lorsque les refus `SCHEDULE_TOO_LATE` se répètent ? Quel traitement réserver aux attaques ratées et à la reprise après un retard du planificateur ?
-- Comment fixer l’origine et faire progresser une session dont le début ou une partie du parcours est silencieux avec une planification glissante ? Quel volume de commandes et quelle fenêtre sont préparés ?
-- La réconciliation doit-elle se fonder sur une occurrence logiquement active plutôt que sur une note dite « audible », un échantillon pouvant terminer son signal avant son `NOTE_OFF` musical ?
-- Quelle version de `smplr`, quels presets et quelles versions de banques fixent le comportement attendu de l’adaptateur ?
-- Comment vérifier les garanties nécessaires : arrêt individuel programmé, frontière des événements engagés, prolongation avant engagement du relâchement, partage du chargement et du décodage, fin des voix et libération des tails ?
-
-### Précisions complémentaires
-
-#### Q9 — Égalité, métadonnées, persistance et valeurs initiales
-
-Voir [Project](#project), [Historique des versions validées](#historique-des-versions-validées), [ProjectFileService](#projectfileservice), [Chronologies locales du score](#chronologies-locales-du-score) et [Persistance](#persistance).
-
-- Quelle égalité définit `NO_CHANGE` : valeurs musicales, identités, ordre des collections et métadonnées ? Comment la relier à l’état « modifié non sauvegardé » ?
-- Les champs possibles `createdAt` et `updatedAt` sont-ils retenus ? Qui fournit leurs valeurs, quand changent-ils et que deviennent-ils lors d’undo/redo ?
-- Quel ordre régit les sauvegardes concurrentes, notamment si une écriture ancienne se termine après une plus récente ?
-- Comment l’identité du document et celle de la capture empêchent-elles la fin d’une sauvegarde de l’ancien document de modifier l’état sauvegardé du nouveau ?
-- Quelle forme exacte est valide pour les identifiants et les noms : chaînes vides, longueur, normalisation éventuelle et erreurs associées ?
-- Quelles opérations sont autorisées sur le `MeterChange` initial : modification de valeur, déplacement, suppression ou remplacement dans une transaction ? Comment expliciter son invariant symétriquement à celui du changement harmonique initial ?
-- Quelles tables exactes d’intervalles correspondent à chaque `ChordTypeId` et `ScaleTypeId` ?
-- Quel résultat ou quelle précondition explicite couvre les appels publics exigeant un projet lorsqu’aucun document n’est ouvert ?
-
-#### Q10 — Nommage et représentation des états
-
-- `PendingTransportRequest` est-il suffisamment précis alors qu’il couvre aussi `SET_AUDITION_TRACK`, y compris sans transport actif ?
-- `GlobalEditorState`, encore vide, doit-il déjà exister comme objet d’exécution ou seulement comme responsabilité documentée en attendant ses premières données applicatives ?
-
-Ces questions ne remettent pas en cause à elles seules les noms `Score`, `Clip`, `Track`, `ArrangementEditorState`, `ScoreEditorState`, ni la colocalisation de `Settings` avec `ProjectState`.
-
-#### Q11 — Présentation et paramètres techniques déjà ouverts
-
-- Comment distinguer et sélectionner les clips superposés sur une même piste dans la présentation ?
-- Quelles valeurs techniques retenir pour la marge de planification, la durée maximale des préécoutes et tails et la capacité de l’historique ? Ces paramètres ne doivent pas modifier les règles de propriété ou de concurrence.
-- Quelle interaction proposer pour quitter ou remplacer un document modifié non sauvegardé ? L’ouverture réussie reste atomique et la sauvegarde porte toujours sur une version validée.
-
-### Formalisation attendue avant le plan d’implémentation
-
-La résolution de ces questions devra compléter les contrats existants avec :
-
-- des tables de transitions des éditions et des requêtes de lecture, incluant les événements asynchrones ;
-- un contrat temporel couvrant le plan accepté, les bornes exactes et les changements successifs ;
-- des études de cas avec résultats attendus pour les scénarios ci-dessus.
-
-Ces éléments constituent un travail de spécification préalable, pas un plan d’implémentation. Les nouveaux cas devront être ajoutés à `etudes-de-cas.md` après arbitrage, afin de ne pas présenter une option encore ouverte comme un comportement acquis.
+Restent pour la phase de présentation : sélection des clips superposés, traduction des gestes, ergonomie des décisions, ouverture/fermeture et document modifié, affichage du chargement et des erreurs, zoom/défilement et activation audio. Aucun de ces choix ne doit réintroduire de règles musicales dans les composants. Sont également hors périmètre la collaboration simultanée, les migrations de formats antérieurs, l'autosauvegarde, les effets audio, les banques utilisateur et les optimisations de planification qui changeraient les garanties ci-dessus.
