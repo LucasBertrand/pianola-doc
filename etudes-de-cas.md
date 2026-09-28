@@ -14,6 +14,8 @@ Les exemples utilisant les identifiants `track-piano`, `track-drums`, `track-bas
 
 La métrique et la chronologie harmonique restent locales à chaque score. La métrique fournit des repères de mesures, mais ne modifie pas la conversion des ticks en secondes.
 
+Les exemples numériques de replanification des cas 14, 22 et 30 utilisent un moteur de test avec une marge d'engagement de 40 ms et des lectures d'horloge explicitement contrôlées. Ils illustrent les règles aux bornes, pas les valeurs initiales du profil de transport réel, dont la marge est de 100 ms. `safeAt` peut être plus éloigné que la marge minimale lorsque des événements ont déjà été engagés. Les instruments et effets hors catalogue minimal illustrent le modèle ; ils ne constituent pas des capacités déjà intégrées.
+
 La durée structurelle d’un clip et celle du projet suivent les règles suivantes :
 
 ```text
@@ -286,6 +288,7 @@ Si `safeAt` vaut `5.04` secondes, il calcule le tick de réconciliation avec l�
 ```ts
 const updateResult = audioEngine.replaceSchedule(transportSessionId, {
   from: safeAt,
+  through: safeAt + 0.5,
   audioCommands: replacementCommands,
   contextCompletions: replacementCompletions
 });
@@ -379,7 +382,7 @@ Aucun `Tempo` invalide n'est construit. Le cas d'usage conserve le tempo précé
 
 De même, déplacer un clip vers un `trackId` absent retourne un `ProjectEditError` de code `TRACK_NOT_FOUND`. Créer une 129e piste produit `TRACK_LIMIT_EXCEEDED`. Cette intention ne remplace ni le `Project` d’origine ni la dernière projection transitoire admissible. En revanche, un déplacement valide qui superpose deux clips sur la même piste est accepté sans résolution de collision. Une opération valide du domaine retourne `{ ok: true, value: updatedProject }` ; seule cette valeur peut remplacer `project`.
 
-La lecture d'une sauvegarde suit le même chemin de validation. Un clip dont `scoreId` est absent ou nul produit `INVALID_SCORE_ID` ; un identifiant valide mais absent de `Project.scores` produit `SCORE_NOT_FOUND`. Deux entrées de scores avec la même identité produisent `DUPLICATE_SCORE_ID`. Supprimer un score encore utilisé produit `SCORE_IN_USE`, avec les identifiants des clips concernés. Ces échecs ne publient aucune partie du document ; un échec d’accès au stockage reste une erreur technique distincte.
+La lecture d'une sauvegarde contrôle d'abord la structure JSON, puis appelle les validations du domaine. Dans un fichier, un `scoreId` absent, nul ou d'un type autre que chaîne produit `INVALID_FILE_SHAPE` au chemin du champ. Une chaîne mal formée produit ensuite `INVALID_SCORE_ID` ; un identifiant valide mais absent de `Project.scores` produit `SCORE_NOT_FOUND`. Deux entrées de scores avec la même identité produisent `DUPLICATE_SCORE_ID`. Supprimer un score encore utilisé produit `SCORE_IN_USE`, avec les identifiants des clips concernés. Ces échecs ne publient aucune partie du document ; un échec d’accès au stockage reste une erreur technique distincte.
 
 ## Cas 20 — Changement d’instrument pendant la lecture
 
@@ -614,7 +617,7 @@ Les pistes sont ordonnées `[track-piano, track-vibes, track-bass]`. Deux clips 
 
 L’application produit `MoveClipsCommand` avec un `deltaTicks` de `960` et deux destinations explicites : le premier vers `track-vibes`, le second vers `track-bass`. Leurs débuts restent espacés comme avant ; chaque clip utilise désormais l’instrument de sa destination. Les identifiants de clip et de score sont conservés.
 
-Un déplacement supplémentaire qui placerait le second clip après la dernière piste est refusé pour l’ensemble du geste. Aucun bloc n’est déplacé partiellement et aucune piste n’est créée automatiquement. Si une banque cible manque pendant un transport actif, la projection précédente reste effective jusqu’à la préparation et à l’acceptation du plan commun.
+Un déplacement supplémentaire qui placerait le second clip après la dernière piste est refusé pour l’ensemble du geste. Aucun bloc n’est déplacé partiellement et aucune piste n’est créée automatiquement. Pour un déplacement admissible dont une banque cible manque pendant un transport actif, la nouvelle projection devient immédiatement effective à l'écran ; seul le plan audio précédent continue jusqu’à la préparation et à l’acceptation du plan commun.
 
 ## Cas 38 — Duplication indépendante d’un clip
 

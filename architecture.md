@@ -4,7 +4,7 @@ Ce document décrit l'architecture de Pianola, une application de piano roll ave
 
 Il fixe le vocabulaire courant, les responsabilités des couches et leurs dépendances. Les scénarios détaillés sont regroupés dans [etudes-de-cas.md](etudes-de-cas.md).
 
-Le contrat du premier périmètre est arrêté pour les couches **domaine, application et infrastructure**. Les décisions ci-dessous remplacent les anciennes questions Q1 à Q11 pour ces couches. La présentation reste descriptive : ses composants, gestes et parcours seront spécifiés séparément. Le cœur doit être exécutable et vérifiable sans React, Zustand ni interface graphique.
+Le contrat fonctionnel du premier périmètre est arrêté pour les couches **domaine, application et infrastructure**. Les décisions ci-dessous remplacent les anciennes questions Q1 à Q11 pour ces couches. Les garanties de l'adaptateur audio restent des critères à démontrer, particulièrement l'arrêt des voix déjà engagées ; les profils temporels sont des hypothèses mesurables, pas des performances acquises. La présentation reste descriptive : ses composants, gestes et parcours seront spécifiés séparément. Le cœur doit être exécutable et vérifiable sans React, Zustand ni interface graphique.
 
 ## Navigation
 
@@ -26,6 +26,8 @@ Le contrat du premier périmètre est arrêté pour les couches **domaine, appli
 - [Arborescence cible](#arborescence-cible)
 - [Déterminisme et configuration du premier périmètre](#déterminisme-et-configuration-du-premier-périmètre)
 - [Critères de validation et travaux différés](#critères-de-validation-et-travaux-différés)
+  - [Ordre de réalisation et preuves attendues](#ordre-de-réalisation-et-preuves-attendues)
+  - [Budgets de performance et jeux de mesure](#budgets-de-performance-et-jeux-de-mesure)
 
 ## Vue d'ensemble
 
@@ -297,6 +299,23 @@ Deux propositions égales pour un champ sont dédupliquées ; deux valeurs diff�
 
 Les familles correspondantes d'`EditIntent` couvrent ces opérations, avec une portée explicite ou une sélection à capturer, des paramètres sémantiques et l'option de quantification. `beginEdit` fixe la structure d'une intention composée et de ses créations ; `updateEdit` ne change que ses paramètres variables. Les suppressions explicites peuvent porter `confirmation: { code: "DELETE_CONTENT" }` ; une intention sans cette option reste sans confirmation. Une composition ne porte qu'une confirmation pour l'ensemble. Ce choix appartient à l'appelant applicatif, sans composant d'interface imposé.
 
+##### Fermeture des contrats TypeScript
+
+Le tableau précédent fixe les opérations autorisées ; il n'est pas une déclaration TypeScript exhaustive. Le premier lot d'implémentation doit matérialiser `ProjectEditCommand`, `EditIntent` et les contextes capturés dans leurs modules propriétaires, puis compiler leurs usages avant d'écrire leurs handlers. Les exemples de signatures dans ce document ne doivent pas être complétés au fil de l'eau par des variantes locales incompatibles.
+
+| Frontière | Exigence vérifiable |
+| --- | --- |
+| `ProjectEditCommand` | Union fermée couvrant toutes les lignes du tableau ; commandes élémentaires et composition non récursive ; aucune entrée `Record<string, unknown>` |
+| Proposition normalisée | Créations complètes, mises à jour limitées aux champs autorisés, suppressions, permutation finale des pistes et priorités de notes ; aucune méthode supposant un score déjà sans collision |
+| `EditIntent` | Union sémantique couvrant les mêmes possibilités, y compris copie indépendante et confirmation ; aucune coordonnée écran ni allocation d'identité imposée à la présentation |
+| `EditContext` | Union discriminée par l'opération, associant les cibles, grilles et créations de cette opération seulement ; le contexte composé contient les contextes enfants dans l'ordre figé |
+| Mises à jour d'intention | Même structure, mêmes cibles/créations/confirmation ; seuls les paramètres variables de la variante changent ; la compatibilité dynamique reste vérifiée |
+| Erreurs | Unions exhaustives avec détails associés au code ; aucune conversion générale des erreurs en texte ou en exception |
+
+L'interface `EditContext` présentée plus loin décrit sa surface commune ; l'implémentation la réalise par une union corrélée, pas par trois unions indépendantes qui permettraient de combiner les cibles d'un déplacement de clips avec les créations d'une duplication de notes. `ProjectCandidate` conserve en interne l'ordre des notes manipulées nécessaire à la finalisation ; ses seules valeurs musicales ne permettent pas de retrouver la priorité capturée dans la base. Ce contexte de résolution appartient au domaine, reste immuable, n'est pas sérialisé et n'entre pas dans l'égalité de projection.
+
+Le contrôle de compilation utilise `strict`, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess` et `noEmit`. Les exemples valides couvrent chaque variante ; des exemples négatifs vérifient notamment qu'un candidat n'est pas un projet validé, qu'une composition ne se compose pas récursivement et qu'un contexte ne mélange pas deux familles. Les exemples de ports et des études de cas sont compilés contre les mêmes déclarations, sans doublures de types permissives. Ce contrôle valide la cohérence des types ; il ne remplace ni les tests de comportement ni les essais audio.
+
 #### Ordres, validation et égalité
 
 Les identifiants sont des chaînes ASCII opaques de 1 à 128 caractères, de forme `[A-Za-z0-9][A-Za-z0-9._:-]*`. Aucune normalisation ne les modifie. Leur tri est lexicographique par code ASCII, sans `localeCompare`. Les noms sont des chaînes Unicode de 1 à 200 points de code, sans caractères de contrôle U+0000–U+001F/U+007F, déjà normalisées en NFC et sans espace initial ou final ; une factory refuse une entrée non canonique (`INVALID_NAME`) au lieu de la corriger. Deux entités peuvent porter le même nom. Les factories d'identité utilisent `INVALID_PROJECT_ID`, `INVALID_TRACK_ID`, `INVALID_SCORE_ID`, `INVALID_CLIP_ID`, `INVALID_NOTE_ID`, `INVALID_METER_CHANGE_ID`, `INVALID_HARMONY_CHANGE_ID` ou `INVALID_INSTRUMENT_ID` avec `{ received }`.
@@ -389,7 +408,7 @@ Une création de clip avec un nouveau contenu insère le score et le clip dans u
 | `SCORE_IN_USE` | `scoreId`, `clipIds` | Suppression d’un score encore référencé dans le résultat de la commande |
 | `DUPLICATE_SCORE_ID` | `scoreId` | Plusieurs scores portent la même identité dans la collection |
 
-Un `scoreId` absent, nul ou mal formé relève de `ClipValidationError` (`INVALID_SCORE_ID`) avant la résolution de référence. Les mêmes validations s’appliquent à une création interactive, une duplication et une reconstitution depuis un fichier. Une commande collective peut retirer les clips puis leur score explicitement ; seul un résultat complet valide est publié.
+À la frontière d'une factory du domaine, un `scoreId` absent, nul ou mal formé relève de `ClipValidationError` (`INVALID_SCORE_ID`) avant la résolution de référence. Le codec de fichier vérifie préalablement sa structure : un champ absent, nul ou d'un type autre que chaîne y produit `INVALID_FILE_SHAPE`, sans atteindre cette factory. Une chaîne conforme au schéma atteint ensuite les mêmes validations de domaine qu'une création interactive ou une duplication. Une commande collective peut retirer les clips puis leur score explicitement ; seul un résultat complet valide est publié.
 
 Le tempo ne possède ni position, ni changement programmé. Il s'applique uniformément à toute la timeline et convertit les ticks globaux ou locaux en secondes.
 
@@ -1109,7 +1128,7 @@ Cette projection contient une seule entrée par `ScoreId`, résolue par tous ses
 
 Une seule édition du document est ouverte à la fois, y compris pendant une décision attendue. Toute autre édition, annulation d’historique, rétablissement ou ouverture de fichier retourne `EDIT_IN_PROGRESS` ; l’utilisateur termine ou annule d’abord le geste. Les commandes de transport et la sauvegarde du dernier `project` validé restent disponibles.
 
-`EditSession` reste le même objet pendant tout le geste. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
+`EditSession` conserve la même identité logique pendant tout le geste. Chaque publication expose un nouvel instantané immuable lorsque son contenu change ; aucune ancienne session observée n'est modifiée en place. Son champ `phase` porte l’état courant : `EDITING` ou `AWAITING_DECISION`. `EDITING` est donc bien une valeur d’état et non un type de session. L’union discriminée `EditSessionPhase` garantit qu’une décision n’existe que pendant la phase qui l’attend.
 
 `DecisionRequest<Kind, Details, Choice>` est une structure générique : elle ne connaît aucune situation particulière. Elle associe une identité, un type d’arbitrage, ses faits structurés et les choix autorisés. `EditDecisionRequest` est l’union applicative fermée qui spécialise ce conteneur. Le premier périmètre contient `NOTE_OVERLAP` et `CONFIRMATION`. Une nouvelle décision étend les unions et son traitement typé, avec les données d’attente nécessaires dans `EditSessionPhase`, sans introduire un autre circuit public.
 
@@ -1421,6 +1440,52 @@ Si la note reste couverte mais que sa hauteur, sa vélocité ou une autre propri
 ##### Plan accepté, ancrages successifs et borne exacte
 
 `PlaybackService` conserve un seul `AcceptedPlaybackPlan` par transport : version monotone du plan, projection cible acceptée, liste ordonnée d'ancrages, événements acceptés encore utiles, correspondances de contextes/occurrences, borne de couverture `through` et fin structurelle. Il contient le **préfixe réellement accepté**, même s'il provient de projections plus anciennes, et le dernier suffixe accepté. La projection cible seule ne permet pas de reconstruire ce préfixe. Une note est logiquement active entre son `NOTE_ON` et son `NOTE_OFF`/achèvement de contexte ; l'épuisement naturel de son échantillon ne change pas cet état musical et ne provoque aucune réattaque.
+
+Le contrat interne minimal est le suivant ; ces types restent dans le module applicatif de lecture et ne traversent pas `AudioEngine` :
+
+```ts
+type PlannedNoteKey =
+  | { kind: "PROJECT"; clipId: ClipId; scoreId: ScoreId; repeatIndex: number; noteId: NoteId }
+  | { kind: "SCORE"; scoreId: ScoreId; noteId: NoteId };
+
+type ContextSource =
+  | { kind: "PROJECT"; clipId: ClipId; scoreId: ScoreId; trackId: TrackId }
+  | { kind: "SCORE"; scoreId: ScoreId; trackId: TrackId };
+
+interface AcceptedContextAssignment {
+  readonly contextId: PlaybackContextId;
+  readonly from: number;
+  readonly source: ContextSource;
+  readonly instrumentId: InstrumentId;
+}
+
+interface AcceptedNoteOccurrence {
+  readonly key: PlannedNoteKey;
+  readonly occurrenceId: NoteOccurrenceId;
+  readonly contextId: PlaybackContextId;
+  readonly onAt: number;
+  readonly pitch: Pitch;
+  readonly velocity: Velocity;
+}
+
+interface AcceptedPlaybackPlan {
+  readonly documentId: DocumentId;
+  readonly sessionId: PlaybackSessionId;
+  readonly version: number;
+  readonly projectionRevision: number;
+  readonly projection: ProjectView;
+  readonly anchors: readonly TransportAnchor[];
+  readonly schedule: PlaybackSchedule;
+  readonly contextAssignments: readonly AcceptedContextAssignment[];
+  readonly occurrences: readonly AcceptedNoteOccurrence[];
+  readonly endTick: Tick;
+  readonly endAt: number;
+}
+```
+
+`schedule.through` est l'unique borne de couverture stockée. Les événements retenus dans `schedule` comprennent le préfixe utile et le suffixe accepté ; ce plan interne n'est pas envoyé tel quel comme ajout de fenêtre. `endTick`/`endAt` représentent la fin de la portée dans ce plan, pas celle d'une cible encore en préparation. Une occurrence correspond à une attaque acceptée, jamais simplement à une note persistante ; deux réattaques de la même clé ont des `occurrenceId` différents. Les OFF et fins de contexte du plan déterminent leur fin logique.
+
+Les affectations de contexte sont des segments ordonnés par contexte puis `from`, avec une seule affectation active par contexte à un instant donné. Elles préservent notamment l'ancienne piste avant une bascule future, même si le contexte est réutilisé parce que l'instrument est identique. Occurrences et affectations sont des index reconstruisibles des décisions de planification acceptées, publiés atomiquement avec les événements ; ils ne sont jamais modifiés à partir d'un candidat refusé. Le nettoyage retire les événements passés devenus inutiles, mais conserve les ON des occurrences encore logiquement actives et les affectations nécessaires au préfixe futur. Il ne simule pas `from−` depuis la seule dernière projection et ne confond pas une voix physique terminée avec un OFF musical.
 
 `TransportAnchor[]` est trié par `at` strictement croissant. À un temps `t`, on utilise le dernier ancrage dont `at <= t`, puis `tick(t) = anchor.tick + (t - anchor.at) * 960 * anchor.tempo.bpm / 60`. Avant le départ, la tête reste au tick initial. Les fractions de tick internes sont conservées. L'affichage et toute réconciliation consultent cette même fonction sur le plan accepté, puis appliquent le bornage de portée déjà défini.
 
@@ -1909,6 +1974,11 @@ interface PlaybackClock {
   safeAt: number;
 }
 
+interface SessionTiming {
+  readonly startDelaySeconds: number;
+  readonly commitmentLeadSeconds: number;
+}
+
 type ScheduleError = {
   kind: "SCHEDULE_ERROR";
   code: "SCHEDULE_TOO_LATE";
@@ -1935,7 +2005,7 @@ interface AudioEngine {
     instrumentIds: readonly InstrumentId[]
   ): Promise<Result<"READY", InstrumentPreparationError>>;
 
-  openSession(sessionId: PlaybackSessionId): void;
+  openSession(sessionId: PlaybackSessionId, timing: SessionTiming): void;
 
   openContext(
     sessionId: PlaybackSessionId,
@@ -1963,6 +2033,8 @@ interface AudioEngine {
 
 Tous les champs `at`, ainsi que `PlaybackClock.now`, `PlaybackClock.safeAt` et `ScheduleUpdate.from`, sont exprimés en secondes relativement au début de la session. Le moteur possède l’horloge monotone et la conversion vers son horloge technique interne ; l’application n’utilise ni `Date.now()` ni directement `AudioContext.currentTime`.
 
+`SessionTiming` est une configuration technique immuable capturée à l'ouverture. `PlaybackService` choisit le profil de transport pour `PROJECT`/`SCORE` et celui de préécoute pour les deux autres catégories ; le moteur ne reçoit que les durées, jamais `PlaybackSessionKind`. Les deux valeurs sont finies et strictement positives, avec `startDelaySeconds > commitmentLeadSeconds`. Une configuration invalide est refusée à l'assemblage, avant tout appel au port. Le moteur peut annoncer une borne plus conservatrice pour protéger un préfixe déjà engagé ; réduire la marge ne rend aucun événement engagé remplaçable. Le profil ne change pas pendant une session.
+
 `now` représente la position audio actuelle de la session. `safeAt` est la première borne que l’application peut encore remplacer ou programmer de façon fiable selon le lookahead, la latence et le cycle du moteur. Le moteur garantit `safeAt >= now`. Les événements antérieurs à `safeAt` sont considérés comme engagés.
 
 `prepareInstruments` résout et charge toutes les ressources demandées selon le contrat universel détaillé dans [Ressources d'échantillons partagées](#ressources-déchantillons-partagées). Il retourne un échec attendu par `err(InstrumentPreparationError)` sans rejeter la promesse. Les défauts de programmation et les défaillances techniques non prévues restent des exceptions. `PlaybackService`, son unique appelant applicatif, détermine après ce résultat si la demande est toujours courante ; l’obsolescence, `CANCELLED` et `SUPERSEDED` n’appartiennent pas au port.
@@ -1979,7 +2051,7 @@ La borne retournée peut devenir dépassée à son tour ; le service peut choisi
 
 `openSession` crée une session ouverte sans lancer une horloge audible à vide. La première planification acceptée fixe son origine technique avec une marge suffisante pour jouer les événements `at = 0`. Avant cette origine, la tête reste au tick de départ ; l’horloge peut exposer un `now` négatif pour cette courte attente technique. Les conversions et le démarrage visuel utilisent la même origine.
 
-Avant la première planification, `getClock` retourne `{ now: 0, safeAt: 0 }` dans ce référentiel non démarré. La première `schedule`, même vide de commandes, couvre `[0, through)` et fixe l'origine après 150 ms de marge initiale. Les ajouts suivants couvrent `[ancienThrough, nouveauThrough)` sans recouvrement ; un remplacement couvre `[from, through)` et retire aussi l'ancien suffixe au-delà de `through`. Tous les événements appartiennent à l'intervalle fourni, `through > from` (ou `> ancienThrough`) et les tableaux sont triés selon les règles canoniques. Une fin structurelle est incluse en couvrant au-delà de son instant, pas en la plaçant sur la borne exclusive. Ces préconditions internes erronées sont des défauts de programmation, pas des erreurs utilisateur.
+Avant la première planification, `getClock` retourne `{ now: 0, safeAt: 0 }` dans ce référentiel non démarré. La première `schedule`, même vide de commandes, couvre `[0, through)` et fixe l'origine après `timing.startDelaySeconds` de marge initiale. Les ajouts suivants couvrent `[ancienThrough, nouveauThrough)` sans recouvrement ; un remplacement couvre `[from, through)` et retire aussi l'ancien suffixe au-delà de `through`. Tous les événements appartiennent à l'intervalle fourni, `through > from` (ou `> ancienThrough`) et les tableaux sont triés selon les règles canoniques. Une fin structurelle est incluse en couvrant au-delà de son instant, pas en la plaçant sur la borne exclusive. Ces préconditions internes erronées sont des défauts de programmation, pas des erreurs utilisateur.
 
 Le moteur conserve une frontière d'engagement monotone par session : **tout événement strictement avant `safeAt` est engagé, aucun événement à partir de cette borne n'est transmis à l'instrument**. L'engagement et l'acceptation d'un remplacement sont sérialisés dans le moteur. La valeur annoncée tient compte de la marge et de tous les événements déjà transmis ; elle ne peut jamais laisser croire qu'un arrêt irréversible reste remplaçable. Les contextes peuvent être terminés logiquement par simulation d'une fin engagée avant qu'elle soit audible. L'ordre chronologique du plan fournit cette information à l'application, sans lecture de l'amplitude audio.
 
@@ -1992,6 +2064,8 @@ Le moteur conserve une frontière d'engagement monotone par session : **tout év
 Une fin de contexte interdit ainsi ses propres attaques simultanées, tandis qu’un `NOTE_ON` appartenant à un nouveau contexte reste accepté. Entre événements d’une même catégorie et du même instant, l’ordre d’insertion est stable mais ne porte aucune signification musicale.
 
 `closeSession` marque la fin structurelle naturelle décidée par le service lorsque sa borne est atteinte. Elle interdit de nouveaux contextes ou plans sans avancer les fins déjà acceptées ; les derniers contextes se terminent puis la session est libérée. Elle est idempotente. `stopContext` et `stopSession` restent les opérations d’interruption demandées immédiatement selon un `StopMode` ; `stopSession` ferme aussi la session aux nouveaux plans. Elles sont distinctes d’une `ContextCompletion` planifiée et ne servent pas à replanifier un transport qui continue.
+
+Une fermeture naturelle acceptée désarme la protection de couverture, sans couper le bus qui porte encore les releases. Aucun `SESSION_UNDERRUN` ne doit ensuite provenir de l'ancienne borne `through`. Le dernier plan couvre au minimum jusqu'à `endAt + commitmentLeadSeconds + 2 * pulseSeconds`, afin de laisser au service le temps de constater la fin et de fermer avant l'engagement de la protection. Cette couverture terminale peut dépasser la fenêtre ordinaire uniquement pour cette marge de fermeture ; elle ne prolonge pas la durée musicale. Si un retard a déjà déclenché la protection avant la fermeture, le résultat reste un underrun : `closeSession` ne le transforme pas rétroactivement en succès. Une session naturellement fermée reste soumise au drainage maximal de ses contextes, pas à de nouvelles extensions de fenêtre.
 
 `InstrumentDefinition`, `InstrumentInstance`, `AudioNode` et `AudioContext` ne traversent jamais ce port.
 
@@ -2166,6 +2240,14 @@ Points de réalisation obligatoires, issus du [code de chargement](https://githu
 - Les effets sont désactivés au premier périmètre : sortie sèche par contexte, aucune réverbération ni `AudioWorklet`. Après drainage, `dispose` et la déconnexion du bus sont idempotents. L'arrêt immédiat déconnecte le bus même si un arrêt natif était déjà programmé.
 
 Ces garanties décrivent le travail de l'adaptateur, pas une certification déjà obtenue en navigateur. Les tests contractuels de fin de document constituent le critère d'acceptation de ce lot avant de brancher une interface.
+
+##### Risque à lever : arrêt gracieux après engagement
+
+Dans `Voice.stop()` au tag de référence, le premier arrêt fait immédiatement passer la voix à `stopping`, même si l'instant d'arrêt est futur ; un second appel est ignoré. L'arrêt retourné par `start` délègue à ce cycle. L'absence de `duration` automatique ne supprime donc pas le problème une fois qu'un `NOTE_OFF` a été engagé par Pianola.
+
+Le cas décisif est une note courte dont le `NOTE_ON` **et** le `NOTE_OFF` ont déjà été transmis, mais dont l'attaque est encore future. Un `stopSession(GRACEFUL)` reçu entre leur engagement et leur exécution doit empêcher cette attaque tout en relâchant les voix déjà audibles. Rappeler simplement le handle d'arrêt n'apporte pas cette garantie. Déconnecter tout le bus assure `IMMEDIATE`, mais ne suffit pas à prouver le comportement gracieux ni la conservation des releases des autres voix du contexte.
+
+Le prototype du lot audio doit démontrer une solution dans la version verrouillée : contrôle supplémentaire des sorties/voix dans l'adaptateur, ou modification explicitement versionnée de la dépendance si nécessaire. Le choix technique est subordonné aux essais A12–A14 et ne modifie pas silencieusement `GRACEFUL`. Tant que ces essais ne passent pas, la capacité reste **non validée** ; la présence d'un `StopFn` dans l'API n'est pas une preuve suffisante. Toute modification de dépendance doit actualiser la version, le lockfile et la référence de code ci-dessus avant d'être retenue.
 
 ### PlaybackSession
 
@@ -2484,6 +2566,35 @@ Le point d'entrée construit les adaptateurs puis les services, et leur injecte 
 
 `EditService` fournit aussi les opérations applicatives non musicales `openScore(scoreId)`, `openClip(clipId)`, `closeScore()`, `setScoreSelection(items)`, `setClipSelection(clipIds)` et `setGridResolution(scope, resolution)`. Elles valident les références de la projection (du projet validé pour les réglages), appliquent les politiques déjà décrites des éditeurs et retournent `Result`. `openClip` utilise `PlaybackService.setAuditionTrack` lorsqu'il change la piste d'écoute d'un éditeur déjà ouvert sur ce score ; ce parcours retourne une promesse de `Result`. Une ouverture sur un nouveau score installe le contexte score/piste immédiatement et précharge sans démarrer le son. La fermeture et les changements de score notifient directement `PlaybackService` pour terminer les préécoutes et demandes locales concernées. Ces opérations ne créent ni `ProjectEditCommand` ni historique ; les seeks restent dans `PlaybackService`. Elles ne dessinent pas d'interface.
 
+La surface non musicale est explicitée ci-dessous. `EditorOperations` décrit une partie de l'API d'`EditService`, pas un quatrième service :
+
+```ts
+type GridScope =
+  | { kind: "ARRANGEMENT" }
+  | { kind: "SCORE"; scoreId: ScoreId };
+
+type EditorOperationError =
+  | EditError
+  | SettingsValidationError
+  | PlaybackRequestError;
+
+interface EditorOperations {
+  openScore(scoreId: ScoreId): Result<void, EditorOperationError>;
+  openClip(clipId: ClipId): Promise<Result<
+    "OPENED" | "SUPERSEDED" | "CANCELLED",
+    EditorOperationError
+  >>;
+  closeScore(): Result<void, EditorOperationError>;
+  setScoreSelection(items: readonly ScoreContentRef[]): Result<void, EditorOperationError>;
+  setClipSelection(clipIds: readonly ClipId[]): Result<void, EditorOperationError>;
+  setGridResolution(scope: GridScope, resolution: GridResolution): Result<void, EditorOperationError>;
+}
+```
+
+`openClip` retourne **toujours** une promesse, même lorsqu'aucune attente n'est nécessaire. Pour un nouvel éditeur, `OPENED` atteste la publication de son contexte, pas la disponibilité audio du préchargement ; un échec ultérieur de ce dernier est exposé par `lastAudioError` et ne referme pas l'éditeur. Pour le même score, le résultat attend le choix de piste : `APPLIED` devient `OPENED`, tandis que `SUPERSEDED`/`CANCELLED` et les erreurs sont propagés. Une continuation conserve l'identité de document et d'éditeur visé ; fermer, changer de score ou remplacer le document interdit toute réouverture tardive. `closeScore` sans éditeur est un succès sans effet. Les autres méthodes sont synchrones, ne chargent aucune banque et appliquent les exclusions du cycle de document déjà définies.
+
+Les sélections refusent une référence absente avec le code de référence du modèle concerné (`NOTE_NOT_FOUND`, `METER_CHANGE_NOT_FOUND`, `HARMONY_CHANGE_NOT_FOUND` ou `CLIP_NOT_FOUND`, avec sa portée). Une entrée répétée produit `INVALID_EDIT_PARAMETER`, avec le champ et la valeur reçue ; une collection vide est valide pour désélectionner. `openScore` sur le score déjà ouvert conserve sa tête, sa sélection et son choix d'écoute ; l'absence de piste décrite pour l'ouverture directe concerne la création d'un nouvel éditeur. Les changements de sélection n'affectent jamais les cibles capturées d'une édition ouverte.
+
 Deux petites capacités sortantes sont déclarées dans `application/ports/Runtime.ts` :
 
 ```ts
@@ -2514,8 +2625,9 @@ Ces valeurs appartiennent à une configuration immuable injectée au démarrage,
 | Capacité d'historique | 100 éditions | Retirer les plus anciennes versions au dépassement ; préserver le projet courant |
 | Impulsion applicative | 25 ms | Extension des plans et coalescence des préécoutes |
 | Fenêtre applicative | 500 ms | Planification bornée, y compris des silences |
-| Marge d'engagement du moteur | 100 ms | Frontière `safeAt` au moins égale à `now + 0.100` après démarrage, et au préfixe réellement engagé |
-| Marge du premier départ | 150 ms | Acceptation des événements à `at = 0` et fixation de l'origine |
+| Profil transport : engagement / départ | 100 ms / 150 ms | `SessionTiming` de `PROJECT` et `SCORE` ; référence conservatrice à mesurer |
+| Profil préécoute : engagement / départ | 20 ms / 35 ms | `SessionTiming` des auditions de hauteur/sélection ; hypothèse à valider avant intégration |
+| Impulsion technique d'engagement du moteur | 10 ms | Distincte de l'impulsion applicative ; objectif nominal compatible avec la marge de préécoute |
 | Tentatives de planification | 3 | Première borne sûre, puis marges supplémentaires 25 et 50 ms |
 | Événements par mise à jour | 10000 | Refus explicite, jamais de troncature |
 | Vélocité de préécoute | 100 | Valeur indépendante des vélocités persistantes |
@@ -2523,11 +2635,22 @@ Ces valeurs appartiennent à une configuration immuable injectée au démarrage,
 | Préécoute de hauteur maximale | 30 s de temps audio | Relâchement même sans appel au handle |
 | Drainage maximal | 5 s de temps audio après fin structurelle | Déconnexion et destruction forcées du contexte |
 
-La configuration exige une fenêtre supérieure à la marge d'engagement et à deux impulsions ; le départ initial dépasse la marge d'engagement. Les durées et capacités sont strictement positives. Le moteur engage les événements par lots strictement antérieurs à la frontière annoncée. Les marges sont des valeurs de départ à mesurer, pas une garantie de latence universelle. Modifier leurs valeurs n'autorise aucun changement des règles de propriété, de collision ou d'identité. Une limitation de navigateur en arrière-plan est traitée par l'arrêt sur retard ou interruption défini au port.
+La configuration exige, pour chaque profil, une fenêtre supérieure à la marge d'engagement et à deux impulsions applicatives ; le départ initial dépasse la marge d'engagement, laquelle vaut au moins deux impulsions techniques d'engagement. Les durées et capacités sont strictement positives. Après démarrage, `safeAt` est au moins `now + timing.commitmentLeadSeconds` et couvre le préfixe réellement engagé. Le moteur engage les événements par lots strictement antérieurs à la frontière annoncée. Ses impulsions relèvent de `WebAudioEngine` ; les tests contrôlent leur ordre comme celui des impulsions applicatives.
+
+Les marges sont des hypothèses de départ à mesurer, pas une garantie de latence universelle. Une banque et une instance prêtes ne doivent pas imposer systématiquement les 150 ms du profil transport à une touche de préécoute. La coalescence de sélection reste de 25 ms ; elle n'est pas ajoutée artificiellement au premier départ d'une préécoute de hauteur déjà prête. Une modification de ces valeurs conserve les règles de propriété, de collision et d'identité. Une limitation de navigateur en arrière-plan est traitée par l'arrêt sur retard ou interruption défini au port.
+
+| Parcours, ressources déjà prêtes | Objectif initial au 95e percentile | Mesure |
+| --- | ---: | --- |
+| Préécoute d'une hauteur | 50 ms | Appel valide → première attaque sur l'horloge audio |
+| Première attaque ou transposition d'une sélection | 75 ms | Dernière publication retenue/appel → attaque ; coalescence comprise |
+| Convergence d'un transport, sans nouvelle instance | 150 ms | Publication → prise d'effet du suffixe accepté |
+| Départ d'un transport, contexte déjà prêt | 200 ms | Appel valide → origine de la nouvelle session |
+
+Ces seuils sont des objectifs de recette, pas des garanties actuellement démontrées. Le banc distingue cache froid, banques prêtes et instances prêtes ; il publie séparément la durée de préparation, le calcul et l'attente de planification. Les délais entre appel et acceptation ne remplacent jamais ceux entre appel et attaque. Une mesure de bout en bout par capture audio complète les traces pour estimer la latence de sortie de l'appareil. Si un profil échoue, on documente la plateforme et révise explicitement le profil ou la cible ; on ne déplace pas la borne sûre dans le préfixe engagé pour satisfaire une mesure.
 
 ## Critères de validation et travaux différés
 
-Les anciennes questions ont les décisions suivantes ; aucune n'est laissée à un choix implicite pendant le codage du cœur :
+Les anciennes questions ont les décisions fonctionnelles suivantes. Le lot des contrats rend leurs frontières vérifiables par TypeScript ; le lot audio doit encore prouver la réalisation de ses garanties. Une difficulté technique ne permet pas de choisir implicitement un autre comportement :
 
 | Ancienne question | Décision et contrat de référence |
 | --- | --- |
@@ -2538,10 +2661,10 @@ Les anciennes questions ont les décisions suivantes ; aucune n'est laissée à 
 | Q5 — Quantification | Origine zéro, arrondi symétrique, delta collectif unique, redimensionnements explicités |
 | Q6 — Ordres et fragments | Parcours canoniques et identités allouées aux fragments finaux |
 | Q7 — Préécoutes | Retrait définitif des identités disparues et coalescence par impulsion injectée |
-| Q8 — Audio concret | Disponibilité, retards bornés, couverture du silence, contrat `smplr` et chargement strict |
+| Q8 — Audio concret | Disponibilité, retards bornés, couverture du silence, contrat `smplr` et chargement strict ; arrêt gracieux après engagement à prouver |
 | Q9 — Document | Égalité par valeurs, pas de dates, captures FIFO, schéma strict et valeurs initiales |
 | Q10 — États | `PendingPlaybackRequest` couvre transport et choix de piste ; `GlobalEditorState` sans instance vide |
-| Q11 — Paramètres / présentation | Valeurs techniques fixées ci-dessus ; interactions visuelles différées |
+| Q11 — Paramètres / présentation | Profils temporels et objectifs mesurables ci-dessus ; interactions visuelles différées |
 
 ### Scénarios contractuels à automatiser pendant l'implémentation
 
@@ -2570,6 +2693,12 @@ Cette matrice complète les études de cas existantes directement dans ce fichie
 | A9 | Échantillon physiquement terminé, NOTE_OFF encore futur, durée allongée | Aucune réattaque uniquement motivée par le silence physique |
 | A10 | Un échantillon manque, ou deux préparations simultanées demandent la même banque | Échec explicite pour banque incomplète ; un seul fetch/décodage par ressource partagée |
 | A11 | Suspension pendant chargement, jeu ou drainage | Requêtes/handles terminés selon état, positions conservées, aucun son spontané à la reprise |
+| A12 | ON à 10.04 s et OFF à 10.06 s déjà transmis ; arrêt gracieux à 10.02 s | Aucune attaque à 10.04 s ; les autres voix déjà audibles sont relâchées sans couper leurs releases |
+| A13 | Voix audible, OFF futur déjà transmis, puis arrêt gracieux plus tôt | Le relâchement intervient à l'arrêt demandé ; le premier arrêt natif ne masque pas la demande et aucune réattaque ne survient |
+| A14 | ON/OFF futurs déjà transmis, puis arrêt immédiat avant ON | Aucun son ultérieur ; bus et ressources libérés, callbacks tardifs sans effet |
+| A15 | Fin naturelle avant `through`, release traversant cette ancienne borne | Fermeture désarme la protection avant son engagement ; aucun faux underrun ni coupure du tail ; destruction après drainage |
+| A16 | Nouvelle session de préécoute avec ressources prêtes | Profil de préécoute appliqué ; mesurer le délai jusqu'à l'attaque, sans imposer les 150 ms du transport |
+| A17 | Événement exactement à `through`, puis prolongation de fenêtre | Émis dans la fenêtre suivante seulement, une seule fois ; aucun trou ni doublon à la jonction |
 | P1 | Suppression d'une note suivie, puis restauration/fragmentation | Identité retirée du handle ; aucune adoption automatique des fragments ou notes restaurées |
 | P2 | Toutes les notes disparaissent avant préparation terminée | `ready = CANCELLED`, aucune attaque tardive |
 | P3 | Transposition puis retour à la même hauteur avant une impulsion | Aucune réattaque si les hauteurs rejoignent celles de la dernière attaque acceptée |
@@ -2578,11 +2707,44 @@ Cette matrice complète les études de cas existantes directement dans ce fichie
 | F3 | JSON mal formé, version inconnue, mauvais réglages ou instrument absent | Erreur déterministe ; ancien document et audio conservés |
 | F4 | Sauvegarde/réouverture avec score partagé et copie indépendante | Identités, partage, indépendance, ordre des pistes et réglages identiques ; aucun état audio sauvegardé |
 | F5 | Nouveau/open/close sur document modifié sans autorisation de perte | `UNSAVED_CHANGES`, aucun remplacement ; avec autorisation explicite, opération atomique |
+| F6 | `scoreId` absent/null/nombre, puis chaîne mal formée, puis référence absente | Respectivement `INVALID_FILE_SHAPE`, `INVALID_SCORE_ID`, `SCORE_NOT_FOUND` ; aucune publication |
 
 Les tests du domaine utilisent des données immuables ; ceux de l'application un moteur audio, un catalogue, un stockage, un générateur d'identités et des impulsions contrôlables. Ils vérifient les traces et résultats, pas les détails internes de classes. L'adaptateur audio doit ensuite prouver dans un navigateur réel l'arrêt individuel horodaté, la prolongation avant engagement, l'isolation des contextes, le démarrage silencieux, la suspension/reprise et la destruction après drainage. Les tests de planification ne prétendent pas certifier la qualité sonore ni la latence physique de l'appareil.
 
+Les tests de propriétés complètent les exemples : aucune transformation ne modifie sa base ; toute finalisation réussie satisfait tous les invariants ; les résolutions terminent sans collision ; l'ordre de clics n'affecte pas le résultat ; encoder puis décoder conserve les valeurs et identités ; undo puis redo restaure le projet musical, sans prétendre restaurer les réglages supprimés ou l'état d'éditeur. Des tests de traces croisent chargements, projections, fermetures et callbacks périmés. Les séquences aléatoires conservent leur graine et les événements externes nécessaires à leur reproduction.
+
+### Ordre de réalisation et preuves attendues
+
+Chaque lot conserve le circuit d'édition unique et les frontières de couches. Un lot terminé possède du code exécutable et des résultats de test ; la présente documentation n'atteste pas leur exécution.
+
+| Lot | Réalisation | Critère de sortie |
+| --- | --- | --- |
+| 1 — Modèle et contrats | Modèles, valeurs, vues, unions complètes d'intentions/commandes/contextes, erreurs, ports et codec JSON | Compilation stricte des frontières et exemples ; tests d'invariants et aller-retour de fichier ; aucune dépendance à l'interface |
+| 2 — Édition et document | Candidature/finalisation, décisions, publication, historique, réglages et cycle des fichiers avec adaptateurs en mémoire | Scénarios D/E/F automatisés ; une transaction collective produit une seule version ; réponses périmées et écritures concurrentes contrôlées |
+| 3 — Preuve audio minimale | Une banque locale, deux contextes, commandes horodatées, couverture et arrêts avec la version verrouillée | Essais navigateur A8–A15, notamment ON/OFF engagés avant un arrêt ; profils de préécoute mesurés ; solution d'adaptation documentée |
+| 4 — Transport et convergence | Lecture simple, répétitions, fenêtres, chase, ancrages, puis édition pendant lecture | Scénarios A1–A7/A17 et études de cas de transport ; mêmes traces avec moteur factice ; mesures sur moteur réel |
+| 5 — Préécoutes et intégration | Handles, transpositions, choix d'écoute, banques du catalogue, manifeste et assemblage complet sans interface | Scénarios P, A16 et objectifs temporels ; absence d'audition tardive après annulation ; parcours créer/éditer/jouer/sauvegarder/rouvrir |
+
+Le prototype du lot 3 peut commencer dès que le port du lot 1 existe ; il doit être validé avant de généraliser l'intégration audio du lot 4. Un échec sur l'arrêt gracieux impose une correction vérifiée de l'adaptateur ou une révision explicite du contrat. Les interfaces graphiques viennent après ces preuves et ne servent pas à masquer une transition ou un comportement manquant du cœur.
+
+### Budgets de performance et jeux de mesure
+
+Les bornes musicales ne sont pas des garanties de charge : 128 pistes ne bornent pas les clips simultanés, et 10000 événements par mise à jour ne bornent ni les voix cumulées ni les contextes ou buffers vivants. Le premier périmètre n'introduit pas de suppression de voix implicite pour respecter un benchmark. Tout futur plafond de ressources exige une politique d'échec explicite et un test de libération.
+
+| Jeu reproductible | Contenu minimal | Mesures principales |
+| --- | --- | --- |
+| Composition courante | 8 pistes, 32 clips, 16 scores de 250 notes, partage et copies indépendantes | Temps de `updateEdit`/finalisation, égalité, sérialisation et mémoire de l'historique |
+| Score dense | 10000 notes valides, sélection de 100 notes ; variantes créant des collisions | Détection/résolution, allocation de fragments, coût du recalcul depuis la base |
+| Superpositions | 64 clips simultanés, même banque, quatre notes par clip | Temps de préparation d'instances, contextes/voix actifs, coût de convergence et mémoire partagée |
+| Répétitions longues | Un score de 3840 ticks répété 65535 fois, clip à zéro | Coût borné par la fenêtre, absence d'expansion complète, continuité entre fenêtres |
+| Cycle de ressources | 100 séquences départ/seek/changement d'instrument/arrêt | Retour des sessions/contextes/voix au niveau initial après drainage ; seuls les buffers partagés restent en cache |
+
+Sur une machine et un navigateur de référence explicitement consignés, les cibles initiales sont : `updateEdit` et calcul d'une extension ordinaire en moins de 10 ms au 95e percentile sur le jeu courant ; aucune croissance persistante des ressources d'exécution après drainage. Les jeux denses servent à identifier et publier les limites, sans leur attribuer ces seuils avant mesure. Rapporter médiane, 95e percentile, maximum, taille des données, version navigateur, appareil et configuration ; séparer calcul pur, préparation et attente audio.
+
+Le partage structurel et les inspections réutilisables décrits plus haut sont les premières optimisations. Les fonctions pures de construction/réconciliation du plan peuvent être isolées derrière `PlaybackService` pour être mesurées sans horloge réelle ; elles ne deviennent pas un second orchestrateur et ne possèdent aucun état de transport. Toute optimisation conserve les résultats, l'ordre des erreurs et les événements acceptés.
+
 ### Travaux différés et limite de cette finalisation
 
-Le cœur peut être implémenté à partir de ces contrats. L'intégration technique doit encore produire les assets et leur manifeste, verrouiller la dépendance et exécuter les essais audio réels : leur réussite n'est pas affirmée par ce document. Un échec de ces essais impose de corriger l'adaptateur ou de réviser explicitement son contrat avant d'annoncer la fonction comme disponible ; il ne doit pas être masqué par une divergence silencieuse de comportement.
+Le cœur peut être implémenté selon ces décisions et l'ordre de réalisation ci-dessus. Le premier lot doit fermer les contrats TypeScript exhaustifs ; l'intégration technique doit produire les assets et leur manifeste, verrouiller la dépendance et exécuter les essais audio réels : leur réussite n'est pas affirmée par ce document. L'arrêt gracieux après engagement et les objectifs de latence restent des points de validation explicites. Un échec impose de corriger l'adaptateur ou de réviser explicitement son contrat avant d'annoncer la fonction comme disponible ; il ne doit pas être masqué par une divergence silencieuse de comportement.
 
 Restent pour la phase de présentation : sélection des clips superposés, traduction des gestes, ergonomie des décisions, ouverture/fermeture et document modifié, affichage du chargement et des erreurs, zoom/défilement et activation audio. Aucun de ces choix ne doit réintroduire de règles musicales dans les composants. Sont également hors périmètre la collaboration simultanée, les migrations de formats antérieurs, l'autosauvegarde, les effets audio, les banques utilisateur et les optimisations de planification qui changeraient les garanties ci-dessus.
